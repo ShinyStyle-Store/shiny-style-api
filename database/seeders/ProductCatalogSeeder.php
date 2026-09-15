@@ -4,7 +4,11 @@ namespace Database\Seeders;
 
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\ProductMedia;
+use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
+use App\Models\SellableItem;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
@@ -13,204 +17,275 @@ class ProductCatalogSeeder extends Seeder
     public function run(): void
     {
         DB::transaction(function (): void {
-            $bedding = Category::updateOrCreate(
-                ['slug' => 'bedding'],
-                [
-                    'name_en' => 'Bedding',
-                    'name_ar' => 'مفروشات السرير',
-                    'status' => 'active',
-                    'sort_order' => 1,
-                ],
-            );
-
-            $towels = Category::updateOrCreate(
-                ['slug' => 'towels'],
-                [
-                    'name_en' => 'Towels',
-                    'name_ar' => 'مناشف',
-                    'status' => 'active',
-                    'sort_order' => 2,
-                ],
-            );
-
-            $duvet = Product::updateOrCreate(
-                ['slug' => 'luxury-cotton-duvet'],
-                [
-                    'name_en' => 'Luxury Cotton Duvet',
-                    'name_ar' => 'لحاف قطني فاخر',
-                    'description_en' => 'Soft premium cotton duvet designed for everyday comfort.',
-                    'description_ar' => 'لحاف من القطن الناعم عالي الجودة ومصمم للراحة اليومية.',
-                    'features' => [
-                        'Soft cotton fabric',
-                        'Easy to clean',
-                        'Suitable for daily use',
-                    ],
-                    'specifications' => [
-                        'material' => 'Cotton',
-                        'care' => 'Machine wash',
-                    ],
-                    'badge' => 'discount',
-                    'status' => 'active',
-                    'is_featured' => true,
-                    'published_at' => null,
-                ],
-            );
-
-            $duvet->categories()->syncWithoutDetaching([
-                $bedding->getKey() => ['is_primary' => true],
+            $homeTextiles = $this->category('home-textiles', 'bedding', [
+                'name_en' => 'Home Textiles',
+                'name_ar' => 'منسوجات منزلية',
+                'status' => 'active',
+                'sort_order' => 1,
             ]);
 
-            $color = $duvet->options()->updateOrCreate(
-                ['code' => 'color'],
-                [
-                    'name_en' => 'Color',
-                    'name_ar' => 'اللون',
-                    'sort_order' => 1,
-                ],
-            );
-
-            $size = $duvet->options()->updateOrCreate(
-                ['code' => 'size'],
-                [
-                    'name_en' => 'Size',
-                    'name_ar' => 'المقاس',
-                    'sort_order' => 2,
-                ],
-            );
-
-            $grey = $color->values()->updateOrCreate(
-                ['code' => 'grey'],
-                [
-                    'value_en' => 'Grey',
-                    'value_ar' => 'رمادي',
-                    'metadata' => ['hex' => '#808080'],
-                    'sort_order' => 1,
-                ],
-            );
-
-            $beige = $color->values()->updateOrCreate(
-                ['code' => 'beige'],
-                [
-                    'value_en' => 'Beige',
-                    'value_ar' => 'بيج',
-                    'metadata' => ['hex' => '#D8C3A5'],
-                    'sort_order' => 2,
-                ],
-            );
-
-            $queen = $size->values()->updateOrCreate(
-                ['code' => 'queen'],
-                [
-                    'value_en' => 'Queen',
-                    'value_ar' => 'كوين',
-                    'sort_order' => 1,
-                ],
-            );
-
-            $king = $size->values()->updateOrCreate(
-                ['code' => 'king'],
-                [
-                    'value_en' => 'King',
-                    'value_ar' => 'كينج',
-                    'sort_order' => 2,
-                ],
-            );
-
-            $duvetItems = [
-                [
-                    'sku' => 'DUV-GRY-QN',
-                    'price' => 299.00,
-                    'original_price' => 380.00,
-                    'stock_quantity' => 12,
-                    'is_default' => true,
-                    'sort_order' => 1,
-                    'option_values' => [$grey, $queen],
-                ],
-                [
-                    'sku' => 'DUV-GRY-KG',
-                    'price' => 349.00,
-                    'original_price' => 430.00,
-                    'stock_quantity' => 8,
-                    'is_default' => false,
-                    'sort_order' => 2,
-                    'option_values' => [$grey, $king],
-                ],
-                [
-                    'sku' => 'DUV-BGE-QN',
-                    'price' => 299.00,
-                    'original_price' => 380.00,
-                    'stock_quantity' => 6,
-                    'is_default' => false,
-                    'sort_order' => 3,
-                    'option_values' => [$beige, $queen],
-                ],
-                [
-                    'sku' => 'DUV-BGE-KG',
-                    'price' => 349.00,
-                    'original_price' => 430.00,
-                    'stock_quantity' => 4,
-                    'is_default' => false,
-                    'sort_order' => 4,
-                    'option_values' => [$beige, $king],
-                ],
-            ];
-
-            foreach ($duvetItems as $item) {
-                $sellableItem = $duvet->sellableItems()->updateOrCreate(
-                    ['sku' => $item['sku']],
-                    [
-                        'price' => $item['price'],
-                        'original_price' => $item['original_price'],
-                        'stock_quantity' => $item['stock_quantity'],
-                        'status' => 'active',
-                        'is_default' => $item['is_default'],
-                        'sort_order' => $item['sort_order'],
-                    ],
-                );
-
-                $sellableItem->optionValues()->syncWithoutDetaching(
-                    collect($item['option_values'])->mapWithKeys(
-                        fn (ProductOptionValue $value): array => [$value->getKey() => []],
-                    )->all(),
-                );
-            }
-
-            $towel = Product::updateOrCreate(
-                ['slug' => 'premium-cotton-towel'],
-                [
-                    'name_en' => 'Premium Cotton Towel',
-                    'name_ar' => 'منشفة قطنية فاخرة',
-                    'description_en' => 'Absorbent premium cotton towel for everyday use.',
-                    'description_ar' => 'منشفة قطنية عالية الامتصاص للاستخدام اليومي.',
-                    'features' => [
-                        'Highly absorbent',
-                        'Soft cotton',
-                    ],
-                    'specifications' => [
-                        'material' => 'Cotton',
-                    ],
-                    'badge' => null,
-                    'status' => 'active',
-                    'is_featured' => false,
-                    'published_at' => null,
-                ],
-            );
-
-            $towel->categories()->syncWithoutDetaching([
-                $towels->getKey() => ['is_primary' => true],
+            $kitchenAppliances = $this->category('kitchen-appliances', 'towels', [
+                'name_en' => 'Kitchen Appliances',
+                'name_ar' => 'أجهزة المطبخ',
+                'status' => 'active',
+                'sort_order' => 2,
             ]);
 
-            $towel->sellableItems()->updateOrCreate(
-                ['sku' => 'TWL-STD-001'],
-                [
-                    'price' => 150.00,
-                    'original_price' => null,
-                    'stock_quantity' => 20,
-                    'status' => 'active',
-                    'is_default' => true,
-                    'sort_order' => 1,
+            $blanket = $this->product('soft-sofa-throw-blanket', 'luxury-cotton-duvet', [
+                'name_en' => 'Soft Sofa Throw Blanket',
+                'name_ar' => 'بطانية كنبة ناعمة',
+                'description_en' => 'A soft throw blanket that adds warmth and comfort to any sofa.',
+                'description_ar' => 'بطانية ناعمة تضيف الدفء والراحة إلى أي كنبة.',
+                'features' => [
+                    'Soft woven fabric',
+                    'Lightweight and comfortable',
+                    'Easy to care for',
                 ],
-            );
+                'specifications' => [
+                    'material' => 'Cotton blend',
+                    'use' => 'Sofa throw',
+                ],
+                'badge' => 'new',
+                'status' => 'active',
+                'is_featured' => true,
+                'published_at' => now()->subDay(),
+            ]);
+
+            $blanket->categories()->sync([
+                $homeTextiles->getKey() => ['is_primary' => true],
+            ]);
+
+            $color = $this->option($blanket, 'color', null, [
+                'name_en' => 'Color',
+                'name_ar' => 'اللون',
+                'sort_order' => 1,
+            ]);
+
+            $size = $this->option($blanket, 'size', null, [
+                'name_en' => 'Size',
+                'name_ar' => 'المقاس',
+                'sort_order' => 2,
+            ]);
+
+            $beige = $this->optionValue($color, 'beige', null, [
+                'value_en' => 'Beige',
+                'value_ar' => 'بيج',
+                'metadata' => ['hex' => '#D8C3A5'],
+                'sort_order' => 1,
+            ]);
+
+            $grey = $this->optionValue($color, 'grey', null, [
+                'value_en' => 'Grey',
+                'value_ar' => 'رمادي',
+                'metadata' => ['hex' => '#808080'],
+                'sort_order' => 2,
+            ]);
+
+            $medium = $this->optionValue($size, 'medium', 'queen', [
+                'value_en' => 'Medium',
+                'value_ar' => 'متوسط',
+                'metadata' => null,
+                'sort_order' => 1,
+            ]);
+
+            $large = $this->optionValue($size, 'large', 'king', [
+                'value_en' => 'Large',
+                'value_ar' => 'كبير',
+                'metadata' => null,
+                'sort_order' => 2,
+            ]);
+
+            $this->sellableItem($blanket, 'THROW-BEIGE-M', 'DUV-GRY-QN', [
+                'price' => 650.00,
+                'original_price' => 750.00,
+                'stock_quantity' => 12,
+                'status' => 'active',
+                'is_default' => true,
+                'sort_order' => 1,
+            ])->optionValues()->sync([$beige->getKey(), $medium->getKey()]);
+
+            $this->sellableItem($blanket, 'THROW-BEIGE-L', 'DUV-GRY-KG', [
+                'price' => 750.00,
+                'original_price' => 850.00,
+                'stock_quantity' => 8,
+                'status' => 'active',
+                'is_default' => false,
+                'sort_order' => 2,
+            ])->optionValues()->sync([$beige->getKey(), $large->getKey()]);
+
+            $this->sellableItem($blanket, 'THROW-GREY-M', 'DUV-BGE-QN', [
+                'price' => 650.00,
+                'original_price' => 750.00,
+                'stock_quantity' => 10,
+                'status' => 'active',
+                'is_default' => false,
+                'sort_order' => 3,
+            ])->optionValues()->sync([$grey->getKey(), $medium->getKey()]);
+
+            $this->sellableItem($blanket, 'THROW-GREY-L', 'DUV-BGE-KG', [
+                'price' => 750.00,
+                'original_price' => 850.00,
+                'stock_quantity' => 6,
+                'status' => 'active',
+                'is_default' => false,
+                'sort_order' => 4,
+            ])->optionValues()->sync([$grey->getKey(), $large->getKey()]);
+
+            $coffeeMachine = $this->product('espresso-coffee-machine', 'premium-cotton-towel', [
+                'name_en' => 'Espresso Coffee Machine',
+                'name_ar' => 'ماكينة قهوة إسبريسو',
+                'description_en' => 'A compact espresso coffee machine for rich coffee at home.',
+                'description_ar' => 'ماكينة قهوة إسبريسو صغيرة لتحضير قهوة غنية في المنزل.',
+                'features' => [
+                    'Compact countertop design',
+                    'Fast espresso preparation',
+                    'Easy to use and clean',
+                ],
+                'specifications' => [
+                    'type' => 'Espresso machine',
+                    'use' => 'Home coffee preparation',
+                ],
+                'badge' => null,
+                'status' => 'active',
+                'is_featured' => false,
+                'published_at' => now()->subDay(),
+            ]);
+
+            $coffeeMachine->categories()->sync([
+                $kitchenAppliances->getKey() => ['is_primary' => true],
+            ]);
+
+            $coffeeItem = $this->sellableItem($coffeeMachine, 'COFFEE-MACHINE-001', 'TWL-STD-001', [
+                'price' => 8500.00,
+                'original_price' => 9500.00,
+                'stock_quantity' => 8,
+                'status' => 'active',
+                'is_default' => true,
+                'sort_order' => 1,
+            ]);
+
+            $coffeeItem->optionValues()->sync([]);
+
+            $this->media($blanket, [
+                'provider' => 'cloudinary',
+                'type' => 'image',
+                'public_id' => 'img2_ponchv',
+                'secure_url' => 'https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454206/img2_ponchv.jpg',
+                'sellable_item_id' => null,
+                'alt_text_en' => 'Soft sofa throw blanket',
+                'alt_text_ar' => 'بطانية كنبة ناعمة',
+                'sort_order' => 1,
+                'is_primary' => true,
+            ]);
+
+            $this->media($coffeeMachine, [
+                'provider' => 'cloudinary',
+                'type' => 'image',
+                'public_id' => 'img1_vcatzv',
+                'secure_url' => 'https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454185/img1_vcatzv.jpg',
+                'sellable_item_id' => null,
+                'alt_text_en' => 'Espresso coffee machine',
+                'alt_text_ar' => 'ماكينة قهوة إسبريسو',
+                'sort_order' => 1,
+                'is_primary' => true,
+            ]);
         });
+    }
+
+    private function category(string $slug, ?string $legacySlug, array $attributes): Category
+    {
+        $category = Category::withTrashed()->where('slug', $slug)->first();
+
+        if (! $category && $legacySlug) {
+            $category = Category::withTrashed()->where('slug', $legacySlug)->first();
+        }
+
+        $category ??= new Category;
+        $category->fill([...$attributes, 'slug' => $slug]);
+        $this->restoreAndSave($category);
+
+        return $category;
+    }
+
+    private function product(string $slug, ?string $legacySlug, array $attributes): Product
+    {
+        $product = Product::withTrashed()->where('slug', $slug)->first();
+
+        if (! $product && $legacySlug) {
+            $product = Product::withTrashed()->where('slug', $legacySlug)->first();
+        }
+
+        $product ??= new Product;
+        $product->fill([...$attributes, 'slug' => $slug]);
+        $this->restoreAndSave($product);
+
+        return $product;
+    }
+
+    private function option(Product $product, string $code, ?string $legacyCode, array $attributes): ProductOption
+    {
+        $option = $product->options()->where('code', $code)->first();
+
+        if (! $option && $legacyCode) {
+            $option = $product->options()->where('code', $legacyCode)->first();
+        }
+
+        $option ??= new ProductOption;
+        $option->fill([...$attributes, 'product_id' => $product->getKey(), 'code' => $code]);
+        $option->save();
+
+        return $option;
+    }
+
+    private function optionValue(ProductOption $option, string $code, ?string $legacyCode, array $attributes): ProductOptionValue
+    {
+        $value = $option->values()->where('code', $code)->first();
+
+        if (! $value && $legacyCode) {
+            $value = $option->values()->where('code', $legacyCode)->first();
+        }
+
+        $value ??= new ProductOptionValue;
+        $value->fill([...$attributes, 'product_option_id' => $option->getKey(), 'code' => $code]);
+        $value->save();
+
+        return $value;
+    }
+
+    private function sellableItem(Product $product, string $sku, ?string $legacySku, array $attributes): SellableItem
+    {
+        $item = SellableItem::withTrashed()->where('sku', $sku)->first();
+
+        if (! $item && $legacySku) {
+            $item = SellableItem::withTrashed()->where('sku', $legacySku)->first();
+        }
+
+        $item ??= new SellableItem;
+        $item->fill([...$attributes, 'product_id' => $product->getKey(), 'sku' => $sku]);
+        $this->restoreAndSave($item);
+
+        return $item;
+    }
+
+    private function media(Product $product, array $attributes): ProductMedia
+    {
+        $media = ProductMedia::withTrashed()
+            ->where('provider', $attributes['provider'])
+            ->where('public_id', $attributes['public_id'])
+            ->first() ?? new ProductMedia;
+
+        $media->fill([...$attributes, 'product_id' => $product->getKey()]);
+        $this->restoreAndSave($media);
+
+        return $media;
+    }
+
+    private function restoreAndSave(Model $model): void
+    {
+        if (method_exists($model, 'trashed') && $model->trashed()) {
+            $model->restore();
+        }
+
+        $model->save();
     }
 }
