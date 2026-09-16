@@ -7,6 +7,7 @@ use App\Http\Resources\ProductDetailResource;
 use App\Http\Resources\ProductListResource;
 use App\Models\Product;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
@@ -16,12 +17,20 @@ class ProductController extends Controller
     {
         $validated = $request->validate([
             'q' => ['nullable', 'string', 'max:100'],
+            'category' => ['nullable', 'string', 'max:255'],
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
         $query = Product::query()->visible();
         $this->applySearch($query, $this->searchWords($validated['q'] ?? null));
+        $category = trim($validated['category'] ?? '');
+
+        if ($category !== '') {
+            $query->whereHas('categories', function (Builder $query) use ($category): void {
+                $query->active()->where('slug', $category);
+            });
+        }
 
         $products = $query
             ->with($this->listingRelations())
@@ -95,8 +104,9 @@ class ProductController extends Controller
                 ...$this->listingRelations(),
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
+                'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
                 'sellableItems.optionValues.option',
-                'media' => fn ($query) => $query->ordered(),
+                'media' => fn ($query) => $this->publicMediaQuery($query)->ordered(),
             ])
             ->firstOrFail();
 
@@ -107,8 +117,17 @@ class ProductController extends Controller
     {
         return [
             'categories' => fn ($query) => $query->active()->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->ordered(),
-            'media' => fn ($query) => $query->images()->ordered(),
+            'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
+            'media' => fn ($query) => $this->publicMediaQuery($query)->images()->ordered(),
         ];
+    }
+
+    private function publicMediaQuery(HasMany $query): HasMany
+    {
+        return $query->where(function (Builder $query): void {
+            $query
+                ->whereNull('sellable_item_id')
+                ->orWhereHas('sellableItem', fn (Builder $query) => $query->active());
+        });
     }
 }

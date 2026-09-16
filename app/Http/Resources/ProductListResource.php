@@ -4,29 +4,24 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Collection;
 
 class ProductListResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
-        $sellableItems = $this->sellableItems;
-        $sellableItem = $this->activeDefaultSellableItem($sellableItems);
+        $sellableItems = $this->publicSellableItems();
+        $sellableItem = $this->displaySellableItem($sellableItems);
         $category = $this->primaryCategory();
         $image = $this->primaryImage();
 
         return [
             'id' => (string) $this->getKey(),
             'slug' => $this->slug,
-            'name' => [
-                'ar' => $this->name_ar,
-                'en' => $this->name_en,
-            ],
+            'name' => $this->localizedValue($this->name_ar, $this->name_en),
             'category' => $category ? [
                 'slug' => $category->slug,
-                'name' => [
-                    'ar' => $category->name_ar,
-                    'en' => $category->name_en,
-                ],
+                'name' => $this->localizedValue($category->name_ar, $category->name_en),
             ] : null,
             'price' => $sellableItem ? (float) $sellableItem->price : null,
             'originalPrice' => $sellableItem?->original_price === null
@@ -47,9 +42,32 @@ class ProductListResource extends JsonResource
         ) ?? $this->categories->first();
     }
 
-    protected function activeDefaultSellableItem($sellableItems)
+    protected function publicSellableItems(): Collection
     {
-        return $sellableItems->firstWhere('is_default', true) ?? $sellableItems->first();
+        return $this->resource->publicSellableItems($this->sellableItems);
+    }
+
+    protected function displaySellableItem(Collection $sellableItems)
+    {
+        return $this->resource->displaySellableItem($sellableItems);
+    }
+
+    protected function localizedValue(mixed $arabic, mixed $english): mixed
+    {
+        if (app()->getLocale() === 'en') {
+            return $english !== null && $english !== '' ? $english : ($arabic !== '' ? $arabic : null);
+        }
+
+        return $arabic !== null && $arabic !== '' ? $arabic : ($english !== '' ? $english : null);
+    }
+
+    protected function localizedJsonValue(mixed $value): mixed
+    {
+        if (! is_array($value) || (! array_key_exists('ar', $value) && ! array_key_exists('en', $value))) {
+            return $value;
+        }
+
+        return $this->localizedValue($value['ar'] ?? null, $value['en'] ?? null);
     }
 
     protected function primaryImage()

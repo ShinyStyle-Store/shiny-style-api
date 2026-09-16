@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Collection;
 
 class Product extends Model
 {
@@ -65,6 +66,26 @@ class Product extends Model
         return $this->hasOne(SellableItem::class)->where('is_default', true);
     }
 
+    public function publicSellableItems(Collection $sellableItems): Collection
+    {
+        return $sellableItems
+            ->filter(fn (SellableItem $sellableItem): bool => $sellableItem->status === 'active'
+                && $sellableItem->deleted_at === null)
+            ->sortBy('id')
+            ->values();
+    }
+
+    public function displaySellableItem(Collection $sellableItems): ?SellableItem
+    {
+        $publicSellableItems = $this->publicSellableItems($sellableItems);
+
+        return $publicSellableItems->firstWhere('is_default', true)
+            ?? $publicSellableItems->first(
+                fn (SellableItem $sellableItem): bool => $sellableItem->stock_quantity > 0,
+            )
+            ?? $publicSellableItems->first();
+    }
+
     #[Scope]
     protected function active(Builder $query): void
     {
@@ -80,15 +101,22 @@ class Product extends Model
     #[Scope]
     protected function published(Builder $query): void
     {
-        $query->where(function (Builder $query): void {
-            $query->whereNull('published_at')
-                ->orWhere('published_at', '<=', now());
-        });
+        $query
+            ->whereNotNull('published_at')
+            ->where('published_at', '<=', now());
     }
 
     #[Scope]
     protected function visible(Builder $query): void
     {
-        $query->active()->published();
+        $query
+            ->active()
+            ->published()
+            ->whereHas('sellableItems', function (Builder $query): void {
+                $query->active();
+            })
+            ->whereHas('categories', function (Builder $query): void {
+                $query->active();
+            });
     }
 }
