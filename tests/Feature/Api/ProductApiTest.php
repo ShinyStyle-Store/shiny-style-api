@@ -187,6 +187,39 @@ class ProductApiTest extends TestCase
         $this->assertNotContains('unpublished-product', $response->json('data.*.slug'));
     }
 
+    public function test_product_pagination_links_preserve_filters_and_page_changes(): void
+    {
+        $searchProduct = $this->createProductWithVariant([
+            'slug' => 'second-coffee-product',
+            'name_en' => 'Second Coffee Product',
+        ]);
+        $category = Category::where('slug', 'home-textiles')->firstOrFail();
+        $searchProduct->categories()->attach($category, ['is_primary' => false]);
+
+        $response = $this->getJson('/api/v1/products?per_page=1&page=1');
+        $nextQuery = [];
+        parse_str((string) parse_url((string) $response->json('links.next'), PHP_URL_QUERY), $nextQuery);
+
+        $this->assertSame('1', (string) $nextQuery['per_page']);
+        $this->assertSame('2', (string) $nextQuery['page']);
+
+        $response = $this->getJson('/api/v1/products?q=coffee&per_page=1&page=1');
+        $nextQuery = [];
+        parse_str((string) parse_url((string) $response->json('links.next'), PHP_URL_QUERY), $nextQuery);
+
+        $this->assertSame('coffee', $nextQuery['q']);
+        $this->assertSame('1', (string) $nextQuery['per_page']);
+        $this->assertSame('2', (string) $nextQuery['page']);
+
+        $response = $this->getJson('/api/v1/products?category=home-textiles&per_page=1&page=1');
+        $nextQuery = [];
+        parse_str((string) parse_url((string) $response->json('links.next'), PHP_URL_QUERY), $nextQuery);
+
+        $this->assertSame('home-textiles', $nextQuery['category']);
+        $this->assertSame('1', (string) $nextQuery['per_page']);
+        $this->assertSame('2', (string) $nextQuery['page']);
+    }
+
     public function test_listing_uses_default_sellable_item_and_primary_image(): void
     {
         $response = $this->getJson('/api/v1/products?per_page=100');
@@ -222,6 +255,11 @@ class ProductApiTest extends TestCase
         $this->assertIsString($response->json('data.defaultSellableItemId'));
         $this->assertArrayNotHasKey('stock_quantity', $response->json('data.sellableItems.0'));
         $this->assertArrayNotHasKey('created_at', $response->json('data'));
+
+        $payload = json_decode($response->getContent());
+        $this->assertInstanceOf(\stdClass::class, $payload->data->sellableItems[0]->optionValues);
+        $this->assertSame('beige', $payload->data->sellableItems[0]->optionValues->color);
+        $this->assertSame('medium', $payload->data->sellableItems[0]->optionValues->size);
     }
 
     public function test_coffee_machine_has_no_options_or_option_values(): void
@@ -231,8 +269,11 @@ class ProductApiTest extends TestCase
         $response->assertOk()
             ->assertJsonCount(0, 'data.options')
             ->assertJsonCount(1, 'data.sellableItems')
-            ->assertJsonPath('data.sellableItems.0.optionValues', [])
             ->assertJsonPath('data.sellableItems.0.sku', 'COFFEE-MACHINE-001');
+
+        $payload = json_decode($response->getContent());
+        $this->assertInstanceOf(\stdClass::class, $payload->data->sellableItems[0]->optionValues);
+        $this->assertSame([], (array) $payload->data->sellableItems[0]->optionValues);
     }
 
     public function test_invisible_and_missing_products_return_not_found(): void

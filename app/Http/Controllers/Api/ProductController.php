@@ -36,7 +36,8 @@ class ProductController extends Controller
             ->with($this->listingRelations())
             ->orderByDesc('published_at')
             ->orderByDesc('id')
-            ->paginate($validated['per_page'] ?? 24);
+            ->paginate($validated['per_page'] ?? 24)
+            ->withQueryString();
 
         return ProductListResource::collection($products);
     }

@@ -47,7 +47,7 @@ class ProductDetailResource extends ProductListResource
                     ? null
                     : (float) $item->original_price,
                 'inStock' => $item->stock_quantity > 0,
-                'optionValues' => $item->optionValues->mapWithKeys(
+                'optionValues' => (object) $item->optionValues->mapWithKeys(
                     fn ($value): array => [$value->option->code => $value->code],
                 )->all(),
             ])->values()->all(),
