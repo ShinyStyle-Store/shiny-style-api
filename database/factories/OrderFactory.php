@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\CancellationReason;
 use App\Enums\ContactStatus;
 use App\Enums\OrderStatus;
 use App\Enums\PaymentMethod;
@@ -73,6 +74,8 @@ class OrderFactory extends Factory
     {
         return $this->state(fn (array $attributes): array => [
             'status' => OrderStatus::Cancelled,
+            'cancellation_reason' => CancellationReason::CustomerCancelled,
+            'cancelled_at' => now(),
         ]);
     }
 
