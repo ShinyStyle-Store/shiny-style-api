@@ -20,6 +20,8 @@ class Order extends Model
     protected $fillable = [
         'public_id',
         'order_number',
+        'idempotency_key',
+        'request_fingerprint',
         'user_id',
         'customer_name',
         'customer_phone',
