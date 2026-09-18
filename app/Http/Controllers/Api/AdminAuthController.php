@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\PersonalAccessToken;
 use Symfony\Component\HttpFoundation\Response;
 
 class AdminAuthController extends Controller
@@ -81,7 +82,17 @@ class AdminAuthController extends Controller
 
     public function logout(Request $request): Response
     {
-        $request->user()->currentAccessToken()->delete();
+        $token = $request->user()->currentAccessToken();
+        if (! $token instanceof PersonalAccessToken) {
+            return response()->json(['message' => AdminAuthMessages::unauthorized()], 401);
+        }
+
+        $tokenId = $token->getKey();
+        $token->delete();
+
+        if (PersonalAccessToken::query()->whereKey($tokenId)->exists()) {
+            throw new \RuntimeException('The current access token could not be revoked.');
+        }
 
         return response()->noContent();
     }

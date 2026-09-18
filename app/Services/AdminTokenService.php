@@ -20,10 +20,12 @@ class AdminTokenService
             ->all();
     }
 
-    public function revokeAdminTokens(User $user): void
+    public function revokeAdminTokens(User $user, ?int $exceptTokenId = null): void
     {
         foreach ($this->adminTokensFor($user) as $token) {
-            $token->delete();
+            if ($token->getKey() !== $exceptTokenId) {
+                $token->delete();
+            }
         }
     }
 }

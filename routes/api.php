@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
 use App\Http\Controllers\Api\OrderController;
@@ -27,5 +28,11 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             Route::post('logout', [AdminAuthController::class, 'logout']);
             Route::post('logout-all', [AdminAuthController::class, 'logoutAll']);
         });
+    });
+
+    Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('profile', [AdminProfileController::class, 'show']);
+        Route::patch('profile', [AdminProfileController::class, 'update']);
+        Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
     });
 });

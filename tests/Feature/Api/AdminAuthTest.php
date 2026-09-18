@@ -40,6 +40,50 @@ class AdminAuthTest extends TestCase
         $this->assertSame($token->expires_at->toISOString(), $response->json('data.expires_at'));
     }
 
+    public function test_each_login_creates_a_distinct_persisted_token_and_each_bearer_resolves_independently(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'owner@example.com',
+            'password' => Hash::make('StrongPassword1!'),
+        ]);
+        AdminMembership::factory()->create(['user_id' => $user->id]);
+
+        $first = $this->postJson('/api/v1/admin/auth/login', [
+            'email' => $user->email,
+            'password' => 'StrongPassword1!',
+            'device_name' => 'debug-device-a',
+        ])->assertOk()->json('data.access_token');
+        $this->forgetAuthGuards();
+        $second = $this->postJson('/api/v1/admin/auth/login', [
+            'email' => $user->email,
+            'password' => 'StrongPassword1!',
+            'device_name' => 'debug-device-b',
+        ])->assertOk()->json('data.access_token');
+
+        $firstRow = PersonalAccessToken::findToken($first);
+        $secondRow = PersonalAccessToken::findToken($second);
+        $this->assertNotSame($first, $second);
+        $this->assertNotNull($firstRow);
+        $this->assertNotNull($secondRow);
+        $this->assertNotSame($firstRow->getKey(), $secondRow->getKey());
+        $this->assertDatabaseCount('personal_access_tokens', 2);
+
+        $this->forgetAuthGuards();
+        $this->withToken($first)->getJson('/api/v1/admin/auth/me')->assertOk();
+        $this->forgetAuthGuards();
+        $this->withToken($second)->getJson('/api/v1/admin/auth/me')->assertOk();
+    }
+
+    public function test_session_cookie_authentication_cannot_access_bearer_only_admin_routes(): void
+    {
+        $user = User::factory()->create(['email_verified_at' => now()]);
+        AdminMembership::factory()->create(['user_id' => $user->id]);
+
+        $this->actingAs($user, 'web')
+            ->getJson('/api/v1/admin/auth/me')
+            ->assertUnauthorized();
+    }
+
     public function test_login_failures_are_generic_and_unknown_keys_are_validation_errors(): void
     {
         $payload = ['email' => 'unknown@example.com', 'password' => 'wrong-password'];

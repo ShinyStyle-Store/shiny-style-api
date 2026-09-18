@@ -2,9 +2,11 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use App\Support\AdminAuthMessages;
 use Closure;
 use Illuminate\Http\Request;
+use Laravel\Sanctum\PersonalAccessToken;
 use Symfony\Component\HttpFoundation\Response;
 
 class EnsureAdminAccess
@@ -14,7 +16,10 @@ class EnsureAdminAccess
         $user = $request->user();
         $token = $user?->currentAccessToken();
 
-        if ($user === null || $token === null) {
+        if (! $user instanceof User
+            || ! $token instanceof PersonalAccessToken
+            || $token->tokenable_type !== $user->getMorphClass()
+            || (string) $token->tokenable_id !== (string) $user->getKey()) {
             return response()->json(['message' => AdminAuthMessages::unauthorized()], 401);
         }
 

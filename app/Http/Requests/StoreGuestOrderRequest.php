@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\EgyptianPhone;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 
@@ -21,8 +22,8 @@ class StoreGuestOrderRequest extends FormRequest
             $customer['name'] = is_string($customer['name'] ?? null)
                 ? trim($customer['name'])
                 : ($customer['name'] ?? null);
-            $customer['phone'] = $this->normalizePhone($customer['phone'] ?? null);
-            $customer['alternate_phone'] = $this->normalizePhone($customer['alternate_phone'] ?? null);
+            $customer['phone'] = EgyptianPhone::normalize($customer['phone'] ?? null);
+            $customer['alternate_phone'] = EgyptianPhone::normalize($customer['alternate_phone'] ?? null);
             $this->merge(['customer' => $customer]);
         }
 
