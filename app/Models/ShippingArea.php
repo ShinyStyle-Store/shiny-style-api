@@ -45,6 +45,11 @@ class ShippingArea extends Model
         return $this->hasMany(self::class, 'parent_id');
     }
 
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
     #[Scope]
     protected function active(Builder $query): void
     {
