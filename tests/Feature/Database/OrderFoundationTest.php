@@ -16,6 +16,7 @@ use App\Models\ShippingArea;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class OrderFoundationTest extends TestCase
@@ -143,7 +144,7 @@ class OrderFoundationTest extends TestCase
         $this->assertSame('125.50', $order->subtotal);
         $this->assertSame('70.00', $order->shipping_fee);
         $this->assertSame('195.50', $order->total);
-        $this->assertInstanceOf(\Illuminate\Support\Carbon::class, $order->confirmed_at);
+        $this->assertInstanceOf(Carbon::class, $order->confirmed_at);
         $this->assertSame([], $item->options_snapshot);
         $this->assertSame(2, $item->quantity);
         $this->assertSame('125.50', $item->unit_price);

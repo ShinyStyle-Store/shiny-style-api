@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
 use App\Http\Controllers\Api\OrderController;
@@ -17,4 +18,14 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
+
+    Route::prefix('admin/auth')->group(function (): void {
+        Route::post('login', [AdminAuthController::class, 'login'])->middleware('throttle:admin-login');
+
+        Route::middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+            Route::get('me', [AdminAuthController::class, 'me']);
+            Route::post('logout', [AdminAuthController::class, 'logout']);
+            Route::post('logout-all', [AdminAuthController::class, 'logoutAll']);
+        });
+    });
 });

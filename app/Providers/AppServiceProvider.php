@@ -25,5 +25,14 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('guest-orders', function (Request $request): Limit {
             return Limit::perMinute(10)->by((string) $request->ip());
         });
+
+        RateLimiter::for('admin-login', function (Request $request): Limit {
+            $email = is_string($request->input('email'))
+                ? strtolower(trim($request->input('email')))
+                : '';
+            $key = filter_var($email, FILTER_VALIDATE_EMAIL) === false ? 'ip' : $email;
+
+            return Limit::perMinute(5)->by($key.'|'.$request->ip());
+        });
     }
 }

@@ -3,10 +3,10 @@
 namespace Tests\Feature\Api;
 
 use App\Models\Category;
+use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
-use App\Models\OrderItem;
 use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use Illuminate\Foundation\Testing\RefreshDatabase;
