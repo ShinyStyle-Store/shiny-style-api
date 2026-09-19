@@ -20,6 +20,7 @@ class SellableItem extends Model
         'price',
         'original_price',
         'stock_quantity',
+        'reserved_quantity',
         'status',
         'is_default',
         'sort_order',
@@ -31,6 +32,7 @@ class SellableItem extends Model
             'price' => 'decimal:2',
             'original_price' => 'decimal:2',
             'stock_quantity' => 'integer',
+            'reserved_quantity' => 'integer',
             'is_default' => 'boolean',
             'sort_order' => 'integer',
         ];
@@ -49,6 +51,16 @@ class SellableItem extends Model
     public function media(): HasMany
     {
         return $this->hasMany(ProductMedia::class);
+    }
+
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+
+    public function availableQuantity(): int
+    {
+        return (int) $this->stock_quantity - (int) $this->reserved_quantity;
     }
 
     #[Scope]

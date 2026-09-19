@@ -29,7 +29,7 @@ class CorsTest extends TestCase
         $response = $this->withHeaders([
             'Origin' => self::ALLOWED_ORIGIN,
             'Access-Control-Request-Method' => 'GET',
-            'Access-Control-Request-Headers' => 'Accept, Authorization, Accept-Language, Idempotency-Key',
+            'Access-Control-Request-Headers' => 'Content-Type, Accept, Accept-Language, Idempotency-Key',
         ])->options('/api/v1/products');
 
         $response->assertNoContent()

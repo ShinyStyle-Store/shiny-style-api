@@ -61,6 +61,11 @@ class Product extends Model
         return $this->hasMany(ProductMedia::class);
     }
 
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+
     public function defaultSellableItem(): HasOne
     {
         return $this->hasOne(SellableItem::class)->where('is_default', true);
