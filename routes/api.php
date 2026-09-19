@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -31,6 +32,9 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('orders', [AdminOrderController::class, 'index']);
+        Route::get('orders/{public_id}', [AdminOrderController::class, 'show'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::get('profile', [AdminProfileController::class, 'show']);
         Route::patch('profile', [AdminProfileController::class, 'update']);
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
