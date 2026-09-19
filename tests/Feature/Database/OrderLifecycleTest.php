@@ -5,6 +5,8 @@ namespace Tests\Feature\Database;
 use App\Enums\CancellationReason;
 use App\Enums\ContactStatus;
 use App\Enums\OrderStatus;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Exceptions\InvalidOrderLifecycleException;
 use App\Models\Category;
 use App\Models\Order;
@@ -37,24 +39,29 @@ class OrderLifecycleTest extends TestCase
         $confirmed = $service->transition($order, OrderStatus::Confirmed);
         $this->assertSame(OrderStatus::Confirmed, $confirmed->status);
         $this->assertSame(ContactStatus::Responded, $confirmed->contact_status);
+        $this->assertSame(PaymentStatus::Unpaid, $confirmed->payment_status);
         $this->assertSame('2026-09-18 10:00:00', $confirmed->confirmed_at->toDateTimeString());
+        $this->assertSame('2026-09-18 10:00:00', $confirmed->last_contacted_at->toDateTimeString());
         $this->assertInventory($item, stock: 10, reserved: 3);
 
         Carbon::setTestNow('2026-09-18 10:01:00');
         $preparing = $service->transition($confirmed, OrderStatus::Preparing);
         $this->assertSame(OrderStatus::Preparing, $preparing->status);
+        $this->assertSame(PaymentStatus::Unpaid, $preparing->payment_status);
         $this->assertSame('2026-09-18 10:01:00', $preparing->preparing_at->toDateTimeString());
         $this->assertInventory($item, stock: 10, reserved: 3);
 
         Carbon::setTestNow('2026-09-18 10:02:00');
         $shipped = $service->transition($preparing, OrderStatus::Shipped);
         $this->assertSame(OrderStatus::Shipped, $shipped->status);
+        $this->assertSame(PaymentStatus::Unpaid, $shipped->payment_status);
         $this->assertSame('2026-09-18 10:02:00', $shipped->shipped_at->toDateTimeString());
         $this->assertInventory($item, stock: 7, reserved: 0);
 
         Carbon::setTestNow('2026-09-18 10:03:00');
         $delivered = $service->transition($shipped, OrderStatus::Delivered);
         $this->assertSame(OrderStatus::Delivered, $delivered->status);
+        $this->assertSame(PaymentStatus::Paid, $delivered->payment_status);
         $this->assertSame('2026-09-18 10:03:00', $delivered->delivered_at->toDateTimeString());
         $this->assertInventory($item, stock: 7, reserved: 0);
     }
@@ -69,6 +76,103 @@ class OrderLifecycleTest extends TestCase
 
         $this->assertSame(OrderStatus::Shipped, $shipped->status);
         $this->assertInventory($item, stock: 7, reserved: 0);
+    }
+
+    public function test_already_paid_cod_order_can_be_delivered_and_repeated_delivery_is_idempotent(): void
+    {
+        Carbon::setTestNow('2026-09-19 15:00:00');
+        [$order, $item] = $this->orderWithReservation(
+            stock: 7,
+            reserved: 0,
+            quantity: 3,
+            status: OrderStatus::Shipped,
+        );
+        $order->update([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+        ]);
+
+        $service = app(OrderLifecycleService::class);
+        $delivered = $service->transition($order, OrderStatus::Delivered);
+        $deliveredAt = $delivered->delivered_at?->toISOString();
+        $this->assertSame(PaymentStatus::Paid, $delivered->payment_status);
+        $this->assertInventory($item, stock: 7, reserved: 0);
+
+        Carbon::setTestNow('2026-09-19 15:10:00');
+        $repeated = $service->transition($delivered, OrderStatus::Delivered);
+        $this->assertSame(PaymentStatus::Paid, $repeated->payment_status);
+        $this->assertSame($deliveredAt, $repeated->delivered_at?->toISOString());
+        $this->assertInventory($item, stock: 7, reserved: 0);
+    }
+
+    public function test_cod_delivery_rejects_incompatible_payment_states_without_mutations(): void
+    {
+        foreach ([PaymentStatus::Pending, PaymentStatus::Failed, PaymentStatus::Refunded] as $paymentStatus) {
+            [$order, $item] = $this->orderWithReservation(
+                stock: 7,
+                reserved: 0,
+                quantity: 3,
+                status: OrderStatus::Shipped,
+            );
+            $order->update([
+                'payment_method' => PaymentMethod::CashOnDelivery,
+                'payment_status' => $paymentStatus,
+                'shipped_at' => '2026-09-19 14:00:00',
+            ]);
+
+            try {
+                app(OrderLifecycleService::class)->transition($order, OrderStatus::Delivered);
+                $this->fail('An inconsistent COD payment state must block delivery.');
+            } catch (InvalidOrderLifecycleException) {
+                $unchanged = $order->fresh();
+                $this->assertSame(OrderStatus::Shipped, $unchanged->status);
+                $this->assertSame($paymentStatus, $unchanged->payment_status);
+                $this->assertNull($unchanged->delivered_at);
+                $this->assertInventory($item, stock: 7, reserved: 0);
+            }
+        }
+    }
+
+    public function test_repeating_delivery_does_not_repair_a_delivered_unpaid_cod_order(): void
+    {
+        [$order, $item] = $this->orderWithReservation(
+            stock: 7,
+            reserved: 0,
+            quantity: 3,
+            status: OrderStatus::Delivered,
+        );
+        $order->update([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Unpaid,
+            'delivered_at' => '2026-09-19 14:00:00',
+        ]);
+        $deliveredAt = $order->fresh()->delivered_at?->toISOString();
+
+        try {
+            app(OrderLifecycleService::class)->transition($order, OrderStatus::Delivered);
+            $this->fail('A delivered but unpaid COD order must not be silently repaired.');
+        } catch (InvalidOrderLifecycleException) {
+            $unchanged = $order->fresh();
+            $this->assertSame(OrderStatus::Delivered, $unchanged->status);
+            $this->assertSame(PaymentStatus::Unpaid, $unchanged->payment_status);
+            $this->assertSame($deliveredAt, $unchanged->delivered_at?->toISOString());
+            $this->assertInventory($item, stock: 7, reserved: 0);
+        }
+    }
+
+    public function test_confirmation_preserves_an_existing_contact_time_and_note(): void
+    {
+        Carbon::setTestNow('2026-09-18 12:00:00');
+        [$order] = $this->orderWithReservation(stock: 10, reserved: 3, quantity: 3);
+        $order->update([
+            'last_contacted_at' => '2026-09-18 11:45:00',
+            'contact_note' => 'Customer confirmed by phone',
+        ]);
+
+        $confirmed = app(OrderLifecycleService::class)->transition($order, OrderStatus::Confirmed);
+
+        $this->assertSame('2026-09-18 11:45:00', $confirmed->last_contacted_at->toDateTimeString());
+        $this->assertSame('Customer confirmed by phone', $confirmed->contact_note);
     }
 
     #[DataProvider('forbiddenTransitions')]
@@ -134,7 +238,9 @@ class OrderLifecycleTest extends TestCase
         $shippedForDelivery = $service->transition($confirmedForDelivery, OrderStatus::Shipped);
         $delivered = $service->transition($shippedForDelivery, OrderStatus::Delivered);
         $deliveredAt = $delivered->delivered_at?->toISOString();
-        $this->assertSame($deliveredAt, $service->transition($delivered, OrderStatus::Delivered)->delivered_at?->toISOString());
+        $repeatedDelivery = $service->transition($delivered, OrderStatus::Delivered);
+        $this->assertSame($deliveredAt, $repeatedDelivery->delivered_at?->toISOString());
+        $this->assertSame(PaymentStatus::Paid, $repeatedDelivery->payment_status);
         $this->assertInventory($deliveryItem, stock: 7, reserved: 0);
     }
 

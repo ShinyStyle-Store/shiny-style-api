@@ -35,6 +35,18 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::get('orders', [AdminOrderController::class, 'index']);
         Route::get('orders/{public_id}', [AdminOrderController::class, 'show'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/confirm', [AdminOrderController::class, 'confirm'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/prepare', [AdminOrderController::class, 'prepare'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/ship', [AdminOrderController::class, 'ship'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/deliver', [AdminOrderController::class, 'deliver'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/cancel', [AdminOrderController::class, 'cancel'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::patch('orders/{public_id}/contact-status', [AdminOrderController::class, 'updateContactStatus'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::get('profile', [AdminProfileController::class, 'show']);
         Route::patch('profile', [AdminProfileController::class, 'update']);
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);

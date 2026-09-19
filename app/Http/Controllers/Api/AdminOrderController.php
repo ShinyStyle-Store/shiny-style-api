@@ -2,15 +2,25 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\CancellationReason;
+use App\Enums\ContactStatus;
+use App\Enums\OrderStatus;
+use App\Exceptions\InvalidOrderLifecycleException;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\AdminOrderCancellationRequest;
+use App\Http\Requests\AdminOrderContactStatusRequest;
+use App\Http\Requests\AdminOrderEmptyActionRequest;
 use App\Http\Requests\AdminOrderIndexRequest;
 use App\Http\Resources\AdminOrderDetailResource;
 use App\Http\Resources\AdminOrderListResource;
 use App\Models\Order;
+use App\Services\OrderLifecycleService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class AdminOrderController extends Controller
 {
@@ -63,6 +73,109 @@ class AdminOrderController extends Controller
     {
         $order = Order::query()
             ->where('public_id', $public_id)
+            ->with('items')
+            ->firstOrFail();
+
+        return new AdminOrderDetailResource($order);
+    }
+
+    public function confirm(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
+    {
+        return $this->transition($public_id, OrderStatus::Confirmed, $lifecycle);
+    }
+
+    public function prepare(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
+    {
+        return $this->transition($public_id, OrderStatus::Preparing, $lifecycle);
+    }
+
+    public function ship(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
+    {
+        return $this->transition($public_id, OrderStatus::Shipped, $lifecycle);
+    }
+
+    public function deliver(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
+    {
+        return $this->transition($public_id, OrderStatus::Delivered, $lifecycle);
+    }
+
+    public function cancel(AdminOrderCancellationRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
+    {
+        $data = $request->validated();
+
+        return $this->transition(
+            $public_id,
+            OrderStatus::Cancelled,
+            $lifecycle,
+            CancellationReason::from($data['reason']),
+            $data['note'] ?? null,
+        );
+    }
+
+    public function updateContactStatus(AdminOrderContactStatusRequest $request, string $public_id): JsonResponse|AdminOrderDetailResource
+    {
+        $data = $request->validated();
+
+        try {
+            DB::transaction(function () use ($data, $public_id): void {
+                $order = Order::query()
+                    ->where('public_id', $public_id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (in_array($order->status, [OrderStatus::Delivered, OrderStatus::Cancelled], true)) {
+                    throw new InvalidOrderLifecycleException('Contact status cannot be changed for a terminal order.');
+                }
+
+                $contactStatus = ContactStatus::from($data['contact_status']);
+                $order->contact_status = $contactStatus;
+
+                if ($contactStatus === ContactStatus::NotContacted) {
+                    $order->last_contacted_at = null;
+                    $order->contact_note = null;
+                } else {
+                    $order->last_contacted_at = now();
+                    if (array_key_exists('contact_note', $data)) {
+                        $order->contact_note = $data['contact_note'];
+                    }
+                }
+
+                $order->save();
+            });
+        } catch (InvalidOrderLifecycleException) {
+            return response()->json([
+                'code' => 'terminal_order_contact_update_not_allowed',
+                'message' => 'Contact status cannot be changed for a completed or cancelled order.',
+            ], 409);
+        }
+
+        return $this->detailByPublicId($public_id);
+    }
+
+    private function transition(
+        string $publicId,
+        OrderStatus $target,
+        OrderLifecycleService $lifecycle,
+        ?CancellationReason $reason = null,
+        ?string $note = null,
+    ): JsonResponse|AdminOrderDetailResource {
+        try {
+            $order = Order::query()->where('public_id', $publicId)->firstOrFail();
+            $lifecycle->transition($order, $target, $reason, $note);
+        } catch (InvalidOrderLifecycleException) {
+            return response()->json([
+                'code' => 'invalid_order_transition',
+                'message' => 'The requested order action is not allowed.',
+            ], 409);
+        }
+
+        return $this->detailByPublicId($publicId);
+    }
+
+    private function detailByPublicId(string $publicId): AdminOrderDetailResource
+    {
+        $order = Order::query()
+            ->where('public_id', $publicId)
             ->with('items')
             ->firstOrFail();
 

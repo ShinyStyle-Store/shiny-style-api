@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Enums\CancellationReason;
 use App\Enums\ContactStatus;
 use App\Enums\OrderStatus;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Exceptions\InvalidOrderLifecycleException;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -45,6 +47,10 @@ class OrderLifecycleService
             $this->validateCancellationMetadata($target, $reason, $note);
 
             if ($lockedOrder->status === $target) {
+                if ($target === OrderStatus::Delivered) {
+                    $this->validateDeliveryPaymentState($lockedOrder);
+                }
+
                 $this->validateRepeatedTarget($lockedOrder, $target, $reason, $note);
 
                 return $lockedOrder->refresh();
@@ -55,6 +61,10 @@ class OrderLifecycleService
                 throw new InvalidOrderLifecycleException('The requested order transition is not allowed.');
             }
 
+            if ($target === OrderStatus::Delivered) {
+                $this->validateDeliveryPaymentState($lockedOrder);
+            }
+
             if ($target === OrderStatus::Shipped || $target === OrderStatus::Cancelled) {
                 $quantities = $this->aggregateQuantities($lockedOrder);
                 $items = $this->lockSellableItems($quantities);
@@ -63,6 +73,13 @@ class OrderLifecycleService
             }
 
             $this->applyOrderState($lockedOrder, $target, $reason, $note);
+
+            if ($target === OrderStatus::Delivered
+                && $lockedOrder->payment_method === PaymentMethod::CashOnDelivery
+                && $lockedOrder->payment_status === PaymentStatus::Unpaid) {
+                $lockedOrder->payment_status = PaymentStatus::Paid;
+            }
+
             $lockedOrder->save();
 
             return $lockedOrder->refresh();
@@ -183,6 +200,9 @@ class OrderLifecycleService
     private function applyConfirmation(Order $order): void
     {
         $order->contact_status = ContactStatus::Responded;
+        if ($order->last_contacted_at === null) {
+            $order->last_contacted_at = now();
+        }
         $order->confirmed_at = now();
     }
 
@@ -191,6 +211,18 @@ class OrderLifecycleService
         $order->cancellation_reason = $reason;
         $order->cancellation_note = $note;
         $order->cancelled_at = now();
+    }
+
+    private function validateDeliveryPaymentState(Order $order): void
+    {
+        if ($order->payment_method !== PaymentMethod::CashOnDelivery) {
+            return;
+        }
+
+        if (! in_array($order->payment_status, [PaymentStatus::Unpaid, PaymentStatus::Paid], true)
+            || ($order->status === OrderStatus::Delivered && $order->payment_status !== PaymentStatus::Paid)) {
+            throw new InvalidOrderLifecycleException('The COD payment state is inconsistent with delivery.');
+        }
     }
 
     private function validateCancellationMetadata(
