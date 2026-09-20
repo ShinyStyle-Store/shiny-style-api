@@ -2,12 +2,14 @@
 
 namespace App\Models;
 
+use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 
@@ -61,6 +63,11 @@ class Product extends Model
         return $this->hasMany(ProductMedia::class);
     }
 
+    public function mediaAttachments(): MorphMany
+    {
+        return $this->morphMany(MediaAttachment::class, 'mediable');
+    }
+
     public function orderItems(): HasMany
     {
         return $this->hasMany(OrderItem::class);
@@ -112,16 +119,18 @@ class Product extends Model
     }
 
     #[Scope]
-    protected function visible(Builder $query): void
+    protected function visible(Builder $query, ?array $visibleCategoryIds = null): void
     {
+        $visibleCategoryIds ??= app(CategoryHierarchyService::class)->effectiveVisibleIds();
+
         $query
             ->active()
             ->published()
             ->whereHas('sellableItems', function (Builder $query): void {
                 $query->active();
             })
-            ->whereHas('categories', function (Builder $query): void {
-                $query->active();
+            ->whereHas('categories', function (Builder $query) use ($visibleCategoryIds): void {
+                $query->whereIn('categories.id', $visibleCategoryIds);
             });
     }
 }

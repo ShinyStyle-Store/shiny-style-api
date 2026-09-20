@@ -248,6 +248,25 @@ class CheckoutQuoteTest extends TestCase
         ])->assertUnprocessable();
     }
 
+    public function test_products_behind_an_inactive_category_ancestor_are_not_quotable(): void
+    {
+        $area = $this->shippingArea(10);
+        $item = $this->sellableItem();
+        $category = $item->product->categories()->firstOrFail();
+        $inactiveAncestor = Category::create([
+            'slug' => 'quote-inactive-ancestor-'.uniqid(),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Inactive ancestor',
+            'status' => 'inactive',
+        ]);
+        $category->update(['parent_id' => $inactiveAncestor->getKey()]);
+
+        $this->postJson('/api/v1/checkout/quote', [
+            'shipping_area_id' => $area->id,
+            'items' => [['sellable_item_id' => $item->id, 'quantity' => 1]],
+        ])->assertUnprocessable();
+    }
+
     public function test_one_invalid_item_fails_without_partial_quote_or_side_effects(): void
     {
         $area = $this->shippingArea(10);

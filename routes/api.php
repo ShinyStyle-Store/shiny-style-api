@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\CategoryController;
@@ -32,6 +33,13 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('categories', [AdminCategoryController::class, 'index']);
+        Route::get('categories/archived', [AdminCategoryController::class, 'archived']);
+        Route::post('categories/{category}/restore', [AdminCategoryController::class, 'restore'])->whereNumber('category');
+        Route::get('categories/{category}', [AdminCategoryController::class, 'show'])->whereNumber('category');
+        Route::post('categories', [AdminCategoryController::class, 'store']);
+        Route::patch('categories/{category}', [AdminCategoryController::class, 'update'])->whereNumber('category');
+        Route::delete('categories/{category}', [AdminCategoryController::class, 'destroy'])->whereNumber('category');
         Route::get('orders', [AdminOrderController::class, 'index']);
         Route::get('orders/{public_id}', [AdminOrderController::class, 'show'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');

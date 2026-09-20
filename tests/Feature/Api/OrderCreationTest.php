@@ -186,6 +186,26 @@ class OrderCreationTest extends TestCase
             ->assertUnprocessable();
     }
 
+    public function test_products_behind_an_inactive_category_ancestor_cannot_be_ordered(): void
+    {
+        $area = $this->shippingArea(10);
+        $item = $this->sellableItem();
+        $category = $item->product->categories()->firstOrFail();
+        $inactiveAncestor = Category::create([
+            'slug' => 'order-inactive-ancestor-'.uniqid(),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Inactive ancestor',
+            'status' => 'inactive',
+        ]);
+        $category->update(['parent_id' => $inactiveAncestor->getKey()]);
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $this->payload($area, $item, 1))
+            ->assertUnprocessable();
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_checkout_quote_respects_reserved_quantity_without_changing_response_shape(): void
     {
         $area = $this->shippingArea(10);
