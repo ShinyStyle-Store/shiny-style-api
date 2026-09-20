@@ -32,6 +32,7 @@ class AdminCategoryApiTest extends TestCase
         $categoryId = $this->category('unauthenticated-route')->getKey();
         $routes = [
             ['GET', '/api/v1/admin/categories', []],
+            ['GET', '/api/v1/admin/categories/archived', []],
             ['GET', '/api/v1/admin/categories/'.$categoryId, []],
             ['POST', '/api/v1/admin/categories', $this->payload()],
             ['PATCH', '/api/v1/admin/categories/'.$categoryId, ['name_en' => 'Updated']],
@@ -51,6 +52,7 @@ class AdminCategoryApiTest extends TestCase
         $customerToken = $customer->createToken('customer', ['customer-access'])->plainTextToken;
         $customerRoutes = [
             ['GET', '/api/v1/admin/categories', []],
+            ['GET', '/api/v1/admin/categories/archived', []],
             ['GET', '/api/v1/admin/categories/'.$categoryId, []],
             ['POST', '/api/v1/admin/categories', $this->payload()],
             ['PATCH', '/api/v1/admin/categories/'.$categoryId, ['name_en' => 'Updated']],
@@ -100,6 +102,10 @@ class AdminCategoryApiTest extends TestCase
             'status' => 'active',
         ]);
         $product->categories()->attach($earlier->id, ['is_primary' => true]);
+        $childProduct = Product::create([
+            'slug' => 'admin-child-product-'.uniqid(), 'name_ar' => 'Ù…Ù†ØªØ¬', 'name_en' => 'Child Product',
+        ]);
+        $childProduct->categories()->attach($child->id, ['is_primary' => true]);
         $deleted = $this->category('deleted');
         $deleted->delete();
 
@@ -111,8 +117,16 @@ class AdminCategoryApiTest extends TestCase
             ->assertJsonPath('data.0.nameAr', 'تصنيف earlier')
             ->assertJsonPath('data.0.nameEn', 'Name earlier')
             ->assertJsonPath('data.0.depth', 1)
+            ->assertJsonPath('data.0.parent', null)
             ->assertJsonPath('data.0.childrenCount', 1)
             ->assertJsonPath('data.0.productsCount', 1)
+            ->assertJsonPath('data.0.hasChildren', true)
+            ->assertJsonPath('data.0.isEffectivelyVisible', true)
+            ->assertJsonPath('data.0.visibilityReason', null)
+            ->assertJsonPath('data.1.parent.id', $earlier->id)
+            ->assertJsonPath('data.1.parent.nameAr', $earlier->name_ar)
+            ->assertJsonPath('data.1.parent.archived', false)
+            ->assertJsonPath('data.1.productsCount', 1)
             ->assertJsonMissing(['id' => $deleted->id]);
 
         $this->assertArrayNotHasKey('children', $response->json('data.0'));
@@ -134,6 +148,31 @@ class AdminCategoryApiTest extends TestCase
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories')->assertOk();
 
         $this->assertCount(2, $categoryQueries);
+    }
+
+    public function test_admin_hierarchy_counts_do_not_depend_on_sibling_or_depth_sort_order(): void
+    {
+        $root = $this->category('unordered-root', ['sort_order' => 2]);
+        $child = $this->category('unordered-child', ['parent_id' => $root->id, 'sort_order' => 3]);
+        $grandchild = $this->category('unordered-grandchild', ['parent_id' => $child->id, 'sort_order' => 1]);
+
+        $response = $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories')->assertOk();
+        $items = collect($response->json('data'))->keyBy('id');
+
+        $this->assertSame(1, $items[$root->id]['childrenCount']);
+        $this->assertTrue($items[$root->id]['hasChildren']);
+        $this->assertSame(1, $items[$root->id]['depth']);
+        $this->assertSame(1, $items[$child->id]['childrenCount']);
+        $this->assertTrue($items[$child->id]['hasChildren']);
+        $this->assertSame(2, $items[$child->id]['depth']);
+        $this->assertSame(0, $items[$grandchild->id]['childrenCount']);
+        $this->assertFalse($items[$grandchild->id]['hasChildren']);
+        $this->assertSame(3, $items[$grandchild->id]['depth']);
+
+        foreach ([$root, $child, $grandchild] as $category) {
+            $this->assertTrue($items[$category->id]['isEffectivelyVisible']);
+            $this->assertNull($items[$category->id]['visibilityReason']);
+        }
     }
 
     public function test_detail_uses_numeric_ids_and_hides_missing_or_soft_deleted_categories(): void
@@ -202,12 +241,11 @@ class AdminCategoryApiTest extends TestCase
         ]))->assertUnprocessable()->assertJsonValidationErrors('extra');
     }
 
-    public function test_create_validates_names_status_url_and_sort_order(): void
+    public function test_create_validates_names_status_and_sort_order(): void
     {
         $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories', $this->payload([
-            'name_ar' => '   ', 'status' => 'hidden', 'cover_image_url' => 'ftp://example.com/image.jpg',
-            'sort_order' => -1,
-        ]))->assertUnprocessable()->assertJsonValidationErrors(['name_ar', 'status', 'cover_image_url', 'sort_order']);
+            'name_ar' => '   ', 'status' => 'hidden', 'sort_order' => -1,
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['name_ar', 'status', 'sort_order']);
     }
 
     public function test_update_is_partial_and_explicit_null_moves_category_to_root(): void
@@ -288,6 +326,201 @@ class AdminCategoryApiTest extends TestCase
 
         $this->assertSoftDeleted('categories', ['id' => $category->id]);
         $this->assertDatabaseHas('categories', ['id' => $category->id]);
+        $this->assertDatabaseHas('categories', ['id' => $category->id, 'status' => 'inactive']);
+    }
+
+    public function test_archived_list_is_flat_ordered_and_hides_archived_categories_from_normal_and_public_apis(): void
+    {
+        $active = $this->category('active-category', ['sort_order' => 1]);
+        $inactive = $this->category('inactive-category', ['sort_order' => 2, 'status' => 'inactive']);
+        $archived = $this->category('archived-category', ['sort_order' => 3]);
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories/archived')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $archived->id)
+            ->assertJsonPath('data.0.status', 'active')
+            ->assertJsonPath('data.0.parent_id', null)
+            ->assertJsonPath('data.0.is_effectively_visible', false)
+            ->assertJsonPath('data.0.visibility_reason', 'self_archived')
+            ->assertJsonPath('data.0.sort_order', 3)
+            ->assertJsonPath('data.0.archived_at', $archived->deleted_at?->toISOString());
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories')
+            ->assertOk()->assertJsonMissing(['id' => $archived->id]);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/categories')
+            ->assertOk()->assertJsonMissing(['id' => $archived->id]);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/categories/'.$archived->slug)->assertNotFound();
+        $this->assertDatabaseHas('categories', ['id' => $active->id, 'deleted_at' => null]);
+        $this->assertDatabaseHas('categories', ['id' => $inactive->id, 'deleted_at' => null]);
+    }
+
+    public function test_archived_list_parent_summary_identifies_an_archived_parent(): void
+    {
+        $parent = $this->category('archived-parent', ['sort_order' => 2]);
+        $child = $this->category('archived-child', ['parent_id' => $parent->id, 'sort_order' => 1]);
+        $activeDescendant = $this->category('active-descendant-of-archived', ['parent_id' => $child->id]);
+        $parent->delete();
+        $child->delete();
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories/archived')
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.parent.id', $parent->id)
+            ->assertJsonPath('data.0.parent.is_archived', true)
+            ->assertJsonPath('data.0.depth', 2)
+            ->assertJsonPath('data.0.children_count', 1)
+            ->assertJsonMissing(['id' => $activeDescendant->id]);
+
+        $this->getJson('/api/v1/categories')->assertOk()->assertJsonMissing(['slug' => $activeDescendant->slug]);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories')->assertOk()
+            ->assertJsonFragment([
+                'id' => $activeDescendant->id,
+                'isEffectivelyVisible' => false,
+                'visibilityReason' => 'archived_ancestor',
+            ]);
+    }
+
+    public function test_admin_visibility_reasons_cover_self_inactive_ancestors_and_invalid_cycles(): void
+    {
+        $visible = $this->category('visibility-visible');
+        $inactive = $this->category('visibility-inactive', ['status' => 'inactive']);
+        $behindInactive = $this->category('visibility-behind-inactive', ['parent_id' => $inactive->id]);
+        $first = $this->category('visibility-cycle-first');
+        $second = $this->category('visibility-cycle-second', ['parent_id' => $first->id]);
+        DB::table('categories')->where('id', $first->id)->update(['parent_id' => $second->id]);
+
+        $response = $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories')->assertOk();
+        $items = collect($response->json('data'))->keyBy('id');
+
+        $this->assertTrue($items[$visible->id]['isEffectivelyVisible']);
+        $this->assertNull($items[$visible->id]['visibilityReason']);
+        $this->assertSame('self_inactive', $items[$inactive->id]['visibilityReason']);
+        $this->assertSame(1, $items[$inactive->id]['childrenCount']);
+        $this->assertTrue($items[$inactive->id]['hasChildren']);
+        $this->assertSame('inactive_ancestor', $items[$behindInactive->id]['visibilityReason']);
+        $this->assertFalse($items[$behindInactive->id]['isEffectivelyVisible']);
+        $this->assertSame('invalid_hierarchy', $items[$first->id]['visibilityReason']);
+        $this->assertNull($items[$first->id]['depth']);
+    }
+
+    public function test_admin_category_counts_and_archived_list_use_bounded_category_queries(): void
+    {
+        foreach (range(1, 8) as $index) {
+            $category = $this->category('archived-query-'.$index);
+            $category->delete();
+        }
+
+        $categoryQueries = [];
+        DB::listen(function ($query) use (&$categoryQueries): void {
+            if (str_contains(strtolower($query->sql), 'categories')) {
+                $categoryQueries[] = $query->sql;
+            }
+        });
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/categories/archived')->assertOk();
+
+        $this->assertCount(2, $categoryQueries);
+    }
+
+    public function test_archive_returns_not_found_for_missing_or_already_archived_categories(): void
+    {
+        $category = $this->category('already-archived');
+        $category->delete();
+
+        $this->withToken($this->adminToken)->deleteJson('/api/v1/admin/categories/999999')->assertNotFound();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->deleteJson('/api/v1/admin/categories/'.$category->id)->assertNotFound();
+    }
+
+    public function test_restore_root_preserves_fields_and_pivot_links_but_remains_inactive_until_activated(): void
+    {
+        $category = $this->category('restore-root', [
+            'slug' => 'restore-root', 'name_ar' => 'Ø§Ù„ØªØµÙ†ÙŠÙ', 'name_en' => 'Restored',
+            'sort_order' => 7,
+        ]);
+        $product = Product::create([
+            'slug' => 'restore-product-'.uniqid(), 'name_ar' => 'Ù…Ù†ØªØ¬', 'name_en' => 'Product',
+        ]);
+        $product->categories()->attach($category->id, ['is_primary' => true]);
+        $category->delete();
+
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$category->id.'/restore')
+            ->assertOk()->assertJsonPath('data.id', $category->id)
+            ->assertJsonPath('data.slug', 'restore-root')->assertJsonPath('data.nameEn', 'Restored')
+            ->assertJsonPath('data.parentId', null)->assertJsonPath('data.sortOrder', 7)
+            ->assertJsonPath('data.status', 'inactive')->assertJsonPath('data.depth', 1);
+        $this->assertDatabaseHas('category_product', [
+            'category_id' => $category->id, 'product_id' => $product->id, 'is_primary' => true,
+        ]);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/categories')->assertOk()
+            ->assertJsonMissing(['slug' => 'restore-root']);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/categories/'.$category->id, ['status' => 'active'])
+            ->assertOk();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/categories/restore-root')->assertOk();
+    }
+
+    public function test_restore_accepts_an_inactive_parent_and_preserves_parent_and_sort_order(): void
+    {
+        $parent = $this->category('inactive-restore-parent', ['status' => 'inactive']);
+        $child = $this->category('restore-child', ['parent_id' => $parent->id, 'sort_order' => 9]);
+        $child->delete();
+
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$child->id.'/restore')
+            ->assertOk()->assertJsonPath('data.parentId', $parent->id)
+            ->assertJsonPath('data.sortOrder', 9)->assertJsonPath('data.status', 'inactive');
+    }
+
+    public function test_restore_conflicts_for_unavailable_parent_non_archived_and_missing_categories(): void
+    {
+        $parent = $this->category('restore-archived-parent');
+        $child = $this->category('restore-parent-child', ['parent_id' => $parent->id]);
+        $parent->delete();
+        $child->delete();
+        $ordinary = $this->category('not-archived');
+
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$child->id.'/restore')
+            ->assertConflict()->assertJsonPath('code', 'category_parent_unavailable');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$ordinary->id.'/restore')
+            ->assertConflict()->assertJsonPath('code', 'category_not_archived');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/999999/restore')->assertNotFound();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$child->id.'/restore')
+            ->assertConflict()->assertJsonPath('code', 'category_parent_unavailable');
+    }
+
+    public function test_restore_revalidates_depth_before_restoring(): void
+    {
+        $root = $this->category('restore-depth-root');
+        $child = $this->category('restore-depth-child', ['parent_id' => $root->id]);
+        $grandchild = $this->category('restore-depth-grandchild', ['parent_id' => $child->id]);
+        $archived = $this->category('restore-depth-fourth', ['parent_id' => $grandchild->id]);
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$archived->id.'/restore')
+            ->assertUnprocessable()->assertJsonValidationErrors('parent_id');
+    }
+
+    public function test_restore_is_repeatable_without_a_server_error(): void
+    {
+        $category = $this->category('repeat-restore');
+        $category->delete();
+
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$category->id.'/restore')->assertOk();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/categories/'.$category->id.'/restore')
+            ->assertConflict()->assertJsonPath('code', 'category_not_archived');
     }
 
     public function test_delete_conflicts_for_direct_children_and_preserves_relationships(): void
@@ -328,7 +561,6 @@ class AdminCategoryApiTest extends TestCase
             'name_en' => 'Name '.$name,
             'description_ar' => 'وصف '.$name,
             'description_en' => 'Description '.$name,
-            'cover_image_url' => null,
             'status' => 'active',
             'sort_order' => 0,
         ], $attributes));
@@ -343,7 +575,6 @@ class AdminCategoryApiTest extends TestCase
             'name_en' => 'New category',
             'description_ar' => null,
             'description_en' => null,
-            'cover_image_url' => null,
             'status' => 'active',
             'sort_order' => 0,
         ], $attributes);

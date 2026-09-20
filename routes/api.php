@@ -34,6 +34,8 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
         Route::get('categories', [AdminCategoryController::class, 'index']);
+        Route::get('categories/archived', [AdminCategoryController::class, 'archived']);
+        Route::post('categories/{category}/restore', [AdminCategoryController::class, 'restore'])->whereNumber('category');
         Route::get('categories/{category}', [AdminCategoryController::class, 'show'])->whereNumber('category');
         Route::post('categories', [AdminCategoryController::class, 'store']);
         Route::patch('categories/{category}', [AdminCategoryController::class, 'update'])->whereNumber('category');

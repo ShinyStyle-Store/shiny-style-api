@@ -30,6 +30,118 @@ class CategoryApiTest extends TestCase
             ->assertJsonMissing(['slug' => $deleted->slug])
             ->assertJsonMissingPath('data.0.children')
             ->assertJsonMissingPath('data.0.products');
+
+        $this->assertArrayNotHasKey('status', $response->json('data.0'));
+        $this->assertArrayNotHasKey('deleted_at', $response->json('data.0'));
+        $this->assertArrayNotHasKey('name_ar', $response->json('data.0'));
+    }
+
+    public function test_public_list_includes_flat_hierarchy_metadata_and_effective_direct_child_counts(): void
+    {
+        $root = $this->createCategory([
+            'slug' => 'tree-root', 'name_ar' => 'Ø§Ù„Ø¬Ø°Ø±', 'name_en' => 'Root', 'sort_order' => 1,
+        ]);
+        $child = $this->createCategory([
+            'slug' => 'tree-child', 'parent_id' => $root->id, 'name_ar' => 'Ø§Ù„ÙØ±Ø¹', 'name_en' => 'Child',
+        ]);
+        $grandchild = $this->createCategory(['slug' => 'tree-grandchild', 'parent_id' => $child->id]);
+        $inactiveChild = $this->createCategory([
+            'slug' => 'tree-inactive-child', 'parent_id' => $root->id, 'status' => 'inactive',
+        ]);
+        $hiddenBelowInactive = $this->createCategory([
+            'slug' => 'tree-hidden-grandchild', 'parent_id' => $inactiveChild->id,
+        ]);
+
+        $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/categories')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $root->id)
+            ->assertJsonPath('data.0.name', 'Root')
+            ->assertJsonPath('data.0.parent', null)
+            ->assertJsonPath('data.0.depth', 1)
+            ->assertJsonPath('data.0.hasChildren', true)
+            ->assertJsonPath('data.0.childrenCount', 1)
+            ->assertJsonPath('data.1.id', $child->id)
+            ->assertJsonPath('data.1.parent.id', $root->id)
+            ->assertJsonPath('data.1.parent.name', 'Root')
+            ->assertJsonPath('data.1.depth', 2)
+            ->assertJsonPath('data.2.id', $grandchild->id)
+            ->assertJsonPath('data.2.depth', 3)
+            ->assertJsonMissing(['slug' => $inactiveChild->slug])
+            ->assertJsonMissing(['slug' => $hiddenBelowInactive->slug]);
+
+        $this->withHeader('Accept-Language', 'ar')->getJson('/api/v1/categories')
+            ->assertOk()->assertJsonPath('data.1.parent.name', 'Ø§Ù„Ø¬Ø°Ø±');
+    }
+
+    public function test_public_detail_includes_ordered_breadcrumbs_and_one_level_of_visible_children(): void
+    {
+        $root = $this->createCategory(['slug' => 'detail-tree-root', 'sort_order' => 3]);
+        $category = $this->createCategory(['slug' => 'detail-tree-current', 'parent_id' => $root->id]);
+        $child = $this->createCategory(['slug' => 'detail-tree-child', 'parent_id' => $category->id, 'sort_order' => 2]);
+        $visibleGrandchild = $this->createCategory(['slug' => 'detail-tree-grandchild', 'parent_id' => $child->id]);
+        $hiddenChild = $this->createCategory([
+            'slug' => 'detail-tree-hidden', 'parent_id' => $category->id, 'status' => 'inactive',
+        ]);
+
+        $this->getJson('/api/v1/categories/'.$category->slug)
+            ->assertOk()
+            ->assertJsonPath('data.depth', 2)
+            ->assertJsonPath('data.parent.id', $root->id)
+            ->assertJsonPath('data.breadcrumbs.0.id', $root->id)
+            ->assertJsonPath('data.breadcrumbs.1.id', $category->id)
+            ->assertJsonPath('data.children.0.id', $child->id)
+            ->assertJsonPath('data.children.0.depth', 3)
+            ->assertJsonPath('data.children.0.hasChildren', true)
+            ->assertJsonPath('data.children.0.childrenCount', 1)
+            ->assertJsonMissing(['slug' => $hiddenChild->slug])
+            ->assertJsonMissingPath('data.children.0.children')
+            ->assertJsonMissing(['slug' => $visibleGrandchild->slug]);
+
+        $this->getJson('/api/v1/categories/'.$root->slug)
+            ->assertOk()->assertJsonCount(1, 'data.breadcrumbs')
+            ->assertJsonPath('data.breadcrumbs.0.id', $root->id);
+    }
+
+    public function test_public_hierarchy_metadata_and_grandchild_details_ignore_sort_order(): void
+    {
+        $root = $this->createCategory(['slug' => 'unordered-public-root', 'sort_order' => 2]);
+        $child = $this->createCategory([
+            'slug' => 'unordered-public-child', 'parent_id' => $root->id, 'sort_order' => 3,
+        ]);
+        $grandchild = $this->createCategory([
+            'slug' => 'unordered-public-grandchild', 'parent_id' => $child->id, 'sort_order' => 1,
+        ]);
+
+        $response = $this->getJson('/api/v1/categories')->assertOk();
+        $items = collect($response->json('data'))->keyBy('slug');
+
+        $this->assertSame(1, $items[$root->slug]['childrenCount']);
+        $this->assertTrue($items[$root->slug]['hasChildren']);
+        $this->assertSame(1, $items[$root->slug]['depth']);
+        $this->assertSame(1, $items[$child->slug]['childrenCount']);
+        $this->assertTrue($items[$child->slug]['hasChildren']);
+        $this->assertSame(2, $items[$child->slug]['depth']);
+        $this->assertSame(0, $items[$grandchild->slug]['childrenCount']);
+        $this->assertFalse($items[$grandchild->slug]['hasChildren']);
+        $this->assertSame(3, $items[$grandchild->slug]['depth']);
+
+        $this->getJson('/api/v1/categories/'.$grandchild->slug)
+            ->assertOk()
+            ->assertJsonPath('data.id', $grandchild->id)
+            ->assertJsonPath('data.breadcrumbs.0.id', $root->id)
+            ->assertJsonPath('data.breadcrumbs.1.id', $child->id)
+            ->assertJsonPath('data.breadcrumbs.2.id', $grandchild->id);
+    }
+
+    public function test_public_category_cycles_are_not_exposed_or_followed_indefinitely(): void
+    {
+        $first = $this->createCategory(['slug' => 'cyclic-first']);
+        $second = $this->createCategory(['slug' => 'cyclic-second', 'parent_id' => $first->id]);
+        DB::table('categories')->where('id', $first->id)->update(['parent_id' => $second->id]);
+
+        $this->getJson('/api/v1/categories')->assertOk()
+            ->assertJsonMissing(['slug' => $first->slug])->assertJsonMissing(['slug' => $second->slug]);
+        $this->getJson('/api/v1/categories/'.$first->slug)->assertNotFound();
     }
 
     public function test_category_localization_and_fallback_are_applied(): void
@@ -79,7 +191,7 @@ class CategoryApiTest extends TestCase
 
         $this->getJson('/api/v1/categories/'.$active->slug)
             ->assertOk()
-            ->assertJsonMissingPath('data.children')
+            ->assertJsonPath('data.children', [])
             ->assertJsonMissingPath('data.products');
 
         $this->getJson('/api/v1/categories/missing-category')->assertNotFound();
@@ -364,7 +476,7 @@ class CategoryApiTest extends TestCase
 
         $this->getJson('/api/v1/categories')->assertOk();
 
-        $this->assertCount(2, $categoryQueries);
+        $this->assertCount(1, $categoryQueries);
     }
 
     public function test_featured_products_and_search_apply_active_category_visibility(): void
