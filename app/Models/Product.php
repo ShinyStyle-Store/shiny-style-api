@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -112,16 +113,18 @@ class Product extends Model
     }
 
     #[Scope]
-    protected function visible(Builder $query): void
+    protected function visible(Builder $query, ?array $visibleCategoryIds = null): void
     {
+        $visibleCategoryIds ??= app(CategoryHierarchyService::class)->effectiveVisibleIds();
+
         $query
             ->active()
             ->published()
             ->whereHas('sellableItems', function (Builder $query): void {
                 $query->active();
             })
-            ->whereHas('categories', function (Builder $query): void {
-                $query->active();
+            ->whereHas('categories', function (Builder $query) use ($visibleCategoryIds): void {
+                $query->whereIn('categories.id', $visibleCategoryIds);
             });
     }
 }

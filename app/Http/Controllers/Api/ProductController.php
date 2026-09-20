@@ -5,15 +5,18 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ProductDetailResource;
 use App\Http\Resources\ProductListResource;
+use App\Models\Category;
 use App\Models\Product;
+use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, CategoryHierarchyService $hierarchy)
     {
         $validated = $request->validate([
             'q' => ['nullable', 'string', 'max:100'],
@@ -22,18 +25,33 @@ class ProductController extends Controller
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $query = Product::query()->visible();
+        $visibility = $hierarchy->visibilitySnapshot();
+        $visibleCategoryIds = $visibility->visibleIds();
+        $query = Product::query()->visible($visibleCategoryIds);
         $this->applySearch($query, $this->searchWords($validated['q'] ?? null));
         $category = trim($validated['category'] ?? '');
 
         if ($category !== '') {
-            $query->whereHas('categories', function (Builder $query) use ($category): void {
-                $query->active()->where('slug', $category);
-            });
+            $requestedCategory = Category::query()
+                ->whereIn('id', $visibleCategoryIds)
+                ->where('slug', $category)
+                ->first();
+
+            if ($requestedCategory === null) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $matchingCategoryIds = $visibility->visibleSubtreeIds($requestedCategory->getKey());
+                $matchingProductIds = DB::table('category_product')
+                    ->select('product_id')
+                    ->whereIn('category_id', $matchingCategoryIds)
+                    ->distinct();
+
+                $query->distinct()->whereIn('products.id', $matchingProductIds);
+            }
         }
 
         $products = $query
-            ->with($this->listingRelations())
+            ->with($this->listingRelations($visibleCategoryIds))
             ->orderByDesc('published_at')
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 24)
@@ -82,12 +100,13 @@ class ProductController extends Controller
         }
     }
 
-    public function featured()
+    public function featured(CategoryHierarchyService $hierarchy)
     {
+        $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
         $products = Product::query()
-            ->visible()
+            ->visible($visibleCategoryIds)
             ->featured()
-            ->with($this->listingRelations())
+            ->with($this->listingRelations($visibleCategoryIds))
             ->orderByDesc('published_at')
             ->orderByDesc('id')
             ->limit(8)
@@ -96,13 +115,14 @@ class ProductController extends Controller
         return ProductListResource::collection($products);
     }
 
-    public function show(string $slug)
+    public function show(string $slug, CategoryHierarchyService $hierarchy)
     {
+        $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
         $product = Product::query()
-            ->visible()
+            ->visible($visibleCategoryIds)
             ->where('slug', $slug)
             ->with([
-                ...$this->listingRelations(),
+                ...$this->listingRelations($visibleCategoryIds),
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
                 'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
@@ -114,10 +134,10 @@ class ProductController extends Controller
         return new ProductDetailResource($product);
     }
 
-    private function listingRelations(): array
+    private function listingRelations(array $visibleCategoryIds): array
     {
         return [
-            'categories' => fn ($query) => $query->active()->ordered(),
+            'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
             'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
             'media' => fn ($query) => $this->publicMediaQuery($query)->images()->ordered(),
         ];
