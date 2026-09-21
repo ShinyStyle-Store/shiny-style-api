@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
+use App\Enums\MediaRole;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class SellableItem extends Model
@@ -51,6 +54,42 @@ class SellableItem extends Model
     public function media(): HasMany
     {
         return $this->hasMany(ProductMedia::class);
+    }
+
+    public function mediaAttachments(): MorphMany
+    {
+        return $this->morphMany(MediaAttachment::class, 'mediable')
+            ->where(function (Builder $query): void {
+                $query->where(function (Builder $images): void {
+                    $images->where('role', MediaRole::VARIANT_IMAGE)
+                        ->whereHas('mediaAsset', fn (Builder $asset) => $asset->where('media_type', 'image'));
+                })->orWhere(function (Builder $videos): void {
+                    $videos->where('role', MediaRole::VARIANT_VIDEO)
+                        ->whereHas('mediaAsset', fn (Builder $asset) => $asset->where('media_type', 'video'));
+                });
+            });
+    }
+
+    public function variantImages(): MorphMany
+    {
+        return $this->mediaAttachments()->where('role', MediaRole::VARIANT_IMAGE)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'image'))
+            ->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function primaryVariantImage(): MorphOne
+    {
+        return $this->morphOne(MediaAttachment::class, 'mediable')
+            ->where('role', MediaRole::VARIANT_IMAGE)->where('is_primary', true)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'image'))
+            ->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function variantVideos(): MorphMany
+    {
+        return $this->mediaAttachments()->where('role', MediaRole::VARIANT_VIDEO)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'video'))
+            ->orderBy('sort_order')->orderBy('id');
     }
 
     public function orderItems(): HasMany

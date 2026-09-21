@@ -22,4 +22,18 @@ return [
             'image/webp' => 'webp',
         ],
     ],
+
+    'videos' => [
+        'max_video_size_bytes' => 100 * 1024 * 1024,
+        'mime_types' => [
+            'video/mp4',
+            'video/quicktime',
+            'video/webm',
+        ],
+        'mime_extensions' => [
+            'video/mp4' => 'mp4',
+            'video/quicktime' => 'mov',
+            'video/webm' => 'webm',
+        ],
+    ],
 ];

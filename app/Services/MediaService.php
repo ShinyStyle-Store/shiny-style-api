@@ -21,10 +21,60 @@ class MediaService
     /** Store a validated image upload and create its reusable asset record. */
     public function uploadImage(UploadedFile $file, ?User $createdBy = null): MediaAsset
     {
-        $image = $this->inspectImage($file);
+        return $this->storeUpload($file, $this->inspectImage($file), $createdBy);
+    }
+
+    /** Store a validated video upload and create its reusable asset record. */
+    public function uploadVideo(UploadedFile $file, ?User $createdBy = null): MediaAsset
+    {
+        return $this->storeUpload($file, $this->inspectVideo($file), $createdBy);
+    }
+
+    /** Validate a video upload before a caller begins its database transaction. */
+    public function validateVideo(UploadedFile $file, string $errorField = 'file'): void
+    {
+        $this->inspectVideo($file, $errorField);
+    }
+
+    /** Validate owner and role before storing, then clean up if attachment creation fails. */
+    public function uploadAndAttach(
+        UploadedFile $file,
+        Model $entity,
+        string $role,
+        array $attributes = [],
+        ?User $createdBy = null,
+    ): MediaAttachment {
+        $this->assertOwnerRole($entity, $role);
+        $metadata = match (MediaRole::mediaType($role)) {
+            'image' => $this->inspectImage($file),
+            'video' => $this->inspectVideo($file),
+            default => throw new \InvalidArgumentException('The media role is not supported.'),
+        };
+
+        if ($metadata['media_type'] !== MediaRole::mediaType($role)) {
+            throw new \InvalidArgumentException('The media asset type does not match the attachment role.');
+        }
+
+        $asset = $this->storeUpload($file, $metadata, $createdBy);
+        try {
+            return $this->attach($asset, $entity, $role, $attributes);
+        } catch (Throwable $exception) {
+            try {
+                $this->deleteOrphanedAsset($asset);
+            } catch (Throwable) {
+                // Preserve the original attachment error; cleanup is retried by orphan maintenance.
+            }
+
+            throw $exception;
+        }
+    }
+
+    /** @param array{media_type: string, mime_type: string, extension: string, size_bytes: int, width: ?int, height: ?int, duration_seconds: null, checksum: ?string} $metadata */
+    private function storeUpload(UploadedFile $file, array $metadata, ?User $createdBy): MediaAsset
+    {
         $disk = (string) config('media.disk');
-        $directory = 'media/images/'.now()->format('Y/m');
-        $filename = Str::ulid().'.'.$image['extension'];
+        $directory = 'media/'.($metadata['media_type'] === 'image' ? 'images' : 'videos').'/'.now()->format('Y/m');
+        $filename = Str::ulid().'.'.$metadata['extension'];
         $expectedPath = $directory.'/'.$filename;
 
         try {
@@ -46,13 +96,14 @@ class MediaService
                 'disk' => $disk,
                 'path' => $path,
                 'original_name' => substr($file->getClientOriginalName(), 0, 255),
-                'media_type' => $image['media_type'],
-                'mime_type' => $image['mime_type'],
-                'extension' => $image['extension'],
-                'size_bytes' => $image['size_bytes'],
-                'width' => $image['width'],
-                'height' => $image['height'],
-                'checksum' => $image['checksum'],
+                'media_type' => $metadata['media_type'],
+                'mime_type' => $metadata['mime_type'],
+                'extension' => $metadata['extension'],
+                'size_bytes' => $metadata['size_bytes'],
+                'width' => $metadata['width'],
+                'height' => $metadata['height'],
+                'duration_seconds' => $metadata['duration_seconds'],
+                'checksum' => $metadata['checksum'],
                 'created_by' => $createdBy?->getKey(),
             ]));
         } catch (Throwable) {
@@ -75,12 +126,9 @@ class MediaService
         string $role,
         array $attributes = [],
     ): MediaAttachment {
-        if (! in_array($role, MediaRole::values(), true)) {
-            throw new \InvalidArgumentException('The media role is not supported.');
-        }
-
-        if (! $entity->exists || ! in_array($entity::class, Relation::morphMap(), true)) {
-            throw new \InvalidArgumentException('The media entity type is not supported.');
+        $this->assertOwnerRole($entity, $role);
+        if ($asset->media_type !== MediaRole::mediaType($role)) {
+            throw new \InvalidArgumentException('The media asset type does not match the attachment role.');
         }
 
         $allowedAttributes = [
@@ -96,11 +144,38 @@ class MediaService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            if (($attributes['is_primary'] ?? false)
+                && in_array($role, [
+                    MediaRole::PRODUCT_IMAGE,
+                    MediaRole::PRODUCT_VIDEO,
+                    MediaRole::VARIANT_IMAGE,
+                    MediaRole::VARIANT_VIDEO,
+                ], true)
+                && $entity->mediaAttachments()->where('role', $role)->where('is_primary', true)->exists()) {
+                throw new \InvalidArgumentException('This owner already has a primary attachment for the role.');
+            }
+
             return $entity->mediaAttachments()->create(array_merge($attributes, [
                 'media_asset_id' => $lockedAsset->getKey(),
                 'role' => $role,
             ]));
         });
+    }
+
+    private function assertOwnerRole(Model $entity, string $role): void
+    {
+        if (! in_array($role, MediaRole::values(), true)) {
+            throw new \InvalidArgumentException('The media role is not supported.');
+        }
+        if (! in_array($entity::class, Relation::morphMap(), true)) {
+            throw new \InvalidArgumentException('The media entity type is not supported.');
+        }
+        if (! $entity->exists || $entity->trashed()) {
+            throw new \InvalidArgumentException('The media entity type is not supported.');
+        }
+        if (! MediaRole::supports($entity::class, $role)) {
+            throw new \InvalidArgumentException('The media role is not supported for this owner type.');
+        }
     }
 
     /** Hard-delete the attachment row, then remove its asset only if no references remain. */
@@ -190,7 +265,7 @@ class MediaService
         });
     }
 
-    /** @return array{media_type: string, mime_type: string, extension: string, size_bytes: int, width: int, height: int, checksum: ?string} */
+    /** @return array{media_type: string, mime_type: string, extension: string, size_bytes: int, width: int, height: int, duration_seconds: null, checksum: ?string} */
     private function inspectImage(UploadedFile $file, string $errorField = 'file'): array
     {
         if (! $file->isValid()) {
@@ -210,15 +285,13 @@ class MediaService
         };
         $mimeExtensions = (array) config('media.images.mime_extensions', []);
         $extension = is_string($mimeType) ? ($mimeExtensions[$mimeType] ?? null) : null;
-        $clientExtension = strtolower($file->getClientOriginalExtension());
         $allowedMimeTypes = (array) config('media.images.mime_types', []);
         $allowedExtensions = (array) config('media.images.extensions', []);
 
         if (! is_string($extension)
             || $mediaType !== 'image'
             || ! in_array($mimeType, $allowedMimeTypes, true)
-            || ! in_array($extension, $allowedExtensions, true)
-            || ! in_array($clientExtension, $allowedExtensions, true)) {
+            || ! in_array($extension, $allowedExtensions, true)) {
             $this->invalidImage('The uploaded image type is not supported.', $errorField);
         }
 
@@ -240,11 +313,50 @@ class MediaService
             'size_bytes' => $size,
             'width' => (int) $image[0],
             'height' => (int) $image[1],
+            'duration_seconds' => null,
+            'checksum' => is_string($checksum) ? $checksum : null,
+        ];
+    }
+
+    /** @return array{media_type: string, mime_type: string, extension: string, size_bytes: int, width: null, height: null, duration_seconds: null, checksum: ?string} */
+    private function inspectVideo(UploadedFile $file, string $errorField = 'file'): array
+    {
+        if (! $file->isValid()) {
+            $this->invalidVideo('The uploaded file is invalid.', $errorField);
+        }
+
+        $size = $file->getSize();
+        if (! is_int($size) || $size < 1 || $size > (int) config('media.videos.max_video_size_bytes')) {
+            $this->invalidVideo('The video exceeds the allowed file size.', $errorField);
+        }
+
+        $mimeType = (new \finfo(FILEINFO_MIME_TYPE))->file($file->getRealPath());
+        $extensions = (array) config('media.videos.mime_extensions', []);
+        $extension = is_string($mimeType) ? ($extensions[$mimeType] ?? null) : null;
+        if (! is_string($extension) || ! in_array($mimeType, (array) config('media.videos.mime_types', []), true)) {
+            $this->invalidVideo('The uploaded video type is not supported.', $errorField);
+        }
+
+        $checksum = hash_file('sha256', $file->getRealPath());
+
+        return [
+            'media_type' => 'video',
+            'mime_type' => $mimeType,
+            'extension' => $extension,
+            'size_bytes' => $size,
+            'width' => null,
+            'height' => null,
+            'duration_seconds' => null,
             'checksum' => is_string($checksum) ? $checksum : null,
         ];
     }
 
     private function invalidImage(string $message, string $field = 'file'): never
+    {
+        throw ValidationException::withMessages([$field => $message]);
+    }
+
+    private function invalidVideo(string $message, string $field = 'file'): never
     {
         throw ValidationException::withMessages([$field => $message]);
     }
