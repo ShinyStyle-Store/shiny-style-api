@@ -20,15 +20,18 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Mockery;
 use RuntimeException;
+use Tests\Concerns\RecreatesLegacyProductMediaTable;
 use Tests\TestCase;
 
 class ProductMediaMigrationTest extends TestCase
 {
+    use RecreatesLegacyProductMediaTable;
     use RefreshDatabase;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->recreateLegacyProductMediaTable();
 
         config(['media.disk' => 'migration-test']);
         config(['media.legacy_migration.cloudinary_hosts' => ['res.cloudinary.com']]);

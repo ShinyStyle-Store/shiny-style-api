@@ -51,11 +51,6 @@ class SellableItem extends Model
         return $this->belongsToMany(ProductOptionValue::class, 'sellable_item_option_values');
     }
 
-    public function media(): HasMany
-    {
-        return $this->hasMany(ProductMedia::class);
-    }
-
     public function mediaAttachments(): MorphMany
     {
         return $this->morphMany(MediaAttachment::class, 'mediable')

@@ -13,15 +13,18 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Tests\Concerns\RecreatesLegacyProductMediaTable;
 use Tests\TestCase;
 
 class ProductUnifiedMediaApiTest extends TestCase
 {
+    use RecreatesLegacyProductMediaTable;
     use RefreshDatabase;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->recreateLegacyProductMediaTable();
 
         Storage::fake('product-media-test');
         config(['media.disk' => 'product-media-test']);

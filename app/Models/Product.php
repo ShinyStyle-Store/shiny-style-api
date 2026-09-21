@@ -60,11 +60,6 @@ class Product extends Model
         return $this->hasMany(SellableItem::class);
     }
 
-    public function media(): HasMany
-    {
-        return $this->hasMany(ProductMedia::class);
-    }
-
     public function mediaAttachments(): MorphMany
     {
         return $this->morphMany(MediaAttachment::class, 'mediable')

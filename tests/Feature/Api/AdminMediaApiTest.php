@@ -16,10 +16,12 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Tests\Concerns\RecreatesLegacyProductMediaTable;
 use Tests\TestCase;
 
 class AdminMediaApiTest extends TestCase
 {
+    use RecreatesLegacyProductMediaTable;
     use RefreshDatabase;
 
     private string $adminToken;
@@ -27,6 +29,7 @@ class AdminMediaApiTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->recreateLegacyProductMediaTable();
         config(['media.disk' => 'media-test']);
         Storage::fake('media-test');
 
