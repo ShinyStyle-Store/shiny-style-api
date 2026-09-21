@@ -79,10 +79,10 @@ class MediaService
 
         try {
             $path = Storage::disk($disk)->putFileAs($directory, $file, $filename);
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             $this->deleteStoredFileQuietly($disk, $expectedPath);
 
-            throw new MediaOperationException('The media file could not be stored.');
+            throw new MediaOperationException('The media file could not be stored.', previous: $exception);
         }
 
         if (! is_string($path) || $path === '') {
@@ -106,10 +106,10 @@ class MediaService
                 'checksum' => $metadata['checksum'],
                 'created_by' => $createdBy?->getKey(),
             ]));
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             $this->deleteStoredFileQuietly($disk, $path);
 
-            throw new MediaOperationException('The media asset could not be recorded.');
+            throw new MediaOperationException('The media asset could not be recorded.', previous: $exception);
         }
     }
 

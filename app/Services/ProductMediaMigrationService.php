@@ -9,14 +9,17 @@ use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\ProductMedia;
 use App\Models\SellableItem;
+use GuzzleHttp\Exception\InvalidArgumentException as GuzzleInvalidArgumentException;
+use GuzzleHttp\Handler\CurlHandler;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
-use LengthException;
 use RuntimeException;
 use Throwable;
 
@@ -153,6 +156,7 @@ final class ProductMediaMigrationService
             ? (int) config('media.images.max_image_size_bytes')
             : (int) config('media.videos.max_video_size_bytes');
         $tempPath = null;
+        $upload = null;
         $newAsset = null;
 
         try {
@@ -194,7 +198,7 @@ final class ProductMediaMigrationService
                 }
             }
 
-            $reason = $this->safeFailureReason($exception);
+            $reason = $this->safeFailureReason($exception, $record, $upload);
             $this->saveFailure($record, $reason);
 
             return ['status' => 'failed', 'reason' => $reason];
@@ -435,7 +439,7 @@ final class ProductMediaMigrationService
         $validatedUrl = $this->urlPolicy->validate((string) $record->secure_url);
         $tempPath = tempnam(sys_get_temp_dir(), 'legacy-media-');
         if (! is_string($tempPath)) {
-            throw new RuntimeException('temporary download file could not be created');
+            throw new ProductMediaMigrationFailure('temporary file could not be processed');
         }
 
         try {
@@ -450,22 +454,34 @@ final class ProductMediaMigrationService
                 'on_headers' => static function ($response) use ($maxBytes): void {
                     $length = $response->getHeaderLine('Content-Length');
                     if ($length !== '' && ctype_digit($length) && (int) $length > $maxBytes) {
-                        throw new LengthException('download exceeds configured size limit');
+                        throw new ProductMediaMigrationFailure('downloaded file exceeds configured limit');
                     }
                 },
             ];
-            if (! defined('CURLOPT_RESOLVE')) {
-                throw new RuntimeException('secure DNS pinning is unavailable');
-            }
             $address = $validatedUrl['addresses'][0];
-            $resolvedAddress = str_contains($address, ':') ? '['.$address.']' : $address;
-            $options['curl'] = [constant('CURLOPT_RESOLVE') => [
-                $validatedUrl['host'].':443:'.$resolvedAddress,
-            ]];
+            try {
+                $options['curl'] = app(LegacyCloudinaryCurlPin::class)
+                    ->options($validatedUrl['host'], $address);
+            } catch (InvalidArgumentException) {
+                throw new ProductMediaMigrationFailure('secure DNS pinning unavailable');
+            }
 
-            $response = Http::withHeaders(['Accept-Encoding' => 'identity'])
-                ->withOptions($options)
-                ->get((string) $record->secure_url);
+            $request = Http::withHeaders(['Accept-Encoding' => 'identity']);
+            if (! app()->environment('testing')) {
+                if (! function_exists('curl_init')) {
+                    throw new ProductMediaMigrationFailure('secure DNS pinning unavailable');
+                }
+
+                // Guzzle otherwise selects StreamHandler when ext-curl is unavailable;
+                // that handler rejects CURLOPT_RESOLVE instead of applying the DNS pin.
+                $request->setHandler(new CurlHandler);
+            }
+
+            try {
+                $response = $request->withOptions($options)->get((string) $record->secure_url);
+            } catch (GuzzleInvalidArgumentException) {
+                throw new ProductMediaMigrationFailure('secure HTTP request configuration invalid');
+            }
 
             if ($response->status() >= 300 && $response->status() < 400) {
                 throw new ProductMediaMigrationFailure('redirect rejected');
@@ -477,7 +493,7 @@ final class ProductMediaMigrationService
             $body = $response->toPsrResponse()->getBody();
             $output = fopen($tempPath, 'wb');
             if (! is_resource($output)) {
-                throw new RuntimeException('temporary download file could not be opened');
+                throw new ProductMediaMigrationFailure('temporary file could not be processed');
             }
             try {
                 $downloadedBytes = 0;
@@ -493,10 +509,10 @@ final class ProductMediaMigrationService
 
                     $downloadedBytes += strlen($chunk);
                     if ($downloadedBytes > $maxBytes) {
-                        throw new LengthException('download exceeds configured size limit');
+                        throw new ProductMediaMigrationFailure('downloaded file exceeds configured limit');
                     }
                     if (fwrite($output, $chunk) !== strlen($chunk)) {
-                        throw new RuntimeException('temporary download file could not be written');
+                        throw new ProductMediaMigrationFailure('temporary file could not be processed');
                     }
                 }
             } finally {
@@ -504,8 +520,14 @@ final class ProductMediaMigrationService
             }
 
             $size = filesize($tempPath);
-            if (! is_int($size) || $size < 1 || $size > $maxBytes) {
-                throw new LengthException('download is empty or exceeds configured size limit');
+            if (! is_int($size)) {
+                throw new ProductMediaMigrationFailure('temporary file could not be processed');
+            }
+            if ($size === 0) {
+                throw new ProductMediaMigrationFailure('downloaded file is empty');
+            }
+            if ($size > $maxBytes) {
+                throw new ProductMediaMigrationFailure('downloaded file exceeds configured limit');
             }
 
             $upload = new UploadedFile(
@@ -523,15 +545,132 @@ final class ProductMediaMigrationService
         }
     }
 
-    private function safeFailureReason(Throwable $exception): string
+    private function safeFailureReason(
+        Throwable $exception,
+        ProductMedia $record,
+        ?UploadedFile $upload,
+    ): string {
+        $this->logLocalFailureDiagnostics($exception, $record, $upload);
+
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof ProductMediaMigrationFailure) {
+                return $current->safeReason;
+            }
+            if ($current instanceof ConnectionException) {
+                return 'timed out or failed';
+            }
+            if ($current instanceof GuzzleInvalidArgumentException) {
+                return 'secure HTTP request configuration invalid';
+            }
+            if ($current instanceof ValidationException) {
+                return $this->safeValidationFailureReason($current, $record, $upload);
+            }
+            if ($current instanceof InvalidArgumentException) {
+                return 'media migration validation failed';
+            }
+        }
+
+        return 'media migration failed validation or storage';
+    }
+
+    private function logLocalFailureDiagnostics(
+        Throwable $exception,
+        ProductMedia $record,
+        ?UploadedFile $upload,
+    ): void {
+        if (! app()->environment(['local', 'testing'])) {
+            return;
+        }
+
+        try {
+            $exceptionClasses = [];
+            $validationFields = [];
+            $failedRules = [];
+            for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+                $exceptionClasses[] = $current::class;
+                if (! $current instanceof ValidationException) {
+                    continue;
+                }
+
+                $validationFields = array_keys($current->errors());
+                foreach ($current->validator->failed() as $field => $rules) {
+                    foreach (array_keys($rules) as $rule) {
+                        $failedRules[] = $field.':'.$rule;
+                    }
+                }
+            }
+
+            $fileSize = $upload?->getSize();
+            Log::debug('Legacy ProductMedia migration validation diagnostic.', [
+                'exception_classes' => $exceptionClasses,
+                'validation_fields' => $validationFields,
+                'failed_rules' => $failedRules,
+                'detected_mime' => $this->downloadedMimeType($upload),
+                'expected_media_kind' => $record->type,
+                'file_size_bytes' => is_int($fileSize) ? $fileSize : null,
+            ]);
+        } catch (Throwable) {
+            // Diagnostics must not change migration outcomes.
+        }
+    }
+
+    private function safeValidationFailureReason(
+        ValidationException $exception,
+        ProductMedia $record,
+        ?UploadedFile $upload,
+    ): string {
+        $messages = array_merge(...array_values($exception->errors()));
+
+        if (in_array('The image exceeds the allowed file size.', $messages, true)
+            || in_array('The video exceeds the allowed file size.', $messages, true)) {
+            return 'downloaded file exceeds configured limit';
+        }
+
+        if (in_array('The uploaded file is not a supported image.', $messages, true)) {
+            return 'downloaded image is not decodable';
+        }
+
+        if (in_array('The uploaded file is invalid.', $messages, true)) {
+            return 'temporary file could not be processed';
+        }
+
+        if (in_array('The uploaded image type is not supported.', $messages, true)
+            || in_array('The uploaded video type is not supported.', $messages, true)) {
+            $mimeType = $this->downloadedMimeType($upload);
+            $downloadedType = match (true) {
+                is_string($mimeType) && str_starts_with($mimeType, 'image/') => 'image',
+                is_string($mimeType) && str_starts_with($mimeType, 'video/') => 'video',
+                default => null,
+            };
+
+            if ($downloadedType !== null && $downloadedType !== $record->type) {
+                return 'downloaded MIME does not match legacy media type';
+            }
+
+            if ($mimeType === null) {
+                return 'temporary file could not be processed';
+            }
+
+            return 'unsupported downloaded MIME type';
+        }
+
+        return 'media migration validation failed';
+    }
+
+    private function downloadedMimeType(?UploadedFile $upload): ?string
     {
-        return match (true) {
-            $exception instanceof ProductMediaMigrationFailure => $exception->safeReason,
-            $exception instanceof LengthException => 'download exceeds configured size limit',
-            $exception instanceof ConnectionException => 'timed out or failed',
-            $exception instanceof InvalidArgumentException => 'media migration validation failed',
-            default => 'media migration failed validation or storage',
-        };
+        $path = $upload?->getRealPath();
+        if (! is_string($path) || ! is_file($path)) {
+            return null;
+        }
+
+        try {
+            $mimeType = (new \finfo(FILEINFO_MIME_TYPE))->file($path);
+
+            return is_string($mimeType) ? $mimeType : null;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function sourceHash(ProductMedia $record): string

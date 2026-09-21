@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Enums\MediaRole;
+use App\Exceptions\MediaOperationException;
 use App\Models\MediaAsset;
 use App\Models\Product;
 use App\Models\ProductMedia;
@@ -16,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use Mockery;
 use RuntimeException;
 use Tests\TestCase;
@@ -318,24 +320,97 @@ class ProductMediaMigrationTest extends TestCase
 
     public function test_fake_image_bytes_are_rejected_without_creating_assets(): void
     {
-        $product = $this->product();
-        $this->legacy($product);
-        Http::fake(['*' => Http::response('not an image', 200)]);
-        [$fakeExit] = $this->runMigration();
+        $legacy = $this->legacy($this->product(), null, [
+            'secure_url' => 'https://res.cloudinary.com/demo/fake.png?credential=source-secret',
+        ]);
+        Http::fake(['*' => Http::response('sensitive-response-body', 200)]);
+        [$fakeExit, $output] = $this->runMigration();
+
         $this->assertSame(1, $fakeExit);
+        $this->assertStringContainsString('unsupported downloaded MIME type', $output);
+        $this->assertStringNotContainsString('source-secret', $output);
+        $this->assertStringNotContainsString('sensitive-response-body', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $legacy->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'unsupported downloaded MIME type',
+        ]);
         $this->assertSame(0, DB::table('media_assets')->count());
         $this->assertSame([], Storage::disk('migration-test')->allFiles());
     }
 
     public function test_legacy_type_must_match_inspected_downloaded_mime(): void
     {
-        $this->legacy($this->product(), null, ['type' => 'image']);
+        Log::spy();
+        $legacy = $this->legacy($this->product(), null, [
+            'type' => 'image',
+            'secure_url' => 'https://res.cloudinary.com/demo/photo.png?credential=mime-secret',
+        ]);
         $this->fakeVideo();
 
         [$exit, $output] = $this->runMigration();
 
         $this->assertSame(1, $exit);
-        $this->assertStringContainsString('validation or storage', $output);
+        $this->assertStringContainsString('downloaded MIME does not match legacy media type', $output);
+        $this->assertStringNotContainsString('mime-secret', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $legacy->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'downloaded MIME does not match legacy media type',
+        ]);
+        Log::shouldHaveReceived('debug')->once()->with(
+            'Legacy ProductMedia migration validation diagnostic.',
+            Mockery::on(function (array $diagnostic): bool {
+                $serialized = json_encode($diagnostic);
+
+                return $diagnostic['exception_classes'] === [ValidationException::class]
+                    && $diagnostic['validation_fields'] === ['file']
+                    && $diagnostic['failed_rules'] === []
+                    && $diagnostic['detected_mime'] === 'video/mp4'
+                    && $diagnostic['expected_media_kind'] === 'image'
+                    && $diagnostic['file_size_bytes'] === strlen($this->videoBytes())
+                    && ! str_contains((string) $serialized, 'mime-secret')
+                    && ! str_contains((string) $serialized, 'https://')
+                    && ! str_contains((string) $serialized, sys_get_temp_dir());
+            }),
+        );
+        $this->assertSame(0, DB::table('media_assets')->count());
+        $this->assertSame(0, DB::table('media_attachments')->count());
+        $this->assertSame([], Storage::disk('migration-test')->allFiles());
+    }
+
+    public function test_nested_media_validation_exception_is_classified_and_cleaned_up(): void
+    {
+        Log::spy();
+        $legacy = $this->legacy($this->product(), null, [
+            'secure_url' => 'https://res.cloudinary.com/demo/nested.png?credential=nested-secret',
+        ]);
+        $this->fakePng();
+        MediaAsset::creating(static function (MediaAsset $asset): void {
+            throw ValidationException::withMessages(['file' => 'The uploaded file is invalid.']);
+        });
+
+        [$exit, $output] = $this->runMigration();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('temporary file could not be processed', $output);
+        $this->assertStringNotContainsString('nested-secret', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $legacy->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'temporary file could not be processed',
+        ]);
+        Log::shouldHaveReceived('debug')->once()->with(
+            'Legacy ProductMedia migration validation diagnostic.',
+            Mockery::on(function (array $diagnostic): bool {
+                return $diagnostic['exception_classes'] === [MediaOperationException::class, ValidationException::class]
+                    && $diagnostic['validation_fields'] === ['file']
+                    && $diagnostic['failed_rules'] === []
+                    && $diagnostic['detected_mime'] === 'image/png'
+                    && $diagnostic['expected_media_kind'] === 'image'
+                    && $diagnostic['file_size_bytes'] === strlen($this->pngBytes());
+            }),
+        );
         $this->assertSame(0, DB::table('media_assets')->count());
         $this->assertSame(0, DB::table('media_attachments')->count());
         $this->assertSame([], Storage::disk('migration-test')->allFiles());
@@ -346,9 +421,61 @@ class ProductMediaMigrationTest extends TestCase
         $large = $this->legacy($this->product(), null, ['secure_url' => 'https://res.cloudinary.com/demo/large.png']);
         config(['media.images.max_image_size_bytes' => strlen($this->pngBytes()) - 1]);
         Http::fake(['*' => Http::response($this->pngBytes(), 200)]);
-        [$largeExit] = $this->runMigration();
+        [$largeExit, $output] = $this->runMigration();
         $this->assertSame(1, $largeExit);
+        $this->assertStringContainsString('downloaded file exceeds configured limit', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $large->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'downloaded file exceeds configured limit',
+        ]);
         $this->assertSame(0, DB::table('media_assets')->count());
+        $this->assertSame([], Storage::disk('migration-test')->allFiles());
+    }
+
+    public function test_empty_download_is_recorded_with_a_safe_reason(): void
+    {
+        $legacy = $this->legacy($this->product(), null, [
+            'secure_url' => 'https://res.cloudinary.com/demo/empty.png?credential=empty-secret',
+        ]);
+        Http::fake(['*' => Http::response('', 200)]);
+
+        [$exit, $output] = $this->runMigration();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('downloaded file is empty', $output);
+        $this->assertStringNotContainsString('empty-secret', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $legacy->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'downloaded file is empty',
+        ]);
+        $this->assertSame(0, DB::table('media_assets')->count());
+        $this->assertSame([], Storage::disk('migration-test')->allFiles());
+    }
+
+    public function test_undecodable_downloaded_image_has_a_safe_validation_reason(): void
+    {
+        $legacy = $this->legacy($this->product(), null, [
+            'secure_url' => 'https://res.cloudinary.com/demo/broken.png?credential=image-secret',
+        ]);
+        $truncatedJpeg = "\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00";
+        $this->assertSame('image/jpeg', (new \finfo(FILEINFO_MIME_TYPE))->buffer($truncatedJpeg));
+        $this->assertFalse(@getimagesizefromstring($truncatedJpeg));
+        Http::fake(['*' => Http::response($truncatedJpeg, 200)]);
+
+        [$exit, $output] = $this->runMigration();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('downloaded image is not decodable', $output);
+        $this->assertStringNotContainsString('image-secret', $output);
+        $this->assertDatabaseHas('legacy_product_media_migrations', [
+            'legacy_product_media_id' => $legacy->getKey(),
+            'status' => 'failed',
+            'failure_reason' => 'downloaded image is not decodable',
+        ]);
+        $this->assertSame(0, DB::table('media_assets')->count());
+        $this->assertSame(0, DB::table('media_attachments')->count());
         $this->assertSame([], Storage::disk('migration-test')->allFiles());
     }
 
