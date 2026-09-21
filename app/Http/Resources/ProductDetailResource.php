@@ -13,19 +13,26 @@ class ProductDetailResource extends ProductListResource
         $activeOptionValueIds = $sellableItems
             ->flatMap(fn ($sellableItem) => $sellableItem->optionValues->modelKeys())
             ->unique();
+        $variantImages = $sellableItems
+            ->flatMap(fn ($sellableItem) => $sellableItem->variantImages);
+        $images = $this->orderedAttachments($variantImages
+            ->concat($this->productImages)
+        );
+        $variantVideos = $sellableItems
+            ->flatMap(fn ($sellableItem) => $sellableItem->variantVideos);
+        $video = $this->orderedAttachments($variantVideos->concat($this->productVideos))->first();
 
         return [
             ...parent::toArray($request),
             'description' => $this->localizedValue($this->description_ar, $this->description_en),
             'features' => $this->localizedJsonValue($this->features),
             'specifications' => $this->localizedJsonValue($this->specifications),
-            'gallery' => $this->media
-                ->where('type', 'image')
-                ->pluck('secure_url')
+            'gallery' => $images
+                ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
+                ->filter(fn (?string $url): bool => $url !== null)
                 ->values()
                 ->all(),
-            'videoUrl' => $this->media
-                ->firstWhere('type', 'video')?->secure_url,
+            'videoUrl' => $this->mediaUrl($video),
             'options' => $this->options->map(fn ($option): array => [
                 'id' => (string) $option->getKey(),
                 'code' => $option->code,

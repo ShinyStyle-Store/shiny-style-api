@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\AdminCategoryController;
+use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\CategoryController;
@@ -58,5 +59,25 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::get('profile', [AdminProfileController::class, 'show']);
         Route::patch('profile', [AdminProfileController::class, 'update']);
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
+
+        Route::get('products/{product}/media', [AdminMediaController::class, 'productIndex'])->whereNumber('product');
+        Route::post('products/{product}/media', [AdminMediaController::class, 'productStore'])->whereNumber('product');
+        Route::patch('products/{product}/media/{attachment}', [AdminMediaController::class, 'productUpdate'])
+            ->whereNumber('product')->whereNumber('attachment');
+        Route::post('products/{product}/media/{attachment}/primary', [AdminMediaController::class, 'productPrimary'])
+            ->whereNumber('product')->whereNumber('attachment');
+        Route::delete('products/{product}/media/{attachment}', [AdminMediaController::class, 'productDestroy'])
+            ->whereNumber('product')->whereNumber('attachment');
+
+        Route::get('sellable-items/{sellableItem}/media', [AdminMediaController::class, 'sellableItemIndex'])
+            ->whereNumber('sellableItem');
+        Route::post('sellable-items/{sellableItem}/media', [AdminMediaController::class, 'sellableItemStore'])
+            ->whereNumber('sellableItem');
+        Route::patch('sellable-items/{sellableItem}/media/{attachment}', [AdminMediaController::class, 'sellableItemUpdate'])
+            ->whereNumber('sellableItem')->whereNumber('attachment');
+        Route::post('sellable-items/{sellableItem}/media/{attachment}/primary', [AdminMediaController::class, 'sellableItemPrimary'])
+            ->whereNumber('sellableItem')->whereNumber('attachment');
+        Route::delete('sellable-items/{sellableItem}/media/{attachment}', [AdminMediaController::class, 'sellableItemDestroy'])
+            ->whereNumber('sellableItem')->whereNumber('attachment');
     });
 });

@@ -6,12 +6,12 @@ use App\Enums\MediaRole;
 use App\Exceptions\MediaOperationException;
 use App\Models\Category;
 use App\Models\MediaAsset;
-use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Mockery;
@@ -40,7 +40,7 @@ class MediaServiceTest extends TestCase
         $this->assertSame('1.250', $asset->duration_seconds);
         $this->assertSame(['source' => 'test'], $asset->metadata);
         $this->assertTrue($asset->createdBy->is($creator));
-        $this->assertInstanceOf(\Illuminate\Support\Carbon::class, $asset->created_at);
+        $this->assertInstanceOf(Carbon::class, $asset->created_at);
 
         $creator->delete();
         $this->assertNull($asset->refresh()->created_by);
@@ -59,7 +59,13 @@ class MediaServiceTest extends TestCase
             'alt_ar' => 'ØºØ·Ø§Ø¡', 'sort_order' => 4, 'is_primary' => true,
         ]);
         $otherAttachment = $service->attach($asset, $otherCategory, MediaRole::CATEGORY_COVER);
-        $productAttachment = $service->attach($asset, $product, MediaRole::CATEGORY_COVER);
+        try {
+            $service->attach($asset, $product, MediaRole::CATEGORY_COVER);
+            $this->fail('A product cannot use the category cover role.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertSame('The media role is not supported for this owner type.', $exception->getMessage());
+        }
+        $productAttachment = $service->attach($asset, $product, MediaRole::PRODUCT_IMAGE);
 
         $this->assertSame('category', $categoryAttachment->mediable_type);
         $this->assertSame('product', $productAttachment->mediable_type);
@@ -86,6 +92,7 @@ class MediaServiceTest extends TestCase
         $this->assertSame(2, $category->mediaAttachments()->where('role', MediaRole::CATEGORY_COVER)->count());
         $this->assertTrue($asset->is($categoryAttachment->mediaAsset));
         $this->assertSame(MediaRole::CATEGORY_COVER, $otherAttachment->role);
+        $this->assertSame(MediaRole::PRODUCT_IMAGE, $productAttachment->role);
         $this->assertTrue($secondAttachment->mediaAsset->is($secondAsset));
     }
 
@@ -172,6 +179,26 @@ class MediaServiceTest extends TestCase
         $this->assertSame([], Storage::disk('media-test')->allFiles());
     }
 
+    public function test_invalid_owner_role_is_rejected_before_upload_storage(): void
+    {
+        $this->fakeMediaDisk();
+        $product = $this->product('invalid-owner-role');
+
+        try {
+            app(MediaService::class)->uploadAndAttach(
+                $this->image('invalid-role.jpg', 'jpeg'),
+                $product,
+                MediaRole::CATEGORY_COVER,
+            );
+            $this->fail('Expected an incompatible owner and role to be rejected.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertSame('The media role is not supported for this owner type.', $exception->getMessage());
+        }
+
+        $this->assertDatabaseCount('media_assets', 0);
+        $this->assertSame([], Storage::disk('media-test')->allFiles());
+    }
+
     public function test_jpeg_png_and_webp_are_validated_from_content_and_metadata_is_recorded(): void
     {
         $this->fakeMediaDisk();
@@ -199,6 +226,28 @@ class MediaServiceTest extends TestCase
             $this->assertSame(hash('sha256', $contents), $asset->checksum);
             Storage::disk('media-test')->assertExists($asset->path);
         }
+    }
+
+    public function test_video_upload_records_video_metadata_without_image_dimensions(): void
+    {
+        $this->fakeMediaDisk();
+        $videoBytes = base64_decode('AAAAGGZ0eXBpc29tAAAAAGlzb20=', true);
+        $this->assertIsString($videoBytes);
+
+        $asset = app(MediaService::class)->uploadVideo(
+            UploadedFile::fake()->createWithContent('client-name.bin', $videoBytes),
+        );
+
+        $this->assertSame('video', $asset->media_type);
+        $this->assertSame('video/mp4', $asset->mime_type);
+        $this->assertSame('mp4', $asset->extension);
+        $this->assertSame(strlen($videoBytes), $asset->size_bytes);
+        $this->assertNull($asset->width);
+        $this->assertNull($asset->height);
+        $this->assertNull($asset->duration_seconds);
+        $this->assertSame(hash('sha256', $videoBytes), $asset->checksum);
+        $this->assertStringEndsWith('.mp4', $asset->path);
+        Storage::disk('media-test')->assertExists($asset->path);
     }
 
     public function test_configured_image_size_limit_is_bytes_and_accepts_the_exact_boundary(): void

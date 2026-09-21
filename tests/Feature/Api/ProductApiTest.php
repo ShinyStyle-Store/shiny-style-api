@@ -4,7 +4,6 @@ namespace Tests\Feature\Api;
 
 use App\Models\Category;
 use App\Models\Product;
-use App\Models\ProductMedia;
 use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
 use App\Models\SellableItem;
@@ -227,7 +226,7 @@ class ProductApiTest extends TestCase
 
         $this->assertSame(650, $product['price']);
         $this->assertSame(750, $product['originalPrice']);
-        $this->assertSame('https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454206/img2_ponchv.jpg', $product['image']);
+        $this->assertNull($product['image']);
     }
 
     public function test_featured_endpoint_returns_only_visible_featured_products(): void
@@ -250,7 +249,7 @@ class ProductApiTest extends TestCase
             ->assertJsonCount(4, 'data.sellableItems')
             ->assertJsonPath('data.sellableItems.0.optionValues.color', 'beige')
             ->assertJsonPath('data.sellableItems.0.optionValues.size', 'medium')
-            ->assertJsonPath('data.gallery.0', 'https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454206/img2_ponchv.jpg');
+            ->assertJsonPath('data.gallery', []);
 
         $this->assertIsString($response->json('data.defaultSellableItemId'));
         $this->assertArrayNotHasKey('stock_quantity', $response->json('data.sellableItems.0'));
@@ -600,15 +599,6 @@ class ProductApiTest extends TestCase
         ]);
         $activeVariant->optionValues()->sync([$activeValue->getKey()]);
         $inactiveVariant->optionValues()->sync([$inactiveValue->getKey()]);
-        ProductMedia::create([
-            'product_id' => $product->getKey(),
-            'sellable_item_id' => $inactiveVariant->getKey(),
-            'provider' => 'cloudinary',
-            'type' => 'image',
-            'public_id' => 'inactive-only-media-'.uniqid(),
-            'secure_url' => 'https://example.com/inactive-only.jpg',
-        ]);
-
         $this->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.options.0.values.0.code', 'red')

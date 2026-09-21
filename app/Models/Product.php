@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\MediaRole;
 use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Attributes\Scope;
 use Illuminate\Database\Eloquent\Builder;
@@ -10,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 
@@ -58,14 +60,40 @@ class Product extends Model
         return $this->hasMany(SellableItem::class);
     }
 
-    public function media(): HasMany
-    {
-        return $this->hasMany(ProductMedia::class);
-    }
-
     public function mediaAttachments(): MorphMany
     {
-        return $this->morphMany(MediaAttachment::class, 'mediable');
+        return $this->morphMany(MediaAttachment::class, 'mediable')
+            ->where(function (Builder $query): void {
+                $query->where(function (Builder $images): void {
+                    $images->where('role', MediaRole::PRODUCT_IMAGE)
+                        ->whereHas('mediaAsset', fn (Builder $asset) => $asset->where('media_type', 'image'));
+                })->orWhere(function (Builder $videos): void {
+                    $videos->where('role', MediaRole::PRODUCT_VIDEO)
+                        ->whereHas('mediaAsset', fn (Builder $asset) => $asset->where('media_type', 'video'));
+                });
+            });
+    }
+
+    public function productImages(): MorphMany
+    {
+        return $this->mediaAttachments()->where('role', MediaRole::PRODUCT_IMAGE)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'image'))
+            ->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function primaryProductImage(): MorphOne
+    {
+        return $this->morphOne(MediaAttachment::class, 'mediable')
+            ->where('role', MediaRole::PRODUCT_IMAGE)->where('is_primary', true)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'image'))
+            ->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function productVideos(): MorphMany
+    {
+        return $this->mediaAttachments()->where('role', MediaRole::PRODUCT_VIDEO)
+            ->whereHas('mediaAsset', fn (Builder $query) => $query->where('media_type', 'video'))
+            ->orderBy('sort_order')->orderBy('id');
     }
 
     public function orderItems(): HasMany

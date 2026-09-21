@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\SellableItem;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\Request;
@@ -28,6 +29,7 @@ class AppServiceProvider extends ServiceProvider
         Relation::morphMap([
             'category' => Category::class,
             'product' => Product::class,
+            'sellable_item' => SellableItem::class,
         ]);
 
         RateLimiter::for('guest-orders', function (Request $request): Limit {
