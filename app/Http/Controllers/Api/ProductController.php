@@ -9,7 +9,6 @@ use App\Models\Category;
 use App\Models\Product;
 use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -125,9 +124,9 @@ class ProductController extends Controller
                 ...$this->listingRelations($visibleCategoryIds),
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
-                'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
                 'sellableItems.optionValues.option',
-                'media' => fn ($query) => $this->publicMediaQuery($query)->ordered(),
+                'sellableItems.variantVideos.mediaAsset',
+                'productVideos.mediaAsset',
             ])
             ->firstOrFail();
 
@@ -138,17 +137,11 @@ class ProductController extends Controller
     {
         return [
             'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
-            'media' => fn ($query) => $this->publicMediaQuery($query)->images()->ordered(),
+            'sellableItems' => fn ($query) => $query->active()->orderBy('id')
+                ->with([
+                    'variantImages.mediaAsset',
+                ]),
+            'productImages.mediaAsset',
         ];
-    }
-
-    private function publicMediaQuery(HasMany $query): HasMany
-    {
-        return $query->where(function (Builder $query): void {
-            $query
-                ->whereNull('sellable_item_id')
-                ->orWhereHas('sellableItem', fn (Builder $query) => $query->active());
-        });
     }
 }

@@ -96,8 +96,11 @@ final class AdminMediaManagementService
                     ->lockForUpdate()
                     ->firstOrFail();
 
-                $primaries = $owner->mediaAttachments()
-                    ->where('role', $locked->role)
+                $ownerAttachments = MediaAttachment::query()
+                    ->where('mediable_type', $owner->getMorphClass())
+                    ->where('mediable_id', $owner->getKey())
+                    ->where('role', $locked->role);
+                $primaries = (clone $ownerAttachments)
                     ->where('is_primary', true)
                     ->lockForUpdate()
                     ->get();
@@ -106,8 +109,7 @@ final class AdminMediaManagementService
                     return $locked->load('mediaAsset');
                 }
 
-                $owner->mediaAttachments()
-                    ->where('role', $locked->role)
+                $ownerAttachments
                     ->where('is_primary', true)
                     ->update(['is_primary' => false]);
 

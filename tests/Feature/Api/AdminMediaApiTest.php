@@ -303,6 +303,27 @@ class AdminMediaApiTest extends TestCase
         $this->assertTrue($second->fresh()->is_primary);
     }
 
+    public function test_primary_switch_clears_stale_primary_whose_asset_was_soft_deleted(): void
+    {
+        $product = $this->product();
+        $stalePrimary = $this->uploadFor($product, MediaRole::PRODUCT_IMAGE, 'image', 0, true);
+        $stalePrimary->mediaAsset->delete();
+        $replacement = $this->uploadFor($product, MediaRole::PRODUCT_IMAGE, 'image');
+
+        $this->setPrimary($product, $replacement)
+            ->assertOk()
+            ->assertJsonPath('data.is_primary', true);
+
+        $this->assertFalse($stalePrimary->fresh()->is_primary);
+        $this->assertTrue($replacement->fresh()->is_primary);
+        $this->assertSame(1, DB::table('media_attachments')
+            ->where('mediable_type', $product->getMorphClass())
+            ->where('mediable_id', $product->getKey())
+            ->where('role', MediaRole::PRODUCT_IMAGE)
+            ->where('is_primary', true)
+            ->count());
+    }
+
     public function test_delete_preserves_shared_assets_and_does_not_promote_a_new_primary(): void
     {
         $product = $this->product();

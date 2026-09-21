@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Storage;
 
 class ProductListResource extends JsonResource
 {
@@ -13,7 +14,7 @@ class ProductListResource extends JsonResource
         $sellableItems = $this->publicSellableItems();
         $sellableItem = $this->displaySellableItem($sellableItems);
         $category = $this->primaryCategory();
-        $image = $this->primaryImage();
+        $image = $this->primaryImage($sellableItems);
 
         return [
             'id' => (string) $this->getKey(),
@@ -31,7 +32,7 @@ class ProductListResource extends JsonResource
             'inStock' => $sellableItems->contains(
                 fn ($item): bool => $item->stock_quantity > 0,
             ),
-            'image' => $image?->secure_url,
+            'image' => $this->mediaUrl($image),
         ];
     }
 
@@ -70,10 +71,28 @@ class ProductListResource extends JsonResource
         return $this->localizedValue($value['ar'] ?? null, $value['en'] ?? null);
     }
 
-    protected function primaryImage()
+    protected function primaryImage(Collection $sellableItems)
     {
-        return $this->media->first(
-            fn ($media): bool => $media->type === 'image' && $media->is_primary,
-        ) ?? $this->media->firstWhere('type', 'image');
+        $variantImages = $sellableItems
+            ->flatMap(fn ($sellableItem) => $sellableItem->variantImages);
+        $images = $this->orderedAttachments($variantImages->concat($this->productImages));
+
+        return $images->first(fn ($attachment): bool => $attachment->is_primary)
+            ?? $images->first();
+    }
+
+    protected function orderedAttachments(Collection $attachments): Collection
+    {
+        return $attachments
+            ->sort(fn ($left, $right): int => ($left->sort_order <=> $right->sort_order)
+                ?: ($left->getKey() <=> $right->getKey()))
+            ->values();
+    }
+
+    protected function mediaUrl($attachment): ?string
+    {
+        $asset = $attachment?->mediaAsset;
+
+        return $asset ? Storage::disk($asset->disk)->url($asset->path) : null;
     }
 }

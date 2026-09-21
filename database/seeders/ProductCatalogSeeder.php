@@ -4,7 +4,6 @@ namespace Database\Seeders;
 
 use App\Models\Category;
 use App\Models\Product;
-use App\Models\ProductMedia;
 use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
 use App\Models\SellableItem;
@@ -166,29 +165,6 @@ class ProductCatalogSeeder extends Seeder
 
             $coffeeItem->optionValues()->sync([]);
 
-            $this->media($blanket, [
-                'provider' => 'cloudinary',
-                'type' => 'image',
-                'public_id' => 'img2_ponchv',
-                'secure_url' => 'https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454206/img2_ponchv.jpg',
-                'sellable_item_id' => null,
-                'alt_text_en' => 'Soft sofa throw blanket',
-                'alt_text_ar' => 'بطانية كنبة ناعمة',
-                'sort_order' => 1,
-                'is_primary' => true,
-            ]);
-
-            $this->media($coffeeMachine, [
-                'provider' => 'cloudinary',
-                'type' => 'image',
-                'public_id' => 'img1_vcatzv',
-                'secure_url' => 'https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454185/img1_vcatzv.jpg',
-                'sellable_item_id' => null,
-                'alt_text_en' => 'Espresso coffee machine',
-                'alt_text_ar' => 'ماكينة قهوة إسبريسو',
-                'sort_order' => 1,
-                'is_primary' => true,
-            ]);
         });
     }
 
@@ -265,19 +241,6 @@ class ProductCatalogSeeder extends Seeder
         $this->restoreAndSave($item);
 
         return $item;
-    }
-
-    private function media(Product $product, array $attributes): ProductMedia
-    {
-        $media = ProductMedia::withTrashed()
-            ->where('provider', $attributes['provider'])
-            ->where('public_id', $attributes['public_id'])
-            ->first() ?? new ProductMedia;
-
-        $media->fill([...$attributes, 'product_id' => $product->getKey()]);
-        $this->restoreAndSave($media);
-
-        return $media;
     }
 
     private function restoreAndSave(Model $model): void
