@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\MediaRole;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
@@ -43,12 +44,12 @@ class MediaAttachment extends Model
             $owner = Relation::getMorphedModel((string) $attachment->mediable_type);
             $role = (string) $attachment->role;
 
-            if (! is_string($owner) || ! \App\Enums\MediaRole::supports($owner, $role)) {
+            if (! is_string($owner) || ! MediaRole::supports($owner, $role)) {
                 throw new InvalidArgumentException('The media role is not supported for this owner type.');
             }
 
             $asset = $attachment->mediaAsset()->first();
-            if ($asset === null || $asset->media_type !== \App\Enums\MediaRole::mediaType($role)) {
+            if ($asset === null || $asset->media_type !== MediaRole::mediaType($role)) {
                 throw new InvalidArgumentException('The media asset type does not match the attachment role.');
             }
         });

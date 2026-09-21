@@ -6,12 +6,12 @@ use App\Enums\MediaRole;
 use App\Exceptions\MediaOperationException;
 use App\Models\Category;
 use App\Models\MediaAsset;
-use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Mockery;
@@ -40,7 +40,7 @@ class MediaServiceTest extends TestCase
         $this->assertSame('1.250', $asset->duration_seconds);
         $this->assertSame(['source' => 'test'], $asset->metadata);
         $this->assertTrue($asset->createdBy->is($creator));
-        $this->assertInstanceOf(\Illuminate\Support\Carbon::class, $asset->created_at);
+        $this->assertInstanceOf(Carbon::class, $asset->created_at);
 
         $creator->delete();
         $this->assertNull($asset->refresh()->created_by);

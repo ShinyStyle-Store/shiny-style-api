@@ -6,7 +6,9 @@ use App\Enums\MediaRole;
 use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\SellableItem;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -42,7 +44,7 @@ final class AdminMediaManagementService
         string $kind,
         array $metadata,
         bool $makePrimary,
-        ?\App\Models\User $createdBy,
+        ?User $createdBy,
     ): MediaAttachment {
         $role = $this->roleFor($owner, $kind);
         $metadata['sort_order'] ??= 0;
@@ -142,7 +144,7 @@ final class AdminMediaManagementService
             || $attachment->mediable_type !== $owner->getMorphClass()
             || ! MediaRole::supports($owner::class, $attachment->role)
             || $attachment->mediaAsset === null) {
-            throw (new \Illuminate\Database\Eloquent\ModelNotFoundException)->setModel(
+            throw (new ModelNotFoundException)->setModel(
                 MediaAttachment::class,
                 [$attachment->getKey()],
             );

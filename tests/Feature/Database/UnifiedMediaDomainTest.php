@@ -8,6 +8,7 @@ use App\Models\MediaAsset;
 use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\SellableItem;
+use App\Services\MediaService;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -94,7 +95,7 @@ class UnifiedMediaDomainTest extends TestCase
 
     public function test_invalid_owner_role_and_asset_kind_pairs_are_rejected(): void
     {
-        $service = app(\App\Services\MediaService::class);
+        $service = app(MediaService::class);
         $category = $this->category();
         $product = $this->product();
         $variant = $this->variant($product);
@@ -136,7 +137,7 @@ class UnifiedMediaDomainTest extends TestCase
     {
         $product = $this->product();
         $asset = $this->asset('image');
-        $attachment = app(\App\Services\MediaService::class)->attach($asset, $product, MediaRole::PRODUCT_IMAGE);
+        $attachment = app(MediaService::class)->attach($asset, $product, MediaRole::PRODUCT_IMAGE);
 
         $asset->delete();
         $this->assertSame([], $product->productImages()->pluck('id')->all());
@@ -156,7 +157,7 @@ class UnifiedMediaDomainTest extends TestCase
 
     private function attach(Category|Product|SellableItem $owner, string $role, string $kind, int $order = 0, bool $primary = false): MediaAttachment
     {
-        return app(\App\Services\MediaService::class)->attach(
+        return app(MediaService::class)->attach(
             $this->asset($kind), $owner, $role,
             ['sort_order' => $order, 'is_primary' => $primary],
         );
@@ -164,7 +165,7 @@ class UnifiedMediaDomainTest extends TestCase
 
     private function attachment(MediaAsset $asset, string $role, int $order, bool $primary, Product $owner): MediaAttachment
     {
-        return app(\App\Services\MediaService::class)->attach($asset, $owner, $role, [
+        return app(MediaService::class)->attach($asset, $owner, $role, [
             'sort_order' => $order, 'is_primary' => $primary,
         ]);
     }

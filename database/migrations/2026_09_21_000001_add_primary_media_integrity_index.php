@@ -14,7 +14,7 @@ return new class extends Migration
             throw new RuntimeException('Primary media constraints require PostgreSQL or SQLite.');
         }
 
-        DB::statement("CREATE UNIQUE INDEX ".self::INDEX." ON media_attachments (mediable_type, mediable_id, role) WHERE is_primary = TRUE AND role IN ('product_image', 'product_video', 'variant_image', 'variant_video')");
+        DB::statement('CREATE UNIQUE INDEX '.self::INDEX." ON media_attachments (mediable_type, mediable_id, role) WHERE is_primary = TRUE AND role IN ('product_image', 'product_video', 'variant_image', 'variant_video')");
     }
 
     public function down(): void

@@ -2,6 +2,10 @@
 
 namespace App\Enums;
 
+use App\Models\Category;
+use App\Models\Product;
+use App\Models\SellableItem;
+
 final class MediaRole
 {
     public const CATEGORY_COVER = 'category_cover';
@@ -22,9 +26,9 @@ final class MediaRole
     public static function forOwner(string $owner): array
     {
         return match ($owner) {
-            \App\Models\Category::class => [self::CATEGORY_COVER],
-            \App\Models\Product::class => [self::PRODUCT_IMAGE, self::PRODUCT_VIDEO],
-            \App\Models\SellableItem::class => [self::VARIANT_IMAGE, self::VARIANT_VIDEO],
+            Category::class => [self::CATEGORY_COVER],
+            Product::class => [self::PRODUCT_IMAGE, self::PRODUCT_VIDEO],
+            SellableItem::class => [self::VARIANT_IMAGE, self::VARIANT_VIDEO],
             default => [],
         };
     }
