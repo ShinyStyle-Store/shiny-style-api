@@ -48,6 +48,10 @@ class MediaAttachment extends Model
                 throw new InvalidArgumentException('The media role is not supported for this owner type.');
             }
 
+            if ($owner === Banner::class && ($role !== MediaRole::BANNER_IMAGE || ! $attachment->is_primary)) {
+                throw new InvalidArgumentException('Banner images must use the primary banner image role.');
+            }
+
             $asset = $attachment->mediaAsset()->first();
             if ($asset === null || $asset->media_type !== MediaRole::mediaType($role)) {
                 throw new InvalidArgumentException('The media asset type does not match the attachment role.');

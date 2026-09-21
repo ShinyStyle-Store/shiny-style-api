@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\Banner;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\SellableItem;
@@ -30,6 +31,7 @@ class AppServiceProvider extends ServiceProvider
             'category' => Category::class,
             'product' => Product::class,
             'sellable_item' => SellableItem::class,
+            'banner' => Banner::class,
         ]);
 
         RateLimiter::for('guest-orders', function (Request $request): Limit {
