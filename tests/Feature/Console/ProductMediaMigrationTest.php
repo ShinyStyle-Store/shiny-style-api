@@ -40,6 +40,56 @@ class ProductMediaMigrationTest extends TestCase
         Http::preventStrayRequests();
     }
 
+    public function test_storage_ready_uses_a_cloudinary_compatible_png_probe_and_cleans_it(): void
+    {
+        $service = $this->app->make(ProductMediaMigrationService::class);
+
+        $this->assertNull($service->assertStorageReady());
+        $this->assertSame([], Storage::disk('migration-test')->allFiles());
+    }
+
+    public function test_storage_ready_reports_upload_failure(): void
+    {
+        $disk = Mockery::mock();
+        $disk->shouldReceive('put')->once()->withArgs(function (string $path, string $contents): bool {
+            return str_starts_with($path, 'images/') && $contents === $this->pngBytes();
+        })->andReturnFalse();
+        Storage::shouldReceive('disk')->once()->with('migration-test')->andReturn($disk);
+
+        $this->assertSame(
+            'configured media disk is not writable',
+            $this->app->make(ProductMediaMigrationService::class)->assertStorageReady(),
+        );
+    }
+
+    public function test_storage_ready_cleans_probe_when_existence_check_fails(): void
+    {
+        $disk = Mockery::mock();
+        $disk->shouldReceive('put')->once()->andReturnTrue();
+        $disk->shouldReceive('exists')->once()->andReturnFalse();
+        $disk->shouldReceive('delete')->once()->andReturnTrue();
+        Storage::shouldReceive('disk')->once()->with('migration-test')->andReturn($disk);
+
+        $this->assertSame(
+            'configured media disk is not writable',
+            $this->app->make(ProductMediaMigrationService::class)->assertStorageReady(),
+        );
+    }
+
+    public function test_storage_ready_cleans_probe_when_delete_fails(): void
+    {
+        $disk = Mockery::mock();
+        $disk->shouldReceive('put')->once()->andReturnTrue();
+        $disk->shouldReceive('exists')->once()->andReturnTrue();
+        $disk->shouldReceive('delete')->twice()->andThrow(new RuntimeException('cleanup failure'));
+        Storage::shouldReceive('disk')->once()->with('migration-test')->andReturn($disk);
+
+        $this->assertSame(
+            'configured media disk is not writable',
+            $this->app->make(ProductMediaMigrationService::class)->assertStorageReady(),
+        );
+    }
+
     public function test_product_image_migrates_with_provenance_and_reruns_idempotently(): void
     {
         $product = $this->product();
