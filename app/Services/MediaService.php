@@ -74,8 +74,11 @@ class MediaService
     private function storeUpload(UploadedFile $file, array $metadata, ?User $createdBy): MediaAsset
     {
         $disk = (string) config('media.disk');
-        $directory = 'media/'.($metadata['media_type'] === 'image' ? 'images' : 'videos').'/'.now()->format('Y/m');
-        $filename = Str::ulid().'.'.$metadata['extension'];
+        $cloudinary = config("filesystems.disks.{$disk}.driver") === 'cloudinary';
+        $directory = $cloudinary
+            ? ($metadata['media_type'] === 'image' ? 'images' : 'videos')
+            : 'media/'.($metadata['media_type'] === 'image' ? 'images' : 'videos').'/'.now()->format('Y/m');
+        $filename = (string) Str::ulid().($cloudinary ? '' : '.'.$metadata['extension']);
         $expectedPath = $directory.'/'.$filename;
 
         try {
