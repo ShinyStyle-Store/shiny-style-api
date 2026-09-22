@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use RuntimeException;
@@ -222,15 +223,26 @@ final class ProductMediaMigrationService
             return 'production local media disk is not declared durable';
         }
 
-        $path = 'media-migration-check/'.bin2hex(random_bytes(12));
+        $path = 'images/'.Str::ulid();
+        $contents = base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAFElEQVR4nGOs0OBiYGBgYgADKAUADWAAsJHFWX0AAAAASUVORK5CYII=',
+            true,
+        ) ?: '';
         $storage = null;
         $written = false;
         try {
             $storage = Storage::disk($disk);
-            if (! $storage->put($path, 'media migration write check')) {
+            if (! $storage->put($path, $contents)) {
                 return 'configured media disk is not writable';
             }
             $written = true;
+            if (! $storage->exists($path)) {
+                return 'configured media disk is not writable';
+            }
+            if (! $storage->delete($path)) {
+                return 'configured media disk is not writable';
+            }
+            $written = false;
         } catch (Throwable) {
             return 'configured media disk is not writable';
         } finally {
