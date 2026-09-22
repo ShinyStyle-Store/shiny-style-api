@@ -1,10 +1,12 @@
 <?php
 
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
+use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
 use App\Http\Controllers\Api\OrderController;
@@ -19,6 +21,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('products/{slug}', [ProductController::class, 'show']);
     Route::get('categories', [CategoryController::class, 'index']);
     Route::get('categories/{slug}', [CategoryController::class, 'show']);
+    Route::get('banners', [BannerController::class, 'index']);
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
@@ -58,6 +61,12 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::get('profile', [AdminProfileController::class, 'show']);
         Route::patch('profile', [AdminProfileController::class, 'update']);
+        Route::get('banners', [AdminBannerController::class, 'index']);
+        Route::post('banners', [AdminBannerController::class, 'store']);
+        Route::get('banners/{banner}', [AdminBannerController::class, 'show'])->whereNumber('banner');
+        Route::patch('banners/{banner}', [AdminBannerController::class, 'update'])->whereNumber('banner');
+        Route::post('banners/{banner}/image', [AdminBannerController::class, 'image'])->whereNumber('banner');
+        Route::delete('banners/{banner}', [AdminBannerController::class, 'destroy'])->whereNumber('banner');
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
 
         Route::get('products/{product}/media', [AdminMediaController::class, 'productIndex'])->whereNumber('product');

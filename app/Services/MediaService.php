@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\MediaRole;
 use App\Exceptions\MediaOperationException;
+use App\Models\Banner;
 use App\Models\MediaAsset;
 use App\Models\MediaAttachment;
 use App\Models\User;
@@ -73,8 +74,11 @@ class MediaService
     private function storeUpload(UploadedFile $file, array $metadata, ?User $createdBy): MediaAsset
     {
         $disk = (string) config('media.disk');
-        $directory = 'media/'.($metadata['media_type'] === 'image' ? 'images' : 'videos').'/'.now()->format('Y/m');
-        $filename = Str::ulid().'.'.$metadata['extension'];
+        $cloudinary = config("filesystems.disks.{$disk}.driver") === 'cloudinary';
+        $directory = $cloudinary
+            ? ($metadata['media_type'] === 'image' ? 'images' : 'videos')
+            : 'media/'.($metadata['media_type'] === 'image' ? 'images' : 'videos').'/'.now()->format('Y/m');
+        $filename = (string) Str::ulid().($cloudinary ? '' : '.'.$metadata['extension']);
         $expectedPath = $directory.'/'.$filename;
 
         try {
@@ -130,6 +134,9 @@ class MediaService
         if ($asset->media_type !== MediaRole::mediaType($role)) {
             throw new \InvalidArgumentException('The media asset type does not match the attachment role.');
         }
+        if ($entity instanceof Banner && ($role !== MediaRole::BANNER_IMAGE || ! ($attributes['is_primary'] ?? false))) {
+            throw new \InvalidArgumentException('Banner images must use the primary banner image role.');
+        }
 
         $allowedAttributes = [
             'locale', 'device', 'alt_ar', 'alt_en', 'caption_ar', 'caption_en', 'sort_order', 'is_primary',
@@ -150,6 +157,7 @@ class MediaService
                     MediaRole::PRODUCT_VIDEO,
                     MediaRole::VARIANT_IMAGE,
                     MediaRole::VARIANT_VIDEO,
+                    MediaRole::BANNER_IMAGE,
                 ], true)
                 && $entity->mediaAttachments()->where('role', $role)->where('is_primary', true)->exists()) {
                 throw new \InvalidArgumentException('This owner already has a primary attachment for the role.');
