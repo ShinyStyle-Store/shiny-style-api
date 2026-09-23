@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
@@ -21,6 +22,7 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('products', [ProductController::class, 'index']);
     Route::get('products/featured', [ProductController::class, 'featured']);
+    Route::get('products/{slug}/review-images', [AdminProductReviewImageController::class, 'publicIndex']);
     Route::get('products/{slug}', [ProductController::class, 'show']);
     Route::get('categories', [CategoryController::class, 'index']);
     Route::get('categories/{slug}', [CategoryController::class, 'show']);
@@ -78,6 +80,18 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::patch('products/{product}', [AdminProductController::class, 'update'])->whereNumber('product');
         Route::post('products/{product}/archive', [AdminProductController::class, 'archive'])->whereNumber('product');
         Route::post('products/{product}/restore', [AdminProductController::class, 'restore'])->whereNumber('product');
+
+        Route::get('products/{product}/review-images/archived', [AdminProductReviewImageController::class, 'archived'])->whereNumber('product');
+        Route::patch('products/{product}/review-images/reorder', [AdminProductReviewImageController::class, 'reorder'])->whereNumber('product');
+        Route::get('products/{product}/review-images', [AdminProductReviewImageController::class, 'index'])->whereNumber('product');
+        Route::post('products/{product}/review-images/bulk', [AdminProductReviewImageController::class, 'bulk'])->whereNumber('product');
+        Route::post('products/{product}/review-images', [AdminProductReviewImageController::class, 'store'])->whereNumber('product');
+        Route::match(['patch', 'post'], 'products/{product}/review-images/{reviewImage}', [AdminProductReviewImageController::class, 'update'])
+            ->whereNumber('product')->whereNumber('reviewImage');
+        Route::post('products/{product}/review-images/{reviewImage}/restore', [AdminProductReviewImageController::class, 'restore'])
+            ->whereNumber('product')->whereNumber('reviewImage');
+        Route::delete('products/{product}/review-images/{reviewImage}', [AdminProductReviewImageController::class, 'destroy'])
+            ->whereNumber('product')->whereNumber('reviewImage');
 
         Route::get('products/{product}/options', [AdminProductOptionController::class, 'index'])->whereNumber('product');
         Route::post('products/{product}/options', [AdminProductOptionController::class, 'store'])->whereNumber('product');

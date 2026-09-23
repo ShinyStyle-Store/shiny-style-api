@@ -10,6 +10,9 @@ return [
     'images' => [
         'max_image_size_bytes' => 5 * 1024 * 1024,
         'max_product_images_per_create' => (int) env('MEDIA_MAX_PRODUCT_IMAGES_PER_CREATE', 10),
+        'max_review_images_per_product' => (int) env('MEDIA_MAX_REVIEW_IMAGES_PER_PRODUCT', 20),
+        'max_review_images_per_request' => (int) env('MEDIA_MAX_REVIEW_IMAGES_PER_REQUEST', 5),
+        'max_review_image_size_bytes' => (int) env('MEDIA_MAX_REVIEW_IMAGE_SIZE_MB', 5) * 1024 * 1024,
         'mime_types' => [
             'image/jpeg',
             'image/png',

@@ -6,6 +6,7 @@ use App\Infrastructure\Cloudinary\CloudinaryFilesystemAdapter;
 use App\Models\Banner;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\ProductReviewImage;
 use App\Models\SellableItem;
 use Cloudinary\Cloudinary;
 use GuzzleHttp\Client;
@@ -70,6 +71,7 @@ class AppServiceProvider extends ServiceProvider
         Relation::morphMap([
             'category' => Category::class,
             'product' => Product::class,
+            'product_review_image' => ProductReviewImage::class,
             'sellable_item' => SellableItem::class,
             'banner' => Banner::class,
         ]);

@@ -5,6 +5,7 @@ namespace App\Enums;
 use App\Models\Banner;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\ProductReviewImage;
 use App\Models\SellableItem;
 
 final class MediaRole
@@ -21,7 +22,9 @@ final class MediaRole
 
     public const BANNER_IMAGE = 'banner_image';
 
-    public const IMAGE_ROLES = [self::CATEGORY_COVER, self::PRODUCT_IMAGE, self::VARIANT_IMAGE, self::BANNER_IMAGE];
+    public const CUSTOMER_REVIEW_IMAGE = 'customer_review_image';
+
+    public const IMAGE_ROLES = [self::CATEGORY_COVER, self::PRODUCT_IMAGE, self::VARIANT_IMAGE, self::BANNER_IMAGE, self::CUSTOMER_REVIEW_IMAGE];
 
     public const VIDEO_ROLES = [self::PRODUCT_VIDEO, self::VARIANT_VIDEO];
 
@@ -32,6 +35,7 @@ final class MediaRole
             Category::class => [self::CATEGORY_COVER],
             Banner::class => [self::BANNER_IMAGE],
             Product::class => [self::PRODUCT_IMAGE, self::PRODUCT_VIDEO],
+            ProductReviewImage::class => [self::CUSTOMER_REVIEW_IMAGE],
             SellableItem::class => [self::VARIANT_IMAGE, self::VARIANT_VIDEO],
             default => [],
         };
