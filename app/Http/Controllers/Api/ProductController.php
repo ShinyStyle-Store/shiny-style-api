@@ -8,6 +8,7 @@ use App\Http\Resources\ProductListResource;
 use App\Models\Category;
 use App\Models\Product;
 use App\Services\CategoryHierarchyService;
+use App\Services\HomeProductSectionService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,6 +16,8 @@ use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
+    public function __construct(private readonly HomeProductSectionService $sections) {}
+
     public function index(Request $request, CategoryHierarchyService $hierarchy)
     {
         $validated = $request->validate([
@@ -50,7 +53,7 @@ class ProductController extends Controller
         }
 
         $products = $query
-            ->with($this->listingRelations($visibleCategoryIds))
+            ->with($this->sections->cardRelations($visibleCategoryIds))
             ->orderByDesc('published_at')
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 24)
@@ -99,21 +102,6 @@ class ProductController extends Controller
         }
     }
 
-    public function featured(CategoryHierarchyService $hierarchy)
-    {
-        $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
-        $products = Product::query()
-            ->visible($visibleCategoryIds)
-            ->featured()
-            ->with($this->listingRelations($visibleCategoryIds))
-            ->orderByDesc('published_at')
-            ->orderByDesc('id')
-            ->limit(8)
-            ->get();
-
-        return ProductListResource::collection($products);
-    }
-
     public function show(string $slug, CategoryHierarchyService $hierarchy)
     {
         $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
@@ -121,7 +109,7 @@ class ProductController extends Controller
             ->visible($visibleCategoryIds)
             ->where('slug', $slug)
             ->with([
-                ...$this->listingRelations($visibleCategoryIds, true),
+                ...$this->sections->cardRelations($visibleCategoryIds, true),
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
                 'sellableItems.optionValues.option',
@@ -133,19 +121,4 @@ class ProductController extends Controller
         return new ProductDetailResource($product);
     }
 
-    private function listingRelations(array $visibleCategoryIds, bool $includeVariantImages = false): array
-    {
-        $relations = [
-            'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
-            'productImages.mediaAsset',
-        ];
-
-        if ($includeVariantImages) {
-            $relations['sellableItems'] = fn ($query) => $query->active()->orderBy('id')
-                ->with(['variantImages.mediaAsset']);
-        }
-
-        return $relations;
-    }
 }

@@ -229,12 +229,17 @@ class ProductApiTest extends TestCase
         $this->assertNull($product['image']);
     }
 
-    public function test_featured_endpoint_returns_only_visible_featured_products(): void
+    public function test_featured_section_returns_only_visible_featured_products(): void
     {
-        $response = $this->getJson('/api/v1/products/featured');
+        $response = $this->getJson('/api/v1/products/sections/featured');
 
         $response->assertOk()->assertJsonCount(1, 'data');
         $this->assertSame('soft-sofa-throw-blanket', $response->json('data.0.slug'));
+    }
+
+    public function test_legacy_featured_path_is_not_a_featured_endpoint(): void
+    {
+        $this->getJson('/api/v1/products/featured')->assertNotFound();
     }
 
     public function test_product_details_return_options_combinations_and_default_item(): void
@@ -322,7 +327,7 @@ class ProductApiTest extends TestCase
                 ->assertOk()
                 ->assertJsonMissing(['slug' => $product->slug]);
 
-            $this->getJson('/api/v1/products/featured')
+            $this->getJson('/api/v1/products/sections/featured')
                 ->assertOk()
                 ->assertJsonMissing(['slug' => $product->slug]);
 
@@ -363,7 +368,7 @@ class ProductApiTest extends TestCase
                 ->assertOk()
                 ->assertJsonMissing(['slug' => $product->slug]);
 
-            $this->getJson('/api/v1/products/featured')
+            $this->getJson('/api/v1/products/sections/featured')
                 ->assertOk()
                 ->assertJsonMissing(['slug' => $product->slug]);
 
@@ -387,7 +392,7 @@ class ProductApiTest extends TestCase
             ->assertOk()
             ->assertJsonFragment(['slug' => $product->slug]);
 
-        $this->getJson('/api/v1/products/featured')
+        $this->getJson('/api/v1/products/sections/featured')
             ->assertOk()
             ->assertJsonFragment(['slug' => $product->slug]);
 

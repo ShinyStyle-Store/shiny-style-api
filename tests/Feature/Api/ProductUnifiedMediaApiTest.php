@@ -51,7 +51,7 @@ class ProductUnifiedMediaApiTest extends TestCase
         $expected = Storage::disk('product-media-test')->url($productPrimary->mediaAsset->path);
         $listing = collect($this->getJson('/api/v1/products')->assertOk()->json('data'))
             ->firstWhere('slug', $product->slug);
-        $featured = collect($this->getJson('/api/v1/products/featured')->assertOk()->json('data'))
+        $featured = collect($this->getJson('/api/v1/products/sections/featured')->assertOk()->json('data'))
             ->firstWhere('slug', $product->slug);
 
         $this->assertSame($expected, $listing['image']);
