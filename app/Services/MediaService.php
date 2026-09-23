@@ -44,10 +44,11 @@ class MediaService
         string $role,
         array $attributes = [],
         ?User $createdBy = null,
+        ?int $maxImageSizeBytes = null,
     ): MediaAttachment {
         $this->assertOwnerRole($entity, $role);
         $metadata = match (MediaRole::mediaType($role)) {
-            'image' => $this->inspectImage($file),
+            'image' => $this->inspectImage($file, 'file', $maxImageSizeBytes),
             'video' => $this->inspectVideo($file),
             default => throw new \InvalidArgumentException('The media role is not supported.'),
         };
@@ -118,9 +119,9 @@ class MediaService
     }
 
     /** Validate image bytes before a caller begins its database transaction. */
-    public function validateImage(UploadedFile $file, string $errorField = 'file'): void
+    public function validateImage(UploadedFile $file, string $errorField = 'file', ?int $maxImageSizeBytes = null): void
     {
-        $this->inspectImage($file, $errorField);
+        $this->inspectImage($file, $errorField, $maxImageSizeBytes);
     }
 
     /** Attach an existing asset to a mapped model using an application-known role. */
@@ -274,14 +275,15 @@ class MediaService
     }
 
     /** @return array{media_type: string, mime_type: string, extension: string, size_bytes: int, width: int, height: int, duration_seconds: null, checksum: ?string} */
-    private function inspectImage(UploadedFile $file, string $errorField = 'file'): array
+    private function inspectImage(UploadedFile $file, string $errorField = 'file', ?int $maxImageSizeBytes = null): array
     {
         if (! $file->isValid()) {
             $this->invalidImage('The uploaded file is invalid.', $errorField);
         }
 
         $size = $file->getSize();
-        if (! is_int($size) || $size < 1 || $size > (int) config('media.images.max_image_size_bytes')) {
+        $maximum = $maxImageSizeBytes ?? (int) config('media.images.max_image_size_bytes');
+        if (! is_int($size) || $size < 1 || $size > $maximum) {
             $this->invalidImage('The image exceeds the allowed file size.', $errorField);
         }
 
