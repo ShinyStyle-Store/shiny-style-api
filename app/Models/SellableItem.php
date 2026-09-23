@@ -27,6 +27,7 @@ class SellableItem extends Model
         'status',
         'is_default',
         'sort_order',
+        'combination_key',
     ];
 
     protected function casts(): array
