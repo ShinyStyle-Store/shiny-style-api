@@ -443,7 +443,7 @@ class CategoryApiTest extends TestCase
         $this->getJson('/api/v1/products')->assertOk()->assertJsonMissing(['slug' => $hiddenProduct->slug]);
         $this->getJson('/api/v1/products?q=hidden-catalog-product')->assertOk()
             ->assertJsonMissing(['slug' => $hiddenProduct->slug]);
-        $this->getJson('/api/v1/products/featured')->assertOk()
+        $this->getJson('/api/v1/products/sections/featured')->assertOk()
             ->assertJsonMissing(['slug' => $hiddenProduct->slug]);
         $this->getJson('/api/v1/products/'.$hiddenProduct->slug)->assertNotFound();
 
@@ -486,7 +486,7 @@ class CategoryApiTest extends TestCase
         $active = $this->createCategory(['slug' => 'active-featured-category']);
         $visible = $this->createProduct('visible-featured-product', $active, true);
 
-        $this->getJson('/api/v1/products/featured')
+        $this->getJson('/api/v1/products/sections/featured')
             ->assertOk()
             ->assertJsonFragment(['slug' => $visible->slug])
             ->assertJsonMissing(['slug' => $hidden->slug]);

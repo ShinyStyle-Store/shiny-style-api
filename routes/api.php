@@ -12,8 +12,10 @@ use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
+use App\Http\Controllers\Api\HomeProductController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Middleware\SetApiLocale;
@@ -21,7 +23,9 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('products', [ProductController::class, 'index']);
-    Route::get('products/featured', [ProductController::class, 'featured']);
+    Route::get('home/products', [HomeProductController::class, 'products']);
+    Route::get('products/sections/{section}', [ProductSectionController::class, 'index'])
+        ->whereIn('section', ['featured', 'newest', 'best-selling', 'offers']);
     Route::get('products/{slug}/review-images', [AdminProductReviewImageController::class, 'publicIndex']);
     Route::get('products/{slug}', [ProductController::class, 'show']);
     Route::get('categories', [CategoryController::class, 'index']);
