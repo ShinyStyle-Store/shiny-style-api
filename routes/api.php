@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
+use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -68,6 +69,13 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::post('banners/{banner}/image', [AdminBannerController::class, 'image'])->whereNumber('banner');
         Route::delete('banners/{banner}', [AdminBannerController::class, 'destroy'])->whereNumber('banner');
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
+
+        Route::get('products', [AdminProductController::class, 'index']);
+        Route::post('products', [AdminProductController::class, 'store']);
+        Route::get('products/{product}', [AdminProductController::class, 'show'])->whereNumber('product');
+        Route::patch('products/{product}', [AdminProductController::class, 'update'])->whereNumber('product');
+        Route::post('products/{product}/archive', [AdminProductController::class, 'archive'])->whereNumber('product');
+        Route::post('products/{product}/restore', [AdminProductController::class, 'restore'])->whereNumber('product');
 
         Route::get('products/{product}/media', [AdminMediaController::class, 'productIndex'])->whereNumber('product');
         Route::post('products/{product}/media', [AdminMediaController::class, 'productStore'])->whereNumber('product');
