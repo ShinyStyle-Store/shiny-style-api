@@ -8,6 +8,7 @@ use App\Http\Requests\AdminProductRequest;
 use App\Http\Resources\AdminProductResource;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\SellableItem;
 use App\Services\ProductArchiveService;
 use App\Services\CategoryHierarchyService;
 use Illuminate\Database\Eloquent\Builder;
@@ -146,12 +147,29 @@ class AdminProductController extends Controller
 
     private function loadProduct(Product $product): Product
     {
-        return $product->load([
+        $product = $product->load([
             'categories' => fn (BelongsToMany $category) => $category->withTrashed()->orderBy('id'),
+            'primaryProductImage.mediaAsset',
         ])->loadCount([
+            'options as options_count',
             'sellableItems',
             'sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active'),
         ]);
+
+        $summary = SellableItem::query()
+            ->where('product_id', $product->getKey())
+            ->whereNull('deleted_at')
+            ->where('status', 'active')
+            ->selectRaw('MIN(price) AS active_min_price')
+            ->selectRaw('MAX(price) AS active_max_price')
+            ->selectRaw('COALESCE(SUM(stock_quantity), 0) AS active_stock_total')
+            ->selectRaw('COALESCE(SUM(reserved_quantity), 0) AS active_stock_reserved')
+            ->first();
+
+        return $product->setAttribute('active_min_price', $summary?->active_min_price)
+            ->setAttribute('active_max_price', $summary?->active_max_price)
+            ->setAttribute('active_stock_total', (int) ($summary?->active_stock_total ?? 0))
+            ->setAttribute('active_stock_reserved', (int) ($summary?->active_stock_reserved ?? 0));
     }
 
     private function syncCategories(Product $product, array $categoryIds, mixed $primaryCategoryId): void

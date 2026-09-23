@@ -3,11 +3,15 @@
 namespace Tests\Feature\Api;
 
 use App\Enums\AdminMembershipStatus;
+use App\Enums\MediaRole;
 use App\Models\AdminMembership;
 use App\Models\Category;
+use App\Models\MediaAsset;
 use App\Models\Product;
+use App\Models\ProductOption;
 use App\Models\SellableItem;
 use App\Models\User;
+use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -159,6 +163,85 @@ class AdminProductApiTest extends TestCase
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?search='.urlencode('عربي').'&category_id='.$category->id.'&per_page=1')
             ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('meta.per_page', 1)
             ->assertJsonPath('data.0.id', $product->id);
+    }
+
+    public function test_product_detail_returns_operational_summary_without_embedding_collections(): void
+    {
+        $product = $this->product('summary-product');
+        $first = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SUMMARY-FIRST', 'price' => '450.00',
+            'stock_quantity' => 12, 'reserved_quantity' => 3, 'status' => 'active',
+        ]);
+        SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SUMMARY-INACTIVE', 'price' => '999.00',
+            'stock_quantity' => 100, 'reserved_quantity' => 0, 'status' => 'inactive',
+        ]);
+        $archived = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SUMMARY-ARCHIVED', 'price' => '1.00',
+            'stock_quantity' => 100, 'reserved_quantity' => 0, 'status' => 'active',
+        ]);
+        $archived->delete();
+
+        $asset = MediaAsset::create([
+            'disk' => 'public', 'path' => 'products/summary.jpg', 'original_name' => 'summary.jpg',
+            'media_type' => 'image', 'mime_type' => 'image/jpeg', 'size_bytes' => 10,
+        ]);
+        $attachment = app(MediaService::class)->attach($asset, $product, MediaRole::PRODUCT_IMAGE, [
+            'is_primary' => true,
+            'sort_order' => 0,
+        ]);
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id)
+            ->assertOk()
+            ->assertJsonPath('data.optionsCount', 0)
+            ->assertJsonPath('data.hasOptions', false)
+            ->assertJsonPath('data.variantsCount', 2)
+            ->assertJsonPath('data.activeVariantsCount', 1)
+            ->assertJsonPath('data.priceRange.min', '450.00')
+            ->assertJsonPath('data.priceRange.max', '450.00')
+            ->assertJsonPath('data.stock.total', 12)
+            ->assertJsonPath('data.stock.reserved', 3)
+            ->assertJsonPath('data.stock.available', 9)
+            ->assertJsonPath('data.inStock', true)
+            ->assertJsonPath('data.primaryImage.id', $attachment->id)
+            ->assertJsonPath('data.primaryImage.role', MediaRole::PRODUCT_IMAGE)
+            ->assertJsonPath('data.primaryImage.is_primary', true)
+            ->assertJsonPath('data.primaryImage.kind', 'image')
+            ->assertJsonStructure(['data' => ['primaryImage' => ['id', 'asset_public_id', 'kind', 'role', 'url']]])
+            ->assertJsonMissingPath('data.options')
+            ->assertJsonMissingPath('data.sellableItems')
+            ->assertJsonMissingPath('data.media');
+
+        $this->assertDatabaseHas('sellable_items', ['id' => $first->id]);
+        $this->assertDatabaseHas('media_attachments', [
+            'id' => $attachment->id,
+            'mediable_type' => $product->getMorphClass(),
+            'mediable_id' => $product->id,
+            'role' => MediaRole::PRODUCT_IMAGE,
+            'is_primary' => true,
+        ]);
+        $this->assertDatabaseHas('media_assets', ['id' => $asset->id, 'media_type' => 'image']);
+    }
+
+    public function test_product_detail_option_summary_ignores_archived_options_and_empty_active_summary_is_safe(): void
+    {
+        $product = $this->product('option-summary');
+        ProductOption::create([
+            'product_id' => $product->id, 'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $archived = ProductOption::create([
+            'product_id' => $product->id, 'code' => 'size', 'name_ar' => 'المقاس', 'name_en' => 'Size',
+        ]);
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id)
+            ->assertOk()
+            ->assertJsonPath('data.hasOptions', true)
+            ->assertJsonPath('data.optionsCount', 1)
+            ->assertJsonPath('data.priceRange', null)
+            ->assertJsonPath('data.stock', ['total' => 0, 'reserved' => 0, 'available' => 0])
+            ->assertJsonPath('data.inStock', false)
+            ->assertJsonPath('data.primaryImage', null);
     }
 
     private function category(string $name): Category

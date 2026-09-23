@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductOptionController;
+use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -100,6 +101,17 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             ->whereNumber('product')->whereNumber('option')->whereNumber('value');
         Route::post('products/{product}/options/{option}/values/{value}/restore', [AdminProductOptionController::class, 'restoreValue'])
             ->whereNumber('product')->whereNumber('option')->whereNumber('value');
+
+        Route::get('products/{product}/sellable-items', [AdminSellableItemController::class, 'index'])->whereNumber('product');
+        Route::post('products/{product}/sellable-items', [AdminSellableItemController::class, 'store'])->whereNumber('product');
+        Route::get('products/{product}/sellable-items/{variant}', [AdminSellableItemController::class, 'show'])
+            ->whereNumber('product')->whereNumber('variant');
+        Route::patch('products/{product}/sellable-items/{variant}', [AdminSellableItemController::class, 'update'])
+            ->whereNumber('product')->whereNumber('variant');
+        Route::post('products/{product}/sellable-items/{variant}/archive', [AdminSellableItemController::class, 'archive'])
+            ->whereNumber('product')->whereNumber('variant');
+        Route::post('products/{product}/sellable-items/{variant}/restore', [AdminSellableItemController::class, 'restore'])
+            ->whereNumber('product')->whereNumber('variant');
 
         Route::get('products/{product}/media', [AdminMediaController::class, 'productIndex'])->whereNumber('product');
         Route::post('products/{product}/media', [AdminMediaController::class, 'productStore'])->whereNumber('product');
