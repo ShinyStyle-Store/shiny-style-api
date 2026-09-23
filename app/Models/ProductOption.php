@@ -7,9 +7,12 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class ProductOption extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'product_id',
         'code',
@@ -23,6 +26,14 @@ class ProductOption extends Model
         return [
             'sort_order' => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $option): void {
+            $option->name_ar_normalized = trim((string) $option->name_ar);
+            $option->name_en_normalized = mb_strtolower(trim((string) $option->name_en));
+        });
     }
 
     public function product(): BelongsTo

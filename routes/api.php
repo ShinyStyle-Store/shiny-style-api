@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminProductController;
+use App\Http\Controllers\Api\AdminProductOptionController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -76,6 +77,29 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::patch('products/{product}', [AdminProductController::class, 'update'])->whereNumber('product');
         Route::post('products/{product}/archive', [AdminProductController::class, 'archive'])->whereNumber('product');
         Route::post('products/{product}/restore', [AdminProductController::class, 'restore'])->whereNumber('product');
+
+        Route::get('products/{product}/options', [AdminProductOptionController::class, 'index'])->whereNumber('product');
+        Route::post('products/{product}/options', [AdminProductOptionController::class, 'store'])->whereNumber('product');
+        Route::get('products/{product}/options/{option}', [AdminProductOptionController::class, 'show'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::patch('products/{product}/options/{option}', [AdminProductOptionController::class, 'update'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::post('products/{product}/options/{option}/archive', [AdminProductOptionController::class, 'archive'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::post('products/{product}/options/{option}/restore', [AdminProductOptionController::class, 'restore'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::get('products/{product}/options/{option}/values', [AdminProductOptionController::class, 'values'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::post('products/{product}/options/{option}/values', [AdminProductOptionController::class, 'storeValue'])
+            ->whereNumber('product')->whereNumber('option');
+        Route::get('products/{product}/options/{option}/values/{value}', [AdminProductOptionController::class, 'showValue'])
+            ->whereNumber('product')->whereNumber('option')->whereNumber('value');
+        Route::patch('products/{product}/options/{option}/values/{value}', [AdminProductOptionController::class, 'updateValue'])
+            ->whereNumber('product')->whereNumber('option')->whereNumber('value');
+        Route::post('products/{product}/options/{option}/values/{value}/archive', [AdminProductOptionController::class, 'archiveValue'])
+            ->whereNumber('product')->whereNumber('option')->whereNumber('value');
+        Route::post('products/{product}/options/{option}/values/{value}/restore', [AdminProductOptionController::class, 'restoreValue'])
+            ->whereNumber('product')->whereNumber('option')->whereNumber('value');
 
         Route::get('products/{product}/media', [AdminMediaController::class, 'productIndex'])->whereNumber('product');
         Route::post('products/{product}/media', [AdminMediaController::class, 'productStore'])->whereNumber('product');
