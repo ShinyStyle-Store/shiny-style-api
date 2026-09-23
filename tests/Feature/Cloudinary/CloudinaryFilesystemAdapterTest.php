@@ -20,6 +20,21 @@ use RuntimeException;
 
 class CloudinaryFilesystemAdapterTest extends TestCase
 {
+    /** @var list<string> */
+    private array $ownedStagingDirectories = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->ownedStagingDirectories as $directory) {
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+
+        $this->ownedStagingDirectories = [];
+        parent::tearDown();
+    }
+
     public function test_missing_cloud_name_is_rejected_before_any_provider_call(): void
     {
         $this->expectException(RuntimeException::class);
@@ -29,6 +44,10 @@ class CloudinaryFilesystemAdapterTest extends TestCase
             Mockery::mock(Cloudinary::class),
             Mockery::mock(ClientInterface::class),
             '',
+            true,
+            null,
+            30,
+            $this->stagingDirectory(),
         );
     }
 
@@ -110,6 +129,48 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         }
     }
 
+    public function test_staging_directory_is_created_before_the_file_is_spooled(): void
+    {
+        $directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'cloudinary-staging-'.(string) Str::ulid();
+        $adapter = $this->adapter($directory);
+        $method = new \ReflectionMethod($adapter, 'withTemporarySource');
+        $temporaryPath = null;
+
+        try {
+            $method->invoke($adapter, 'binary contents', function (string $path) use (&$temporaryPath): string {
+                $temporaryPath = $path;
+
+                return file_get_contents($path) ?: '';
+            });
+
+            $this->assertDirectoryExists($directory);
+            $this->assertFileDoesNotExist($temporaryPath);
+        } finally {
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function test_unusable_staging_path_fails_before_upload_staging(): void
+    {
+        $path = sys_get_temp_dir().DIRECTORY_SEPARATOR.'cloudinary-staging-file-'.(string) Str::ulid();
+        file_put_contents($path, 'not a directory');
+
+        try {
+        $adapter = $this->adapter($path);
+            $method = new \ReflectionMethod($adapter, 'withTemporarySource');
+
+            $this->expectException(RuntimeException::class);
+            $this->expectExceptionMessage('Cloudinary upload staging path is not a directory.');
+            $method->invoke($adapter, 'binary contents', static fn (string $temporaryPath): string => $temporaryPath);
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    }
+
     public function test_non_seekable_sources_are_spooled_and_removed_after_failure(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
@@ -166,7 +227,15 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         })->andThrow($failure);
         $cloudinary = Mockery::mock(Cloudinary::class);
         $cloudinary->shouldReceive('uploadApi')->once()->andReturn($uploadApi);
-        $adapter = new CloudinaryFilesystemAdapter($cloudinary, Mockery::mock(ClientInterface::class), 'test-cloud');
+        $adapter = new CloudinaryFilesystemAdapter(
+            $cloudinary,
+            Mockery::mock(ClientInterface::class),
+            'test-cloud',
+            true,
+            null,
+            30,
+            $this->stagingDirectory(),
+        );
 
         try {
             $adapter->write('images/01IMAGE', 'valid image bytes', new Config);
@@ -207,6 +276,8 @@ class CloudinaryFilesystemAdapterTest extends TestCase
                 'test-cloud',
                 true,
                 'folder',
+                30,
+                $this->stagingDirectory(),
             );
 
             $adapter->delete($key);
@@ -231,7 +302,15 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         $cloudinary = Mockery::mock(Cloudinary::class);
         $cloudinary->shouldReceive('uploadApi')->once()->andReturn($uploadApi);
 
-        (new CloudinaryFilesystemAdapter($cloudinary, Mockery::mock(ClientInterface::class), 'test-cloud'))
+        (new CloudinaryFilesystemAdapter(
+            $cloudinary,
+            Mockery::mock(ClientInterface::class),
+            'test-cloud',
+            true,
+            null,
+            30,
+            $this->stagingDirectory(),
+        ))
             ->delete('images/IMAGE');
 
         $this->assertSame('IMAGE', $capturedId);
@@ -246,7 +325,15 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         $cloudinary->shouldReceive('adminApi')->once()->andReturn($adminApi);
 
         $this->assertFalse(
-            (new CloudinaryFilesystemAdapter($cloudinary, Mockery::mock(ClientInterface::class), 'test-cloud'))
+            (new CloudinaryFilesystemAdapter(
+                $cloudinary,
+                Mockery::mock(ClientInterface::class),
+                'test-cloud',
+                true,
+                null,
+                30,
+                $this->stagingDirectory(),
+            ))
                 ->fileExists('videos/VIDEO'),
         );
     }
@@ -259,7 +346,15 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         $cloudinary->shouldReceive('uploadApi')->once()->andReturn($uploadApi);
 
         $this->expectException(UnableToDeleteFile::class);
-        (new CloudinaryFilesystemAdapter($cloudinary, Mockery::mock(ClientInterface::class), 'test-cloud'))
+        (new CloudinaryFilesystemAdapter(
+            $cloudinary,
+            Mockery::mock(ClientInterface::class),
+            'test-cloud',
+            true,
+            null,
+            30,
+            $this->stagingDirectory(),
+        ))
             ->delete('videos/VIDEO');
     }
 
@@ -272,7 +367,15 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         $cloudinary->shouldReceive('uploadApi')->once()->andReturn($uploadApi);
 
         try {
-            (new CloudinaryFilesystemAdapter($cloudinary, Mockery::mock(ClientInterface::class), 'test-cloud'))
+            (new CloudinaryFilesystemAdapter(
+                $cloudinary,
+                Mockery::mock(ClientInterface::class),
+                'test-cloud',
+                true,
+                null,
+                30,
+                $this->stagingDirectory(),
+            ))
                 ->delete('images/IMAGE');
             $this->fail('The delete failure should be mapped.');
         } catch (UnableToDeleteFile $exception) {
@@ -280,13 +383,25 @@ class CloudinaryFilesystemAdapterTest extends TestCase
         }
     }
 
-    private function adapter(): CloudinaryFilesystemAdapter
+    private function adapter(?string $stagingDirectory = null): CloudinaryFilesystemAdapter
     {
         return new CloudinaryFilesystemAdapter(
             Mockery::mock(Cloudinary::class),
             Mockery::mock(ClientInterface::class),
             'test-cloud',
+            true,
+            null,
+            30,
+            $stagingDirectory ?? $this->stagingDirectory(),
         );
+    }
+
+    private function stagingDirectory(): string
+    {
+        $directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'cloudinary-test-'.(string) Str::ulid();
+        $this->ownedStagingDirectories[] = $directory;
+
+        return $directory;
     }
 
     private function apiResponse(string $result): ApiResponse

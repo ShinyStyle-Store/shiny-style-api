@@ -57,6 +57,7 @@ class AppServiceProvider extends ServiceProvider
                 (bool) ($config['secure'] ?? true),
                 isset($config['folder']) ? (string) $config['folder'] : null,
                 (int) ($config['timeout'] ?? 30),
+                $app->storagePath('app/media-temp'),
             );
 
             return new FilesystemAdapter(
