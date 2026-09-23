@@ -13,11 +13,6 @@ class ProductDetailResource extends ProductListResource
         $activeOptionValueIds = $sellableItems
             ->flatMap(fn ($sellableItem) => $sellableItem->optionValues->modelKeys())
             ->unique();
-        $variantImages = $sellableItems
-            ->flatMap(fn ($sellableItem) => $sellableItem->variantImages);
-        $images = $this->orderedAttachments($variantImages
-            ->concat($this->productImages)
-        );
         $variantVideos = $sellableItems
             ->flatMap(fn ($sellableItem) => $sellableItem->variantVideos);
         $video = $this->orderedAttachments($variantVideos->concat($this->productVideos))->first();
@@ -27,12 +22,12 @@ class ProductDetailResource extends ProductListResource
             'description' => $this->localizedValue($this->description_ar, $this->description_en),
             'features' => $this->localizedJsonValue($this->features),
             'specifications' => $this->localizedJsonValue($this->specifications),
-            'gallery' => $images
+            'gallery' => $this->productImages
                 ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
                 ->filter(fn (?string $url): bool => $url !== null)
                 ->values()
                 ->all(),
-            'videoUrl' => $this->mediaUrl($video),
+            'videoUrl' => $this->video_url ?: $this->mediaUrl($video),
             'options' => $this->options->map(fn ($option): array => [
                 'id' => (string) $option->getKey(),
                 'code' => $option->code,
@@ -54,6 +49,11 @@ class ProductDetailResource extends ProductListResource
                     ? null
                     : (float) $item->original_price,
                 'inStock' => $item->stock_quantity > 0,
+                'images' => $item->variantImages
+                    ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
+                    ->filter(fn (?string $url): bool => $url !== null)
+                    ->values()
+                    ->all(),
                 'optionValues' => (object) $item->optionValues->mapWithKeys(
                     fn ($value): array => [$value->option->code => $value->code],
                 )->all(),

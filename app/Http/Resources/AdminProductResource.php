@@ -13,7 +13,7 @@ class AdminProductResource extends JsonResource
         $summaryLoaded = array_key_exists('options_count', $this->getAttributes());
         $stockTotal = (int) ($this->active_stock_total ?? 0);
         $stockReserved = (int) ($this->active_stock_reserved ?? 0);
-        $stockAvailable = $stockTotal - $stockReserved;
+        $stockAvailable = (int) ($this->active_stock_available ?? max($stockTotal - $stockReserved, 0));
 
         return [
             'id' => $this->getKey(),
@@ -28,6 +28,10 @@ class AdminProductResource extends JsonResource
             'status' => $this->status,
             'isFeatured' => (bool) $this->is_featured,
             'publishedAt' => $this->published_at?->toISOString(),
+            'videoUrl' => $this->when(
+                $request->route()?->getActionMethod() !== 'index',
+                $this->video_url,
+            ),
             'categories' => $this->whenLoaded('categories', fn () => $this->categories->map(fn ($category): array => [
                 'id' => $category->getKey(),
                 'slug' => $category->slug,
@@ -41,23 +45,33 @@ class AdminProductResource extends JsonResource
             'activeVariantsCount' => $this->when(isset($this->active_sellable_items_count), (int) $this->active_sellable_items_count),
             'hasOptions' => $this->when($summaryLoaded, (int) $this->options_count > 0),
             'optionsCount' => $this->when($summaryLoaded, (int) $this->options_count),
-            'priceRange' => $this->when($summaryLoaded, function (): ?array {
+            'priceRange' => $this->when(array_key_exists('active_min_price', $this->getAttributes()), function (): ?array {
                 $min = $this->formatMoney($this->active_min_price);
                 $max = $this->formatMoney($this->active_max_price);
 
                 return $min === null || $max === null ? null : ['min' => $min, 'max' => $max];
             }),
-            'stock' => $this->when($summaryLoaded, [
+            'stock' => $this->when(array_key_exists('active_stock_total', $this->getAttributes()), [
                 'total' => $stockTotal,
                 'reserved' => $stockReserved,
                 'available' => $stockAvailable,
             ]),
-            'inStock' => $this->when($summaryLoaded, $stockAvailable > 0),
+            'inStock' => $this->when(array_key_exists('active_stock_total', $this->getAttributes()), $stockAvailable > 0),
             'primaryImage' => $this->when(
                 $this->relationLoaded('primaryProductImage'),
-                fn () => $this->primaryProductImage instanceof MediaAttachment
-                    ? (new AdminMediaAttachmentResource($this->primaryProductImage))->resolve($request)
-                    : null,
+                function () use ($request): ?array {
+                    $image = $this->getRelation('primaryProductImage');
+
+                    if (! $image instanceof MediaAttachment || ! $image->relationLoaded('mediaAsset')) {
+                        return null;
+                    }
+
+                    if ($image->getRelation('mediaAsset') === null) {
+                        return null;
+                    }
+
+                    return (new AdminPrimaryImageResource($image))->resolve($request);
+                },
             ),
             'createdAt' => $this->created_at?->toISOString(),
             'updatedAt' => $this->updated_at?->toISOString(),

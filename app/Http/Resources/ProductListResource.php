@@ -73,12 +73,7 @@ class ProductListResource extends JsonResource
 
     protected function primaryImage(Collection $sellableItems)
     {
-        $variantImages = $sellableItems
-            ->flatMap(fn ($sellableItem) => $sellableItem->variantImages);
-        $images = $this->orderedAttachments($variantImages->concat($this->productImages));
-
-        return $images->first(fn ($attachment): bool => $attachment->is_primary)
-            ?? $images->first();
+        return $this->productImages->first(fn ($attachment): bool => $attachment->is_primary);
     }
 
     protected function orderedAttachments(Collection $attachments): Collection

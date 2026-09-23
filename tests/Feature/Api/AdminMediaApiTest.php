@@ -125,16 +125,21 @@ class AdminMediaApiTest extends TestCase
             ->assertJsonPath('data.0.kind', 'video')
             ->assertJsonPath('data.1.id', $first->id)
             ->assertJsonPath('data.2.id', $tied->id)
-            ->assertJsonPath('data.2.alt_ar', 'بديل عربي')
-            ->assertJsonPath('data.2.alt_en', 'English alt')
-            ->assertJsonPath('data.2.caption_ar', 'تعليق')
-            ->assertJsonPath('data.2.is_primary', true)
+            ->assertJsonPath('data.2.altAr', $tied->alt_ar)
+            ->assertJsonPath('data.2.altEn', $tied->alt_en)
+            ->assertJsonPath('data.2.captionAr', $tied->caption_ar)
+            ->assertJsonPath('data.2.isPrimary', true)
             ->assertJsonMissing(['url' => 'https://example.test/legacy.jpg']);
 
         $this->assertSame([$video->id, $first->id, $tied->id], $response->json('data.*.id'));
         foreach (['disk', 'path', 'checksum', 'metadata', 'mediable_type', 'mediable_id', 'created_by'] as $hidden) {
             $this->assertArrayNotHasKey($hidden, $response->json('data.0'));
         }
+        $this->assertSame([
+            'id', 'assetPublicId', 'kind', 'role', 'url', 'originalName', 'mimeType', 'sizeBytes',
+            'width', 'height', 'durationSeconds', 'altAr', 'altEn', 'captionAr', 'captionEn',
+            'sortOrder', 'isPrimary', 'createdAt',
+        ], array_keys($response->json('data.0')));
         $this->assertSame($legacyCount, DB::table('product_media')->count());
     }
 
@@ -154,6 +159,8 @@ class AdminMediaApiTest extends TestCase
 
         $this->assertSame([MediaRole::VARIANT_VIDEO, MediaRole::VARIANT_IMAGE], $response->json('data.*.role'));
         $this->assertContains($image->id, $response->json('data.*.id'));
+        $this->assertArrayHasKey('assetPublicId', $response->json('data.0'));
+        $this->assertArrayNotHasKey('asset_public_id', $response->json('data.0'));
     }
 
     public function test_product_and_variant_uploads_select_roles_from_owner_and_inspected_kind(): void
@@ -180,8 +187,8 @@ class AdminMediaApiTest extends TestCase
 
             $this->assertSame($role, $response->json('data.role'));
             $this->assertSame($kind, $response->json('data.kind'));
-            $this->assertSame('عربي', $response->json('data.alt_ar'));
-            $this->assertSame(2, $response->json('data.sort_order'));
+            $this->assertSame('عربي', $response->json('data.altAr'));
+            $this->assertSame(2, $response->json('data.sortOrder'));
             $this->assertStringNotContainsString('media-test', $response->json('data.url'));
         }
     }
@@ -238,7 +245,7 @@ class AdminMediaApiTest extends TestCase
         $response = $this->withToken($this->adminToken)->post(
             '/api/v1/admin/products/'.$product->id.'/media',
             ['file' => $this->image('new-primary.jpg'), 'kind' => 'image', 'is_primary' => 'true'],
-        )->assertCreated()->assertJsonPath('data.is_primary', true);
+        )->assertCreated()->assertJsonPath('data.isPrimary', true);
 
         $this->assertFalse($existing->fresh()->is_primary);
         $this->assertTrue($video->fresh()->is_primary);
@@ -254,7 +261,7 @@ class AdminMediaApiTest extends TestCase
         $uri = '/api/v1/admin/products/'.$product->id.'/media/'.$attachment->id;
 
         $this->withToken($this->adminToken)->patchJson($uri, ['alt_en' => 'Updated'])
-            ->assertOk()->assertJsonPath('data.alt_en', 'Updated')->assertJsonPath('data.alt_ar', 'بديل عربي');
+            ->assertOk()->assertJsonPath('data.altEn', 'Updated')->assertJsonPath('data.altAr', 'بديل عربي');
         $this->assertSame('English alt', $otherAttachment->fresh()->alt_en);
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->patchJson($uri, [])->assertUnprocessable();
@@ -264,7 +271,7 @@ class AdminMediaApiTest extends TestCase
         $this->withToken($this->adminToken)->patchJson($uri, ['sort_order' => -1])->assertUnprocessable();
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->patchJson($uri, ['alt_ar' => '  '])
-            ->assertOk()->assertJsonPath('data.alt_ar', null);
+            ->assertOk()->assertJsonPath('data.altAr', null);
     }
 
     public function test_primary_switching_is_owner_scoped_idempotent_and_independent_for_each_role(): void
@@ -281,15 +288,15 @@ class AdminMediaApiTest extends TestCase
         $otherVariantPrimary = $this->uploadFor($otherVariant, MediaRole::VARIANT_IMAGE, 'image', 0, true);
         $videoPrimary = $this->uploadFor($product, MediaRole::PRODUCT_VIDEO, 'video', 0, true);
 
-        $this->setPrimary($product, $first)->assertOk()->assertJsonPath('data.is_primary', true);
+        $this->setPrimary($product, $first)->assertOk()->assertJsonPath('data.isPrimary', true);
         $this->app['auth']->forgetGuards();
-        $this->setPrimary($product, $second)->assertOk()->assertJsonPath('data.is_primary', true);
+        $this->setPrimary($product, $second)->assertOk()->assertJsonPath('data.isPrimary', true);
         $this->app['auth']->forgetGuards();
         $this->setPrimary($product, $second)->assertOk();
         $this->app['auth']->forgetGuards();
         $this->setPrimary($product, $videoPrimary)->assertOk();
         $this->app['auth']->forgetGuards();
-        $this->setPrimary($variant, $variantNext)->assertOk()->assertJsonPath('data.is_primary', true);
+        $this->setPrimary($variant, $variantNext)->assertOk()->assertJsonPath('data.isPrimary', true);
 
         $this->assertFalse($first->fresh()->is_primary);
         $this->assertTrue($second->fresh()->is_primary);
@@ -315,7 +322,7 @@ class AdminMediaApiTest extends TestCase
 
         $this->setPrimary($product, $replacement)
             ->assertOk()
-            ->assertJsonPath('data.is_primary', true);
+            ->assertJsonPath('data.isPrimary', true);
 
         $this->assertFalse($stalePrimary->fresh()->is_primary);
         $this->assertTrue($replacement->fresh()->is_primary);

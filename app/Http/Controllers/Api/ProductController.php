@@ -121,7 +121,7 @@ class ProductController extends Controller
             ->visible($visibleCategoryIds)
             ->where('slug', $slug)
             ->with([
-                ...$this->listingRelations($visibleCategoryIds),
+                ...$this->listingRelations($visibleCategoryIds, true),
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
                 'sellableItems.optionValues.option',
@@ -133,15 +133,19 @@ class ProductController extends Controller
         return new ProductDetailResource($product);
     }
 
-    private function listingRelations(array $visibleCategoryIds): array
+    private function listingRelations(array $visibleCategoryIds, bool $includeVariantImages = false): array
     {
-        return [
+        $relations = [
             'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->orderBy('id')
-                ->with([
-                    'variantImages.mediaAsset',
-                ]),
+            'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
             'productImages.mediaAsset',
         ];
+
+        if ($includeVariantImages) {
+            $relations['sellableItems'] = fn ($query) => $query->active()->orderBy('id')
+                ->with(['variantImages.mediaAsset']);
+        }
+
+        return $relations;
     }
 }

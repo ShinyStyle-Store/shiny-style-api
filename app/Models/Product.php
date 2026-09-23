@@ -31,6 +31,7 @@ class Product extends Model
         'status',
         'is_featured',
         'published_at',
+        'video_url',
     ];
 
     protected function casts(): array

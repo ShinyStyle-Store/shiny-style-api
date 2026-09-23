@@ -31,7 +31,7 @@ class ProductUnifiedMediaApiTest extends TestCase
         $this->seed(ProductCatalogSeeder::class);
     }
 
-    public function test_listing_and_featured_preserve_all_active_variant_primary_precedence_and_ignore_legacy_media(): void
+    public function test_listing_and_featured_use_only_the_product_primary_image_and_ignore_legacy_media(): void
     {
         $product = Product::where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
         $variant = $product->sellableItems()->where('is_default', true)->firstOrFail();
@@ -48,7 +48,7 @@ class ProductUnifiedMediaApiTest extends TestCase
             'secure_url' => 'https://example.test/legacy.jpg',
         ]);
 
-        $expected = Storage::disk('product-media-test')->url($otherVariantPrimary->mediaAsset->path);
+        $expected = Storage::disk('product-media-test')->url($productPrimary->mediaAsset->path);
         $listing = collect($this->getJson('/api/v1/products')->assertOk()->json('data'))
             ->firstWhere('slug', $product->slug);
         $featured = collect($this->getJson('/api/v1/products/featured')->assertOk()->json('data'))
@@ -56,13 +56,13 @@ class ProductUnifiedMediaApiTest extends TestCase
 
         $this->assertSame($expected, $listing['image']);
         $this->assertSame($expected, $featured['image']);
-        $this->assertNotSame(Storage::disk('product-media-test')->url($productPrimary->mediaAsset->path), $listing['image']);
+        $this->assertNotSame(Storage::disk('product-media-test')->url($otherVariantPrimary->mediaAsset->path), $listing['image']);
         $this->assertNotSame(Storage::disk('product-media-test')->url($variantPrimary->mediaAsset->path), $listing['image']);
         $this->assertNotSame('https://example.test/legacy.jpg', $listing['image']);
         $this->assertNotSame(Storage::disk('product-media-test')->url($variantFallback->mediaAsset->path), $listing['image']);
     }
 
-    public function test_details_include_product_and_all_active_variant_media_in_legacy_order(): void
+    public function test_details_include_ordered_product_gallery_and_variant_images_separately(): void
     {
         $product = Product::where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
         $selected = $product->sellableItems()->where('is_default', true)->firstOrFail();
@@ -77,11 +77,27 @@ class ProductUnifiedMediaApiTest extends TestCase
         $response = $this->getJson('/api/v1/products/'.$product->slug)->assertOk();
         $this->assertSame([
             Storage::disk('product-media-test')->url($productImage->mediaAsset->path),
-            Storage::disk('product-media-test')->url($otherImage->mediaAsset->path),
-            Storage::disk('product-media-test')->url($selectedImage->mediaAsset->path),
         ], $response->json('data.gallery'));
+        $items = collect($response->json('data.sellableItems'))->keyBy('id');
+        $this->assertSame([
+            Storage::disk('product-media-test')->url($selectedImage->mediaAsset->path),
+        ], $items[(string) $selected->getKey()]['images']);
+        $this->assertSame([
+            Storage::disk('product-media-test')->url($otherImage->mediaAsset->path),
+        ], $items[(string) $other->getKey()]['images']);
         $this->assertSame(Storage::disk('product-media-test')->url($otherVideo->mediaAsset->path), $response->json('data.videoUrl'));
         $this->assertNotSame(Storage::disk('product-media-test')->url($selectedVideo->mediaAsset->path), $response->json('data.videoUrl'));
+    }
+
+    public function test_external_product_video_url_takes_precedence_over_uploaded_video(): void
+    {
+        $product = Product::where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
+        $product->update(['video_url' => 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ']);
+        $this->attach($product, MediaRole::PRODUCT_VIDEO, 'fallback.mp4', 0);
+
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.videoUrl', 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ');
     }
 
     public function test_ordered_product_fallback_excludes_deleted_assets_and_preserves_empty_and_video_only_shapes(): void
@@ -112,7 +128,7 @@ class ProductUnifiedMediaApiTest extends TestCase
         ]);
 
         $image = $this->getJson('/api/v1/products/'.$product->slug)->assertOk();
-        $this->assertSame(Storage::disk('product-media-test')->url($first->mediaAsset->path), $image->json('data.image'));
+        $this->assertNull($image->json('data.image'));
         $this->assertSame([
             Storage::disk('product-media-test')->url($first->mediaAsset->path),
             Storage::disk('product-media-test')->url($second->mediaAsset->path),

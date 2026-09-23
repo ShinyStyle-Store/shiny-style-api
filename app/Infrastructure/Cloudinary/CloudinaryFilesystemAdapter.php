@@ -39,6 +39,7 @@ final class CloudinaryFilesystemAdapter implements FilesystemAdapter
         private readonly bool $secure = true,
         private readonly ?string $folder = null,
         private readonly int $timeout = 30,
+        private readonly string $stagingDirectory,
     ) {
         if ($this->cloudName === '') {
             throw new RuntimeException('Cloudinary configuration is incomplete.');
@@ -285,9 +286,10 @@ final class CloudinaryFilesystemAdapter implements FilesystemAdapter
 
     private function spoolSource(mixed $source): string
     {
-        $temporaryPath = tempnam(sys_get_temp_dir(), 'cloudinary-upload-');
+        $stagingDirectory = $this->ensureStagingDirectory();
+        $temporaryPath = tempnam($stagingDirectory, 'cloudinary-upload-');
         if ($temporaryPath === false) {
-            throw new RuntimeException('Cloudinary upload staging failed.');
+            throw new RuntimeException('Cloudinary upload staging file could not be created.');
         }
 
         try {
@@ -332,6 +334,41 @@ final class CloudinaryFilesystemAdapter implements FilesystemAdapter
 
             throw $exception;
         }
+    }
+
+    private function ensureStagingDirectory(): string
+    {
+        $directory = $this->stagingDirectory;
+
+        if (file_exists($directory) && ! is_dir($directory)) {
+            throw new RuntimeException('Cloudinary upload staging path is not a directory.');
+        }
+
+        if (! is_dir($directory)) {
+            try {
+                $created = mkdir($directory, 0775, true);
+            } catch (Throwable $exception) {
+                if (! is_dir($directory)) {
+                    throw new RuntimeException('Cloudinary upload staging directory could not be initialized.', previous: $exception);
+                }
+
+                $created = true;
+            }
+
+            if (! $created && ! is_dir($directory)) {
+                throw new RuntimeException('Cloudinary upload staging directory could not be initialized.');
+            }
+        }
+
+        if (! is_dir($directory)) {
+            throw new RuntimeException('Cloudinary upload staging path is not a directory.');
+        }
+
+        if (! is_writable($directory)) {
+            throw new RuntimeException('Cloudinary upload staging directory is not writable.');
+        }
+
+        return $directory;
     }
 
     private function logUploadDiagnostic(Throwable $exception, string $resourceType): void
