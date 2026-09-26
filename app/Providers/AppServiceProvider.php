@@ -13,6 +13,7 @@ use GuzzleHttp\Client;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Filesystem\FilesystemAdapter;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
@@ -34,6 +35,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $trustedProxies = config('trustedproxy.proxies');
+        if ($trustedProxies !== null) {
+            TrustProxies::at($trustedProxies);
+        }
+        TrustProxies::withHeaders((int) config('trustedproxy.headers'));
+
         Storage::extend('cloudinary', function ($app, array $config) {
             $cloudName = (string) ($config['cloud_name'] ?? '');
             $apiKey = (string) ($config['api_key'] ?? '');
