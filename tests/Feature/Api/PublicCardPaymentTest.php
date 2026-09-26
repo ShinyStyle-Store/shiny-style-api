@@ -7,6 +7,7 @@ use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\OrderItem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
@@ -46,10 +47,12 @@ class PublicCardPaymentTest extends TestCase
         $first->assertCreated()->assertJsonStructure([
             'data' => ['paymentAttemptId', 'status', 'checkoutUrl', 'expiresAt'],
         ]);
+        $returnTokenHash = DB::table('payment_attempts')->value('payment_return_token_hash');
         $second = $this->withHeader('Idempotency-Key', $key)->post($url);
         $second->assertOk()->assertJsonPath('data.status', 'pending');
 
         $this->assertSame($first->json('data.checkoutUrl'), $second->json('data.checkoutUrl'));
+        $this->assertSame($returnTokenHash, DB::table('payment_attempts')->value('payment_return_token_hash'));
         Http::assertSentCount(1);
         $this->assertStringNotContainsString('test-secret', $first->getContent());
         $this->assertStringContainsString('client-secret', $first->json('data.checkoutUrl'));

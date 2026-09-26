@@ -292,8 +292,17 @@ final class PaymobCardIntentionService
 
     private function returnUrl(Order $order, PaymentAttempt $attempt): string
     {
-        return $this->requiredHttpsUrl('redirect_url')
+        $url = $this->requiredHttpsUrl('redirect_url')
             .'#payment_return='.rawurlencode($this->returnTokens->issue($order, $attempt));
+
+        if (strlen($url) > (int) config('payments.redirection_url_max_length', 128)) {
+            throw new PaymobConfigurationException(
+                'invalid_redirect_url',
+                'The Paymob redirect URL is too long.',
+            );
+        }
+
+        return $url;
     }
 
     /** @return array<string, string> */

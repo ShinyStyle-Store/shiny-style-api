@@ -4,6 +4,7 @@ namespace Tests\Feature\Database;
 
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
+use App\Exceptions\PaymobConfigurationException;
 use App\Exceptions\PaymentAttemptException;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
@@ -58,26 +59,50 @@ class PaymobCardIntentionTest extends TestCase
         $this->assertSame('int_123', $stored->provider_intention_id);
         $this->assertSame('456', $stored->provider_order_id);
         $this->assertSame('client-secret-value', $stored->provider_client_secret);
-        $this->assertStringNotContainsString('client-secret-value', (string) \DB::table('payment_attempts')->whereKey($stored->getKey())->value('provider_client_secret'));
+        $this->assertStringNotContainsString('client-secret-value', (string) \DB::table('payment_attempts')->where('id', $stored->getKey())->value('provider_client_secret'));
         $this->assertArrayNotHasKey('provider_client_secret', $stored->toArray());
         $this->assertStringContainsString('publicKey=test-public', $result->checkoutUrl);
         $this->assertStringContainsString('clientSecret=client-secret-value', $result->checkoutUrl);
         $this->assertSame($orderBefore->status, $stored->order->fresh()->status);
         $this->assertSame($orderBefore->payment_status, $stored->order->fresh()->payment_status);
+        Http::assertSentCount(1);
         Http::assertSent(function ($request) use ($attempt): bool {
             $data = $request->data();
+            $prefix = 'https://shop.test/payments/return#payment_return=';
+            $token = str_starts_with($data['redirection_url'], $prefix)
+                ? substr($data['redirection_url'], strlen($prefix))
+                : '';
+
             return $data['amount'] === 17000
                 && $data['payment_methods'] === [123]
                 && $data['special_reference'] === $attempt->merchant_reference
                 && $data['notification_url'] === 'https://shop.test/api/v1/payments/paymob/webhook'
-                && str_starts_with($data['redirection_url'], 'https://shop.test/payments/return#payment_return=')
-                && ! str_contains($data['redirection_url'], $attempt->order->public_id)
-                && ! str_contains($data['redirection_url'], $attempt->public_id)
+                && strlen($data['redirection_url']) <= 128
+                && preg_match('/^[a-f0-9]{32}$/', $token) === 1
+                && hash('sha256', $token) === \DB::table('payment_attempts')->where('id', $attempt->getKey())->value('payment_return_token_hash')
                 && $data['items'][0]['amount'] === 10000
                 && $data['items'][0]['quantity'] === 1
                 && $data['items'][1]['name'] === 'Shipping'
                 && $data['items'][1]['amount'] === 7000;
         });
+    }
+
+    public function test_an_oversized_redirect_url_is_rejected_before_contacting_paymob(): void
+    {
+        config(['services.paymob.redirect_url' => 'https://shop.test/'.str_repeat('a', 110)]);
+        $attempt = $this->makeAttempt();
+        Http::fake();
+
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt);
+            $this->fail('An oversized redirect URL must be rejected locally.');
+        } catch (PaymobConfigurationException $exception) {
+            $this->assertSame('invalid_redirect_url', $exception->errorCode);
+        }
+
+        $this->assertSame(PaymentAttemptStatus::Created, $attempt->fresh()->status);
+        $this->assertNull($attempt->fresh()->payment_return_token_hash);
+        Http::assertNothingSent();
     }
 
     public function test_intention_expiration_is_a_positive_integer_for_fractional_remaining_time(): void
