@@ -31,6 +31,7 @@ class PaymobCardIntentionTest extends TestCase
             'services.paymob.api_base_url' => 'https://paymob.test',
             'services.paymob.intention_endpoint' => '/v1/intention/',
             'services.paymob.redirect_url' => 'https://shop.test/payments/return',
+            'services.paymob.webhook_url' => 'https://shop.test/api/v1/payments/paymob/webhook',
             'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
         ]);
     }
@@ -43,7 +44,7 @@ class PaymobCardIntentionTest extends TestCase
         Http::fake(['https://paymob.test/*' => Http::response([
             'id' => 'int_123',
             'client_secret' => 'client-secret-value',
-            'order' => ['id' => 456],
+            'intention_order_id' => 456,
             'amount' => 17000,
             'currency' => 'EGP',
             'special_reference' => $attempt->merchant_reference,
@@ -55,6 +56,7 @@ class PaymobCardIntentionTest extends TestCase
 
         $this->assertSame(PaymentAttemptStatus::Pending, $stored->status);
         $this->assertSame('int_123', $stored->provider_intention_id);
+        $this->assertSame('456', $stored->provider_order_id);
         $this->assertSame('client-secret-value', $stored->provider_client_secret);
         $this->assertStringNotContainsString('client-secret-value', (string) \DB::table('payment_attempts')->whereKey($stored->getKey())->value('provider_client_secret'));
         $this->assertArrayNotHasKey('provider_client_secret', $stored->toArray());
@@ -67,6 +69,7 @@ class PaymobCardIntentionTest extends TestCase
             return $data['amount'] === 17000
                 && $data['payment_methods'] === [123]
                 && $data['special_reference'] === $attempt->merchant_reference
+                && $data['notification_url'] === 'https://shop.test/api/v1/payments/paymob/webhook'
                 && $data['items'][0]['amount'] === 10000
                 && $data['items'][0]['quantity'] === 1
                 && $data['items'][1]['name'] === 'Shipping'

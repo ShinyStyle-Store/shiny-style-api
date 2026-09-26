@@ -163,6 +163,7 @@ final class PaymobCardIntentionService
         $this->client->validateConfiguration($endpoint);
         $integrationId = $this->integrations->resolve(PaymentMethod::Card);
         $this->requiredHttpsUrl('redirect_url');
+        $this->requiredHttpsUrl('webhook_url');
         $this->requiredPublicKey();
         $this->requiredHttpsUrl('unified_checkout_base_url');
 
@@ -282,6 +283,7 @@ final class PaymobCardIntentionService
                 'expiration' => $seconds,
                 'items' => $items,
                 'billing_data' => $billing,
+                'notification_url' => $this->requiredHttpsUrl('webhook_url'),
                 'redirection_url' => $this->requiredHttpsUrl('redirect_url'),
             ],
         );
@@ -343,7 +345,10 @@ final class PaymobCardIntentionService
                 throw new PaymentAttemptException('malformed_provider_response', 'The payment provider method is inconsistent.');
             }
         }
-        $orderId = $response['order']['id'] ?? $response['order_id'] ?? null;
+        $orderId = $response['intention_order_id']
+            ?? $response['order']['id']
+            ?? $response['order_id']
+            ?? null;
         if ($orderId !== null && (! is_string($orderId) && ! is_int($orderId))) {
             throw new PaymentAttemptException('malformed_provider_response', 'The payment provider order is invalid.');
         }
