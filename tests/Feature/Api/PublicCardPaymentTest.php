@@ -89,6 +89,34 @@ class PublicCardPaymentTest extends TestCase
         $this->assertStringNotContainsString('customer@example.com', $response->getContent());
     }
 
+    public function test_reusing_a_key_after_provider_rejection_conflicts_but_a_new_key_can_retry(): void
+    {
+        $order = $this->cardOrder();
+        Http::fake(['https://paymob.test/*' => Http::sequence()
+            ->push(['detail' => 'Invalid request'], 422)
+            ->push(['id' => 'int-retry', 'client_secret' => 'client-secret-retry'], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $key = (string) Str::uuid();
+
+        $this->withHeader('Idempotency-Key', $key)
+            ->post($url)
+            ->assertUnprocessable()
+            ->assertJson(['code' => 'payment_provider_rejected']);
+
+        $this->withHeader('Idempotency-Key', $key)
+            ->post($url)
+            ->assertConflict()
+            ->assertJson(['code' => 'payment_attempt_not_retryable']);
+
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->post($url)
+            ->assertCreated()
+            ->assertJsonPath('status', 'pending');
+
+        Http::assertSentCount(2);
+        $this->assertDatabaseCount('payment_attempts', 2);
+    }
+
     public function test_signed_initiation_rejects_any_request_body_field(): void
     {
         $order = $this->cardOrder();
