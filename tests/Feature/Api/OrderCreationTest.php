@@ -11,6 +11,8 @@ use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
+use Illuminate\Http\Middleware\TrustProxies;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -219,6 +221,60 @@ class OrderCreationTest extends TestCase
         $this->assertNotNull($response->json('data.payment.expiresAt'));
         $this->assertNotEmpty($response->json('data.payment.initiateUrl'));
         $this->assertNotEmpty($response->json('data.payment.statusUrl'));
+    }
+
+    public function test_card_payment_urls_use_forwarded_https_and_validate_with_the_same_scheme(): void
+    {
+        config([
+            'trustedproxy.proxies' => 'REMOTE_ADDR',
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.public_key' => 'test-public',
+            'services.paymob.card_integration_id' => '456',
+            'services.paymob.api_base_url' => 'https://paymob.test',
+            'services.paymob.intention_endpoint' => '/v1/intention/',
+            'services.paymob.redirect_url' => 'https://shop.test/return',
+            'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
+        ]);
+        TrustProxies::at('REMOTE_ADDR');
+
+        try {
+            $area = $this->shippingArea(20);
+            $item = $this->sellableItem('100.00', 5);
+            $payload = $this->payload($area, $item, 1);
+            $payload['payment_method'] = 'card';
+            $payload['customer']['email'] = 'customer@example.com';
+            $server = [
+                'REMOTE_ADDR' => '10.0.0.1',
+                'HTTP_HOST' => 'shiny-style-api-d0866abd8743.herokuapp.com',
+                'HTTP_X_FORWARDED_PROTO' => 'https',
+                'HTTP_X_FORWARDED_PORT' => '443',
+            ];
+
+            $response = $this->withServerVariables($server)
+                ->withHeader('Idempotency-Key', $this->key())
+                ->postJson('/api/v1/orders', $payload);
+
+            $response->assertCreated();
+            $initiateUrl = $response->json('data.payment.initiateUrl');
+            $statusUrl = $response->json('data.payment.statusUrl');
+            $this->assertStringStartsWith('https://', $initiateUrl);
+            $this->assertStringStartsWith('https://', $statusUrl);
+
+            Http::fake(['https://paymob.test/*' => Http::response([
+                'id' => 'int-forwarded-https',
+                'client_secret' => 'client-secret-forwarded-https',
+            ], 201)]);
+
+            $this->withServerVariables($server)
+                ->withHeader('Idempotency-Key', $this->key())
+                ->post($initiateUrl)
+                ->assertCreated();
+            $this->withServerVariables($server)
+                ->get($statusUrl)
+                ->assertOk();
+        } finally {
+            TrustProxies::flushState();
+        }
     }
 
     public function test_missing_card_configuration_rejects_before_order_or_reservation_creation(): void
