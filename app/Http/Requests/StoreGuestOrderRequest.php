@@ -24,6 +24,9 @@ class StoreGuestOrderRequest extends FormRequest
                 : ($customer['name'] ?? null);
             $customer['phone'] = EgyptianPhone::normalize($customer['phone'] ?? null);
             $customer['alternate_phone'] = EgyptianPhone::normalize($customer['alternate_phone'] ?? null);
+            if (is_string($customer['email'] ?? null)) {
+                $customer['email'] = trim($customer['email']) ?: null;
+            }
             $this->merge(['customer' => $customer]);
         }
 
@@ -52,6 +55,7 @@ class StoreGuestOrderRequest extends FormRequest
             'customer.name' => ['required', 'string', 'max:150'],
             'customer.phone' => ['required', 'string', 'regex:/^01[0125][0-9]{8}$/'],
             'customer.alternate_phone' => ['nullable', 'string', 'regex:/^01[0125][0-9]{8}$/'],
+            'customer.email' => ['nullable', 'email', 'max:255'],
             'shipping' => ['required', 'array'],
             'shipping.shipping_area_id' => ['required', 'integer'],
             'shipping.address' => ['required', 'string', 'max:1000'],
@@ -60,7 +64,7 @@ class StoreGuestOrderRequest extends FormRequest
             'items.*' => ['required', 'array'],
             'items.*.sellable_item_id' => ['required', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:2147483647'],
-            'payment_method' => ['required', 'in:cash_on_delivery'],
+            'payment_method' => ['required', 'in:cash_on_delivery,card'],
             'order_note' => ['nullable', 'string', 'max:1000'],
         ];
     }
@@ -70,7 +74,7 @@ class StoreGuestOrderRequest extends FormRequest
         $validator->after(function ($validator): void {
             $data = $validator->getData();
             $this->rejectUnexpectedKeys($validator, $data, ['customer', 'shipping', 'items', 'payment_method', 'order_note']);
-            $this->rejectUnexpectedKeys($validator, $data['customer'] ?? null, ['name', 'phone', 'alternate_phone'], 'customer');
+            $this->rejectUnexpectedKeys($validator, $data['customer'] ?? null, ['name', 'phone', 'alternate_phone', 'email'], 'customer');
             $this->rejectUnexpectedKeys($validator, $data['shipping'] ?? null, ['shipping_area_id', 'address', 'landmark'], 'shipping');
 
             if (is_array($data['items'] ?? null)) {
@@ -88,6 +92,11 @@ class StoreGuestOrderRequest extends FormRequest
             $idempotencyKey = trim((string) $this->header('Idempotency-Key'));
             if (! Str::isUuid($idempotencyKey)) {
                 $validator->errors()->add('idempotency_key', 'The Idempotency-Key header must be a valid UUID.');
+            }
+
+            if (($data['payment_method'] ?? null) === 'card'
+                && (! is_string($data['customer']['email'] ?? null) || trim($data['customer']['email']) === '')) {
+                $validator->errors()->add('customer.email', 'An email address is required for card payments.');
             }
         });
     }

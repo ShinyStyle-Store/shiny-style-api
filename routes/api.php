@@ -14,6 +14,8 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
 use App\Http\Controllers\Api\HomeProductController;
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PaymobWebhookController;
+use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
@@ -34,6 +36,14 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
+    Route::post('payments/paymob/webhook', [PaymobWebhookController::class, 'handle'])
+        ->middleware('throttle:paymob-webhook');
+    Route::post('orders/{public_id}/payments', [PaymentController::class, 'initiate'])
+        ->middleware(['throttle:payment-initiation'])
+        ->name('orders.payments.initiate');
+    Route::get('orders/{public_id}/payment-status', [PaymentController::class, 'status'])
+        ->middleware(['throttle:payment-status'])
+        ->name('orders.payments.status');
 
     Route::prefix('admin/auth')->group(function (): void {
         Route::post('login', [AdminAuthController::class, 'login'])->middleware('throttle:admin-login');

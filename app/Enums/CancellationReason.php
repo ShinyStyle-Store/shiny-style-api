@@ -9,4 +9,5 @@ enum CancellationReason: string
     case NoResponse = 'no_response';
     case OutOfStock = 'out_of_stock';
     case Other = 'other';
+    case PaymentExpired = 'payment_expired';
 }

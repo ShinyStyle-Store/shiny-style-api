@@ -1,0 +1,147 @@
+<?php
+
+namespace Tests\Feature\Database;
+
+use App\Enums\PaymentAttemptStatus;
+use App\Enums\PaymentMethod;
+use App\Exceptions\PaymentAttemptException;
+use App\Models\Order;
+use App\Models\PaymentAttempt;
+use App\Services\PaymobCardIntentionService;
+use App\Services\PaymentAttemptService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
+use Tests\TestCase;
+
+class PaymobCardIntentionTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Http::preventStrayRequests();
+        config([
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.public_key' => 'test-public',
+            'services.paymob.card_integration_id' => '123',
+            'services.paymob.api_base_url' => 'https://paymob.test',
+            'services.paymob.intention_endpoint' => '/v1/intention/',
+            'services.paymob.redirect_url' => 'https://shop.test/payments/return',
+            'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
+        ]);
+    }
+
+    public function test_it_builds_and_persists_a_card_intention_without_mutating_the_order(): void
+    {
+        $attempt = $this->makeAttempt();
+        $orderBefore = $attempt->order->fresh();
+
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int_123',
+            'client_secret' => 'client-secret-value',
+            'order' => ['id' => 456],
+            'amount' => 17000,
+            'currency' => 'EGP',
+            'special_reference' => $attempt->merchant_reference,
+            'payment_methods' => [['integration_id' => 123]],
+        ], 201)]);
+
+        $result = app(PaymobCardIntentionService::class)->initiate($attempt);
+        $stored = $attempt->fresh();
+
+        $this->assertSame(PaymentAttemptStatus::Pending, $stored->status);
+        $this->assertSame('int_123', $stored->provider_intention_id);
+        $this->assertSame('client-secret-value', $stored->provider_client_secret);
+        $this->assertStringNotContainsString('client-secret-value', (string) \DB::table('payment_attempts')->whereKey($stored->getKey())->value('provider_client_secret'));
+        $this->assertArrayNotHasKey('provider_client_secret', $stored->toArray());
+        $this->assertStringContainsString('publicKey=test-public', $result->checkoutUrl);
+        $this->assertStringContainsString('clientSecret=client-secret-value', $result->checkoutUrl);
+        $this->assertSame($orderBefore->status, $stored->order->fresh()->status);
+        $this->assertSame($orderBefore->payment_status, $stored->order->fresh()->payment_status);
+        Http::assertSent(function ($request) use ($attempt): bool {
+            $data = $request->data();
+            return $data['amount'] === 17000
+                && $data['payment_methods'] === [123]
+                && $data['special_reference'] === $attempt->merchant_reference
+                && $data['items'][0]['amount'] === 10000
+                && $data['items'][0]['quantity'] === 1
+                && $data['items'][1]['name'] === 'Shipping'
+                && $data['items'][1]['amount'] === 7000;
+        });
+    }
+
+    public function test_pending_attempt_is_replayed_without_a_second_provider_request(): void
+    {
+        $attempt = $this->makeAttempt();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int_123', 'client_secret' => 'client-secret', 'amount' => 17000, 'currency' => 'EGP',
+        ], 201)]);
+        $service = app(PaymobCardIntentionService::class);
+
+        $first = $service->initiate($attempt);
+        $second = $service->initiate($attempt->fresh());
+
+        $this->assertSame($first->checkoutUrl, $second->checkoutUrl);
+        Http::assertSentCount(1);
+    }
+
+    public function test_ambiguous_provider_outcomes_block_resubmission(): void
+    {
+        $attempt = $this->makeAttempt();
+        Http::fake(['https://paymob.test/*' => Http::response(['provider_error' => 'sensitive'], 503)]);
+
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt);
+            $this->fail('An ambiguous provider response must fail safely.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_outcome_uncertain', $exception->errorCode);
+        }
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt->fresh());
+            $this->fail('A requires-review attempt must not be resubmitted.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_attempt_not_retryable', $exception->errorCode);
+        }
+        Http::assertSentCount(1);
+    }
+
+    public function test_local_validation_fails_before_http_and_does_not_claim_the_attempt(): void
+    {
+        $attempt = $this->makeAttempt();
+        $attempt->order->update(['payment_expires_at' => now()->subSecond()]);
+        Http::fake();
+
+        $this->expectException(PaymentAttemptException::class);
+        app(PaymobCardIntentionService::class)->initiate($attempt);
+
+        $this->assertSame(PaymentAttemptStatus::Created, $attempt->fresh()->status);
+        Http::assertNothingSent();
+    }
+
+    private function makeAttempt(array $orderOverrides = []): PaymentAttempt
+    {
+        $order = Order::factory()->create(array_merge([
+            'customer_name' => 'Test Customer',
+            'payment_method' => PaymentMethod::Card,
+            'subtotal' => '100.00',
+            'shipping_fee' => '70.00',
+            'total' => '170.00',
+            'payment_expires_at' => now()->addMinutes(30),
+        ], $orderOverrides));
+        $order->items()->create([
+            'sku' => 'SNAPSHOT-1',
+            'product_name_en' => 'Stored Snapshot',
+            'product_name_ar' => 'Stored Snapshot',
+            'options_snapshot' => [],
+            'unit_price' => '100.00',
+            'quantity' => 1,
+            'line_total' => '100.00',
+        ]);
+
+        return app(PaymentAttemptService::class)->create($order, PaymentMethod::Card, (string) Str::uuid());
+    }
+}

@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use InvalidArgumentException;
+use OverflowException;
 
 final class ExactMoney
 {
@@ -16,6 +17,19 @@ final class ExactMoney
         $fraction = str_pad($matches[2] ?? '', 2, '0');
 
         return ltrim($whole.$fraction, '0') ?: '0';
+    }
+
+    public static function toMinorUnitInteger(string $money): int
+    {
+        $minorUnits = self::toMinorUnits($money);
+
+        if (strlen($minorUnits) > strlen((string) PHP_INT_MAX)
+            || (strlen($minorUnits) === strlen((string) PHP_INT_MAX)
+                && strcmp($minorUnits, (string) PHP_INT_MAX) > 0)) {
+            throw new OverflowException('The monetary value exceeds the supported integer range.');
+        }
+
+        return (int) $minorUnits;
     }
 
     public static function formatMinorUnits(string $minorUnits): string

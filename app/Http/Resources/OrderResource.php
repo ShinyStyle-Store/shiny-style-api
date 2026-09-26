@@ -4,12 +4,13 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\URL;
 
 class OrderResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
-        return [
+        $data = [
             'public_id' => $this->public_id,
             'order_number' => $this->order_number,
             'status' => $this->status->value,
@@ -49,6 +50,27 @@ class OrderResource extends JsonResource
             'order_note' => $this->customer_note,
             'created_at' => $this->created_at?->toISOString(),
         ];
+
+        if ($this->payment_method->value === 'card') {
+            $data['payment'] = [
+                'required' => true,
+                'method' => 'card',
+                'status' => $this->payment_status->value,
+                'expiresAt' => $this->payment_expires_at?->toISOString(),
+                'initiateUrl' => URL::temporarySignedRoute(
+                    'orders.payments.initiate',
+                    now()->addMinutes((int) config('payments.initiation_url_minutes', 30)),
+                    ['public_id' => $this->public_id],
+                ),
+                'statusUrl' => URL::temporarySignedRoute(
+                    'orders.payments.status',
+                    now()->addMinutes((int) config('payments.status_url_minutes', 1440)),
+                    ['public_id' => $this->public_id],
+                ),
+            ];
+        }
+
+        return $data;
     }
 
     private function localizedValue(string $arabic, string $english): string
