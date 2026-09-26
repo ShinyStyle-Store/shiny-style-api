@@ -239,8 +239,9 @@ final class PaymobClient
         }
         $value = preg_replace('/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i', '[redacted-email]', $value) ?? $value;
         $value = preg_replace('/\b(?:bearer\s+|token\s+|secret\s*[=:]\s*|client[_ -]?secret\s*[=:]\s*)[^\s,;]+/i', '[redacted-secret]', $value) ?? $value;
-        $value = preg_replace('/\b\d+\b/', '[redacted-number]', $value) ?? $value;
-        if (preg_match('/\b(customer|email|phone|address|name|cardholder|pan|cvv|otp)\b/i', $value) === 1) {
+        $value = preg_replace('/(?<![A-Za-z0-9])\d+(?:[.,]\d+)?(?![A-Za-z0-9])/', '[redacted-number]', $value) ?? $value;
+        $sensitiveCheck = str_replace(['[redacted-email]', '[redacted-secret]', '[redacted-number]'], '', $value);
+        if (preg_match('/\b(customer|email|phone|address|name|cardholder|pan|cvv|otp)\b/i', $sensitiveCheck) === 1) {
             return '[redacted-sensitive-provider-detail]';
         }
 
