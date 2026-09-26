@@ -25,6 +25,7 @@ final class PaymobCardIntentionService
     public function __construct(
         private readonly PaymobClient $client,
         private readonly PaymobIntegrationResolver $integrations,
+        private readonly PaymentReturnTokenService $returnTokens,
     ) {
     }
 
@@ -284,9 +285,15 @@ final class PaymobCardIntentionService
                 'items' => $items,
                 'billing_data' => $billing,
                 'notification_url' => $this->requiredHttpsUrl('webhook_url'),
-                'redirection_url' => $this->requiredHttpsUrl('redirect_url'),
+                'redirection_url' => $this->returnUrl($order, $attempt),
             ],
         );
+    }
+
+    private function returnUrl(Order $order, PaymentAttempt $attempt): string
+    {
+        return $this->requiredHttpsUrl('redirect_url')
+            .'#payment_return='.rawurlencode($this->returnTokens->issue($order, $attempt));
     }
 
     /** @return array<string, string> */

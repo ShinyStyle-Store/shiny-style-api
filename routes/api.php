@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\HomeProductController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PaymobWebhookController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PaymentReturnController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
@@ -44,6 +45,9 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('orders/{public_id}/payment-status', [PaymentController::class, 'status'])
         ->middleware(['throttle:payment-status'])
         ->name('orders.payments.status');
+    Route::get('payments/return', [PaymentReturnController::class, 'show'])
+        ->middleware(['throttle:payment-status'])
+        ->name('payments.return');
 
     Route::prefix('admin/auth')->group(function (): void {
         Route::post('login', [AdminAuthController::class, 'login'])->middleware('throttle:admin-login');
