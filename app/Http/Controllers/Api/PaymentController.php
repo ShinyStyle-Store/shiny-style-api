@@ -55,10 +55,12 @@ class PaymentController extends Controller
         }
 
         return response()->json([
-            'paymentAttemptId' => $attempt->public_id,
-            'status' => $result->status->value,
-            'checkoutUrl' => $result->checkoutUrl,
-            'expiresAt' => $result->expiresAt->toISOString(),
+            'data' => [
+                'paymentAttemptId' => $attempt->public_id,
+                'status' => $result->status->value,
+                'checkoutUrl' => $result->checkoutUrl,
+                'expiresAt' => $result->expiresAt->toISOString(),
+            ],
         ], $attempt->wasRecentlyCreated ? 201 : 200);
     }
 
@@ -81,15 +83,17 @@ class PaymentController extends Controller
             && ! in_array($attemptStatus, [PaymentAttemptStatus::Pending, PaymentAttemptStatus::Submitting, PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true);
 
         return response()->json([
-            'orderPublicId' => $order->public_id,
-            'orderStatus' => $order->status->value,
-            'paymentStatus' => $order->payment_status->value,
-            'paymentMethod' => $order->payment_method->value,
-            'latestAttemptStatus' => $attemptStatus?->value,
-            'paidAt' => $attempt?->paid_at?->toISOString(),
-            'paymentExpiresAt' => $order->payment_expires_at?->toISOString(),
-            'retryable' => $retryable,
-            'resultCode' => $this->resultCode($order, $attemptStatus),
+            'data' => [
+                'orderPublicId' => $order->public_id,
+                'orderStatus' => $order->status->value,
+                'paymentStatus' => $order->payment_status->value,
+                'paymentMethod' => $order->payment_method->value,
+                'latestAttemptStatus' => $attemptStatus?->value,
+                'paidAt' => $attempt?->paid_at?->toISOString(),
+                'paymentExpiresAt' => $order->payment_expires_at?->toISOString(),
+                'retryable' => $retryable,
+                'resultCode' => $this->resultCode($order, $attemptStatus),
+            ],
         ]);
     }
 
