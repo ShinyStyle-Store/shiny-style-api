@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\PaymentAttempt;
 use App\Services\PaymobCardIntentionService;
 use App\Services\PaymentAttemptService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -71,6 +72,38 @@ class PaymobCardIntentionTest extends TestCase
                 && $data['items'][1]['name'] === 'Shipping'
                 && $data['items'][1]['amount'] === 7000;
         });
+    }
+
+    public function test_intention_expiration_is_a_positive_integer_for_fractional_remaining_time(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-26 12:00:00.250000'));
+
+        try {
+            $attempt = $this->makeAttempt([
+                'payment_expires_at' => Carbon::parse('2026-09-26 12:30:00'),
+            ]);
+
+            Http::fake(['https://paymob.test/*' => Http::response([
+                'id' => 'int_fractional_expiration',
+                'client_secret' => 'client-secret',
+                'amount' => 17000,
+                'currency' => 'EGP',
+            ], 201)]);
+
+            app(PaymobCardIntentionService::class)->initiate($attempt);
+
+            Http::assertSent(function ($request): bool {
+                $payload = json_decode($request->body(), true, 512, JSON_THROW_ON_ERROR);
+
+                $this->assertIsInt($payload['expiration']);
+                $this->assertGreaterThan(0, $payload['expiration']);
+                $this->assertSame(1799, $payload['expiration']);
+
+                return true;
+            });
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_pending_attempt_is_replayed_without_a_second_provider_request(): void
