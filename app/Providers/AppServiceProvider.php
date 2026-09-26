@@ -88,5 +88,17 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(5)->by($key.'|'.$request->ip());
         });
+
+        RateLimiter::for('paymob-webhook', function (Request $request): Limit {
+            return Limit::perMinute(120)->by((string) $request->ip());
+        });
+
+        RateLimiter::for('payment-initiation', function (Request $request): Limit {
+            return Limit::perMinute(12)->by((string) $request->ip());
+        });
+
+        RateLimiter::for('payment-status', function (Request $request): Limit {
+            return Limit::perMinute(60)->by((string) $request->ip());
+        });
     }
 }

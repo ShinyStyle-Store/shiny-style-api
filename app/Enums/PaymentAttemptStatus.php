@@ -10,6 +10,7 @@ enum PaymentAttemptStatus: string
     case Failed = 'failed';
     case Expired = 'expired';
     case RequiresReview = 'requires_review';
+    case Submitting = 'submitting';
 
     public function isActive(): bool
     {
@@ -18,6 +19,11 @@ enum PaymentAttemptStatus: string
 
     public function isTerminal(): bool
     {
-        return ! $this->isActive();
+        return in_array($this, [self::Paid, self::Failed, self::Expired, self::RequiresReview], true);
+    }
+
+    public function isSubmitting(): bool
+    {
+        return $this === self::Submitting;
     }
 }

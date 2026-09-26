@@ -78,6 +78,31 @@ class OrderLifecycleTest extends TestCase
         $this->assertInventory($item, stock: 7, reserved: 0);
     }
 
+    public function test_unpaid_online_order_cannot_be_confirmed_but_paid_online_order_can(): void
+    {
+        $service = app(OrderLifecycleService::class);
+        $unpaid = Order::factory()->create([
+            'payment_method' => PaymentMethod::Card,
+            'payment_status' => PaymentStatus::Pending,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+
+        try {
+            $service->transition($unpaid, OrderStatus::Confirmed);
+            $this->fail('An unpaid online order must not be confirmed.');
+        } catch (InvalidOrderLifecycleException $exception) {
+            $this->assertSame('Online payment is required before confirmation.', $exception->getMessage());
+        }
+
+        $paid = Order::factory()->create([
+            'payment_method' => PaymentMethod::Card,
+            'payment_status' => PaymentStatus::Paid,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+
+        $this->assertSame(OrderStatus::Confirmed, $service->transition($paid, OrderStatus::Confirmed)->status);
+    }
+
     public function test_already_paid_cod_order_can_be_delivered_and_repeated_delivery_is_idempotent(): void
     {
         Carbon::setTestNow('2026-09-19 15:00:00');

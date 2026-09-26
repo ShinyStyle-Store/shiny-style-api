@@ -61,6 +61,12 @@ class OrderLifecycleService
                 throw new InvalidOrderLifecycleException('The requested order transition is not allowed.');
             }
 
+            if ($target === OrderStatus::Confirmed
+                && $lockedOrder->payment_method->isOnline()
+                && $lockedOrder->payment_status !== PaymentStatus::Paid) {
+                throw new InvalidOrderLifecycleException('Online payment is required before confirmation.');
+            }
+
             if ($target === OrderStatus::Delivered) {
                 $this->validateDeliveryPaymentState($lockedOrder);
             }
@@ -106,7 +112,7 @@ class OrderLifecycleService
     private function aggregateQuantities(Order $order): array
     {
         $quantities = [];
-        $items = OrderItem::query()->where('order_id', $order->getKey())->lockForUpdate()->get();
+        $items = OrderItem::query()->where('order_id', $order->getKey())->orderBy('id')->lockForUpdate()->get();
 
         foreach ($items as $item) {
             if ($item->quantity <= 0) {

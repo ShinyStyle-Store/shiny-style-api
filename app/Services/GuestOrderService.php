@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Exceptions\IdempotencyConflictException;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\SellableItem;
@@ -139,6 +141,7 @@ class GuestOrderService
             ];
         }
 
+        $paymentMethod = PaymentMethod::from($data['payment_method']);
         $order = Order::create([
             'idempotency_key' => $idempotencyKey,
             'request_fingerprint' => $fingerprint,
@@ -146,7 +149,7 @@ class GuestOrderService
             'customer_name' => $data['customer']['name'],
             'customer_phone' => $data['customer']['phone'],
             'alternate_phone' => $data['customer']['alternate_phone'] ?? null,
-            'customer_email' => null,
+            'customer_email' => $data['customer']['email'] ?? null,
             'shipping_area_id' => $shippingArea->getKey(),
             'shipping_area_code' => $shippingArea->code,
             'shipping_area_name_ar' => $shippingArea->name_ar,
@@ -160,8 +163,11 @@ class GuestOrderService
             'total' => ExactMoney::formatMinorUnits(ExactMoney::add($subtotal, $shippingFee)),
             'status' => 'pending_confirmation',
             'contact_status' => 'not_contacted',
-            'payment_method' => 'cash_on_delivery',
-            'payment_status' => 'unpaid',
+            'payment_method' => $paymentMethod,
+            'payment_status' => $paymentMethod === PaymentMethod::Card ? PaymentStatus::Pending : PaymentStatus::Unpaid,
+            'payment_expires_at' => $paymentMethod === PaymentMethod::Card
+                ? now()->addMinutes((int) config('payments.reservation_minutes', 30))
+                : null,
         ]);
 
         foreach ($lines as $line) {
@@ -197,6 +203,7 @@ class GuestOrderService
                 'name' => $data['customer']['name'],
                 'phone' => $data['customer']['phone'],
                 'alternate_phone' => $data['customer']['alternate_phone'] ?? null,
+                'email' => $data['customer']['email'] ?? null,
             ],
             'shipping' => [
                 'shipping_area_id' => (int) $data['shipping']['shipping_area_id'],

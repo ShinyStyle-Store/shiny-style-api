@@ -35,4 +35,22 @@ return [
         ],
     ],
 
+    'paymob' => [
+        'secret_key' => env('PAYMOB_SECRET_KEY'),
+        'public_key' => env('PAYMOB_PUBLIC_KEY'),
+        'hmac_secret' => env('PAYMOB_HMAC_SECRET'),
+        'card_integration_id' => env('PAYMOB_CARD_INTEGRATION_ID'),
+        'wallet_integration_id' => env('PAYMOB_WALLET_INTEGRATION_ID'),
+        'api_base_url' => env('PAYMOB_API_BASE_URL', 'https://accept.paymob.com'),
+        'intention_endpoint' => env('PAYMOB_INTENTION_ENDPOINT', '/v1/intention/'),
+        'unified_checkout_base_url' => env(
+            'PAYMOB_UNIFIED_CHECKOUT_BASE_URL',
+            'https://accept.paymob.com/unifiedcheckout/',
+        ),
+        'redirect_url' => env('PAYMOB_REDIRECT_URL'),
+        'webhook_url' => env('PAYMOB_WEBHOOK_URL'),
+        'timeout_seconds' => max(1, (int) env('PAYMOB_TIMEOUT_SECONDS', 30)),
+        'connect_timeout_seconds' => max(1, (int) env('PAYMOB_CONNECT_TIMEOUT_SECONDS', 10)),
+    ],
+
 ];

@@ -88,6 +88,19 @@ class PaymentAttemptService
                     );
                 }
 
+                $submittingAttempt = PaymentAttempt::query()
+                    ->where('order_id', $lockedOrder->getKey())
+                    ->where('status', PaymentAttemptStatus::Submitting->value)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($submittingAttempt !== null) {
+                    throw new PaymentAttemptException(
+                        'payment_attempt_submission_ambiguous',
+                        'A payment attempt has an uncertain provider outcome.',
+                    );
+                }
+
                 $expiresAt = $lockedOrder->payment_expires_at;
                 if ($expiresAt === null) {
                     throw new PaymentAttemptException(
