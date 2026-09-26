@@ -70,6 +70,9 @@ class PaymobCardIntentionTest extends TestCase
                 && $data['payment_methods'] === [123]
                 && $data['special_reference'] === $attempt->merchant_reference
                 && $data['notification_url'] === 'https://shop.test/api/v1/payments/paymob/webhook'
+                && str_starts_with($data['redirection_url'], 'https://shop.test/payments/return#payment_return=')
+                && ! str_contains($data['redirection_url'], $attempt->order->public_id)
+                && ! str_contains($data['redirection_url'], $attempt->public_id)
                 && $data['items'][0]['amount'] === 10000
                 && $data['items'][0]['quantity'] === 1
                 && $data['items'][1]['name'] === 'Shipping'
