@@ -206,4 +206,70 @@ class PaymobClientTest extends TestCase
                 && ! str_contains($serialized, 'test-hmac-secret');
         });
     }
+
+    public function test_nested_paymob_validation_errors_are_flattened_without_logging_values(): void
+    {
+        Log::spy();
+        Http::fake([
+            'https://paymob.test/*' => Http::response([
+                'items' => [
+                    'name' => ['This field is required.'],
+                    'amount' => ['Submitted 170.00'],
+                ],
+                'billing_data' => [
+                    'phone_number' => ['Invalid customer phone 01012345678'],
+                ],
+                'raw_response' => ['customer_name' => 'Sensitive Customer'],
+            ], 400, ['X-Correlation-ID' => 'provider-correlation-400']),
+        ]);
+
+        try {
+            app(PaymobClient::class)->postJson('create_intention', '/v1/intention/', []);
+            $this->fail('The provider rejection should be translated.');
+        } catch (PaymobRequestException $exception) {
+            $this->assertSame('provider_client_error', $exception->errorCode);
+            $this->assertSame(400, $exception->statusCode);
+        }
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context): bool {
+            $serialized = json_encode($context, JSON_THROW_ON_ERROR);
+
+            return $message === 'Paymob request rejected by provider.'
+                && $context['provider_status'] === 400
+                && $context['provider_correlation_id'] === 'provider-correlation-400'
+                && $context['validation_errors'] === [
+                    ['field' => 'items.name', 'message' => 'This field is required.'],
+                    ['field' => 'items.amount', 'message' => 'Submitted [redacted-number]'],
+                    ['field' => 'billing_data.phone_number', 'message' => '[redacted-sensitive-provider-detail]'],
+                ]
+                && ! str_contains($serialized, '01012345678')
+                && ! str_contains($serialized, 'Sensitive Customer')
+                && ! str_contains($serialized, 'raw_response');
+        });
+    }
+
+    public function test_non_json_provider_400_logs_no_unusable_body_as_diagnostic(): void
+    {
+        Log::spy();
+        Http::fake([
+            'https://paymob.test/*' => Http::response('provider rejection body must not be logged', 400),
+        ]);
+
+        try {
+            app(PaymobClient::class)->postJson('create_intention', '/v1/intention/', []);
+            $this->fail('The provider rejection should be translated.');
+        } catch (PaymobRequestException $exception) {
+            $this->assertSame('provider_client_error', $exception->errorCode);
+            $this->assertSame(400, $exception->statusCode);
+        }
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context): bool {
+            $serialized = json_encode($context, JSON_THROW_ON_ERROR);
+
+            return $message === 'Paymob request rejected by provider.'
+                && ! array_key_exists('provider_detail', $context)
+                && ! array_key_exists('validation_errors', $context)
+                && ! str_contains($serialized, 'provider rejection body');
+        });
+    }
 }

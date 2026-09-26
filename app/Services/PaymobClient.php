@@ -166,7 +166,13 @@ final class PaymobClient
         ];
 
         if (is_array($provider)) {
-            $detail = $this->safeProviderText($provider['detail'] ?? null);
+            $detail = null;
+            foreach (['detail', 'message', 'error'] as $detailKey) {
+                $detail = $this->safeProviderText($provider[$detailKey] ?? null);
+                if ($detail !== null) {
+                    break;
+                }
+            }
             if ($detail !== null) {
                 $context['provider_detail'] = $detail;
             }
@@ -188,29 +194,78 @@ final class PaymobClient
     /** @return list<array{field:string,message?:string}> */
     private function validationDiagnostics(array $provider): array
     {
-        foreach (['errors', 'validation_errors', 'field_errors'] as $key) {
-            if (! is_array($provider[$key] ?? null)) {
-                continue;
-            }
+        $diagnostics = [];
+        $foundValidationWrapper = false;
 
-            $diagnostics = [];
-            foreach ($provider[$key] as $field => $error) {
-                if (! is_string($field) || $field === '') {
+        foreach (['errors', 'validation_errors', 'field_errors'] as $key) {
+            if (is_array($provider[$key] ?? null)) {
+                $foundValidationWrapper = true;
+                $this->collectValidationDiagnostics($provider[$key], '', $diagnostics);
+            }
+        }
+
+        if (! $foundValidationWrapper) {
+            foreach ($provider as $field => $error) {
+                if (! is_string($field) || ! is_array($error) || $this->isSensitiveResponseKey($field)) {
                     continue;
                 }
 
-                $entry = ['field' => $this->safeFieldName($field)];
-                $message = $this->safeProviderText(is_string($error) ? $error : null);
-                if ($message !== null) {
-                    $entry['message'] = $message;
-                }
-                $diagnostics[] = $entry;
+                $this->collectValidationDiagnostics($error, $field, $diagnostics);
             }
-
-            return $diagnostics;
         }
 
-        return [];
+        return array_slice($diagnostics, 0, 20);
+    }
+
+    /** @param list<array{field:string,message?:string}> $diagnostics */
+    private function collectValidationDiagnostics(mixed $value, string $path, array &$diagnostics, int $depth = 0): void
+    {
+        if ($depth > 6 || count($diagnostics) >= 20 || ! is_array($value)) {
+            return;
+        }
+
+        foreach ($value as $field => $error) {
+            if (count($diagnostics) >= 20) {
+                return;
+            }
+
+            $fieldName = is_int($field) ? '' : trim((string) $field);
+            $nextPath = $fieldName === ''
+                ? $path
+                : ($path === '' ? $fieldName : $path.'.'.$fieldName);
+
+            if (is_array($error)) {
+                $this->collectValidationDiagnostics($error, $nextPath, $diagnostics, $depth + 1);
+                continue;
+            }
+
+            if ($nextPath === '' || ! is_string($error)) {
+                continue;
+            }
+
+            $entry = ['field' => $this->safeFieldName($nextPath)];
+            $message = $this->safeProviderText($error);
+            if ($message !== null) {
+                $entry['message'] = $message;
+            }
+            $diagnostics[] = $entry;
+        }
+    }
+
+    private function isSensitiveResponseKey(string $key): bool
+    {
+        return in_array(strtolower($key), [
+            'raw_response',
+            'raw_sensitive_body',
+            'payload',
+            'request',
+            'authorization',
+            'headers',
+            'client_secret',
+            'secret_key',
+            'public_key',
+            'hmac_secret',
+        ], true);
     }
 
     private function safeIdentifier(mixed $value): ?string
