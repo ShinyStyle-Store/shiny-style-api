@@ -236,7 +236,11 @@ final class PaymobCardIntentionService
 
     private function snapshot(PaymentAttempt $attempt, Order $order, int $integrationId): PaymobIntentionSnapshot
     {
-        $seconds = max(1, min(86400, now()->diffInSeconds($order->payment_expires_at, false)));
+        $remainingSeconds = now()->diffInSeconds($order->payment_expires_at, false);
+        $seconds = min(86400, (int) floor($remainingSeconds));
+        if ($seconds < 1) {
+            throw new PaymentAttemptException('payment_window_expired', 'The payment window has expired.');
+        }
         $items = [];
         $represented = 0;
         foreach ($order->items as $item) {
