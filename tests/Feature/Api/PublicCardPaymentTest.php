@@ -43,14 +43,16 @@ class PublicCardPaymentTest extends TestCase
         $key = (string) Str::uuid();
 
         $first = $this->withHeader('Idempotency-Key', $key)->post($url);
-        $first->assertCreated()->assertJsonStructure(['paymentAttemptId', 'status', 'checkoutUrl', 'expiresAt']);
+        $first->assertCreated()->assertJsonStructure([
+            'data' => ['paymentAttemptId', 'status', 'checkoutUrl', 'expiresAt'],
+        ]);
         $second = $this->withHeader('Idempotency-Key', $key)->post($url);
-        $second->assertOk()->assertJson(['status' => 'pending']);
+        $second->assertOk()->assertJsonPath('data.status', 'pending');
 
-        $this->assertSame($first->json('checkoutUrl'), $second->json('checkoutUrl'));
+        $this->assertSame($first->json('data.checkoutUrl'), $second->json('data.checkoutUrl'));
         Http::assertSentCount(1);
         $this->assertStringNotContainsString('test-secret', $first->getContent());
-        $this->assertStringContainsString('client-secret', $first->json('checkoutUrl'));
+        $this->assertStringContainsString('client-secret', $first->json('data.checkoutUrl'));
     }
 
     public function test_signed_initiation_accepts_an_empty_json_object(): void
@@ -112,7 +114,7 @@ class PublicCardPaymentTest extends TestCase
         $this->withHeader('Idempotency-Key', (string) Str::uuid())
             ->post($url)
             ->assertCreated()
-            ->assertJsonPath('status', 'pending');
+            ->assertJsonPath('data.status', 'pending');
 
         Http::assertSentCount(2);
         $this->assertDatabaseCount('payment_attempts', 2);
@@ -174,11 +176,26 @@ class PublicCardPaymentTest extends TestCase
         $response = $this->get($url);
 
         $response->assertOk()
-            ->assertJsonPath('orderPublicId', $order->public_id)
-            ->assertJsonPath('paymentStatus', PaymentStatus::Pending->value)
-            ->assertJsonMissingPath('customer')
-            ->assertJsonMissingPath('providerClientSecret')
-            ->assertJsonMissingPath('id');
+            ->assertJsonStructure([
+                'data' => [
+                    'orderPublicId', 'orderStatus', 'paymentStatus', 'paymentMethod',
+                    'latestAttemptStatus', 'paidAt', 'paymentExpiresAt', 'retryable', 'resultCode',
+                ],
+            ])
+            ->assertJsonPath('data.orderPublicId', $order->public_id)
+            ->assertJsonPath('data.paymentStatus', PaymentStatus::Pending->value)
+            ->assertJsonPath('data.latestAttemptStatus', null)
+            ->assertJsonPath('data.resultCode', 'payment_not_started')
+            ->assertJsonMissingPath('data.customer')
+            ->assertJsonMissingPath('data.providerClientSecret')
+            ->assertJsonMissingPath('data.id');
+
+        $order->update(['payment_status' => PaymentStatus::Paid]);
+
+        $this->get($url)
+            ->assertOk()
+            ->assertJsonPath('data.paymentStatus', PaymentStatus::Paid->value)
+            ->assertJsonPath('data.resultCode', 'paid');
     }
 
     public function test_modified_signed_order_identifier_is_rejected(): void
