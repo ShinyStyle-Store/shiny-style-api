@@ -11,6 +11,7 @@ use App\Services\PaymobCardIntentionService;
 use App\Services\PaymentAttemptService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -107,6 +108,38 @@ class PaymobCardIntentionTest extends TestCase
             $this->assertSame('payment_attempt_not_retryable', $exception->errorCode);
         }
         Http::assertSentCount(1);
+    }
+
+    public function test_provider_rejection_keeps_public_diagnostics_out_of_the_exception_and_logs(): void
+    {
+        $attempt = $this->makeAttempt();
+        Log::spy();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'detail' => 'Invalid customer@example.com secret=do-not-log',
+            'errors' => ['billing_data.email' => 'Invalid customer@example.com'],
+            'raw_response' => 'customer phone 01012345678 client-secret-value',
+        ], 422)]);
+
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt);
+            $this->fail('A provider rejection should be raised.');
+        } catch (\App\Exceptions\PaymobRequestException $exception) {
+            $this->assertSame('provider_client_error', $exception->errorCode);
+            $this->assertStringNotContainsString('customer@example.com', $exception->getMessage());
+            $this->assertStringNotContainsString('client-secret-value', $exception->getMessage());
+        }
+
+        $attempt->refresh();
+        $this->assertSame(PaymentAttemptStatus::Failed, $attempt->status);
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context): bool {
+            $serialized = json_encode($context, JSON_THROW_ON_ERROR);
+
+            return $message === 'Paymob request rejected by provider.'
+                && ! str_contains($serialized, 'customer@example.com')
+                && ! str_contains($serialized, 'client-secret-value')
+                && ! str_contains($serialized, '01012345678')
+                && ! str_contains($serialized, 'raw_response');
+        });
     }
 
     public function test_local_validation_fails_before_http_and_does_not_claim_the_attempt(): void

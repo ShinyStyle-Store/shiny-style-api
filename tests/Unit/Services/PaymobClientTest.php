@@ -6,6 +6,7 @@ use App\Exceptions\PaymobConfigurationException;
 use App\Exceptions\PaymobRequestException;
 use App\Services\PaymobClient;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -147,5 +148,62 @@ class PaymobClientTest extends TestCase
         app(PaymobClient::class)->postJson('foundation.test', '/v1/test', []);
 
         Http::assertSentCount(1);
+    }
+
+    public function test_client_errors_log_only_sanitized_provider_diagnostics(): void
+    {
+        Log::spy();
+        Http::fake([
+            'https://paymob.test/*' => Http::response([
+                'detail' => 'Invalid request for customer@example.com secret=do-not-log',
+                'errors' => [
+                    'billing_data.email' => 'Invalid customer@example.com',
+                    'amount' => 'Submitted 17000',
+                ],
+                'raw_sensitive_body' => 'client-secret-value and customer phone 01012345678',
+                'authorization' => 'Token test-secret',
+                'public_key' => 'test-public',
+                'hmac_secret' => 'test-hmac-secret',
+            ], 422, ['X-Request-ID' => 'provider-request-123']),
+        ]);
+
+        try {
+            app(PaymobClient::class)->postJson('create_intention', '/v1/intention/', [
+                'billing_data' => ['email' => 'customer@example.com'],
+                'amount' => 17000,
+            ], [
+                'payment_attempt_public_id' => '01JATTEMPTPUBLICID',
+                'merchant_reference' => 'merchant-reference-123',
+            ]);
+            $this->fail('The provider rejection should be translated.');
+        } catch (PaymobRequestException $exception) {
+            $this->assertSame('provider_client_error', $exception->errorCode);
+            $this->assertSame(422, $exception->statusCode);
+            $this->assertStringNotContainsString('customer@example.com', $exception->getMessage());
+            $this->assertStringNotContainsString('client-secret-value', $exception->getMessage());
+        }
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(function (string $message, array $context): bool {
+            $serialized = json_encode($context, JSON_THROW_ON_ERROR);
+
+            return $message === 'Paymob request rejected by provider.'
+                && $context['operation'] === 'create_intention'
+                && $context['provider_status'] === 422
+                && $context['payment_attempt_public_id'] === '01JATTEMPTPUBLICID'
+                && $context['merchant_reference'] === 'merchant-reference-123'
+                && $context['provider_correlation_id'] === 'provider-request-123'
+                && $context['validation_errors'] === [
+                    ['field' => 'billing_data.email', 'message' => 'Invalid [redacted-email]'],
+                    ['field' => 'amount', 'message' => 'Submitted [redacted-number]'],
+                ]
+                && str_contains((string) $context['provider_detail'], 'Invalid request')
+                && ! str_contains($serialized, 'customer@example.com')
+                && ! str_contains($serialized, 'client-secret-value')
+                && ! str_contains($serialized, '01012345678')
+                && ! str_contains($serialized, 'raw_sensitive_body')
+                && ! str_contains($serialized, 'test-secret')
+                && ! str_contains($serialized, 'test-public')
+                && ! str_contains($serialized, 'test-hmac-secret');
+        });
     }
 }
