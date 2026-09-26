@@ -27,6 +27,7 @@ class PublicCardPaymentTest extends TestCase
             'services.paymob.api_base_url' => 'https://paymob.test',
             'services.paymob.intention_endpoint' => '/v1/intention/',
             'services.paymob.redirect_url' => 'https://shop.test/return',
+            'services.paymob.webhook_url' => 'https://shop.test/api/v1/payments/paymob/webhook',
             'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
         ]);
     }
