@@ -172,9 +172,14 @@ class OrderCreationTest extends TestCase
         $area = $this->shippingArea(10);
         $item = $this->sellableItem();
         $payload = $this->payload($area, $item, 1);
-        $payload['payment_method'] = 'card';
+        foreach (['card', 'wallet'] as $paymentMethod) {
+            $payload['payment_method'] = $paymentMethod;
 
-        $this->withHeader('Idempotency-Key', $this->key())->postJson('/api/v1/orders', $payload)->assertUnprocessable();
+            $this->withHeader('Idempotency-Key', $this->key())
+                ->postJson('/api/v1/orders', $payload)
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('payment_method');
+        }
 
         $payload = $this->payload($area, $item, 1);
         $payload['items'][] = $payload['items'][0];

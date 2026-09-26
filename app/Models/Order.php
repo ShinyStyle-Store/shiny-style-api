@@ -42,6 +42,7 @@ class Order extends Model
         'contact_status',
         'payment_method',
         'payment_status',
+        'payment_expires_at',
         'cancellation_reason',
         'cancellation_note',
         'cancelled_at',
@@ -90,6 +91,7 @@ class Order extends Model
             'shipped_at' => 'datetime',
             'delivered_at' => 'datetime',
             'cancelled_at' => 'datetime',
+            'payment_expires_at' => 'datetime',
         ];
     }
 
@@ -106,5 +108,10 @@ class Order extends Model
     public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class);
+    }
+
+    public function paymentAttempts(): HasMany
+    {
+        return $this->hasMany(PaymentAttempt::class);
     }
 }
