@@ -42,6 +42,8 @@ class PaymentAttempt extends Model
         'paid_at',
         'provider_client_secret',
         'submission_claimed_at',
+        'payment_return_token_hash',
+        'payment_return_token_expires_at',
     ];
 
     protected function casts(): array
@@ -56,10 +58,15 @@ class PaymentAttempt extends Model
             'paid_at' => 'datetime',
             'provider_client_secret' => 'encrypted',
             'submission_claimed_at' => 'datetime',
+            'payment_return_token_expires_at' => 'datetime',
         ];
     }
 
-    protected $hidden = ['provider_client_secret'];
+    protected $hidden = [
+        'provider_client_secret',
+        'payment_return_token_hash',
+        'payment_return_token_expires_at',
+    ];
 
     public function order(): BelongsTo
     {

@@ -5,11 +5,13 @@ namespace Tests\Feature\Api;
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
+use App\Exceptions\PaymentAttemptException;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Services\PaymentAttemptService;
 use App\Services\PaymentReturnTokenService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -32,7 +34,14 @@ class PaymentReturnTest extends TestCase
     public function test_pending_and_paid_results_are_repeatable_and_bound_to_the_attempt_and_order(): void
     {
         [$order, $attempt] = $this->cardOrder();
+        $this->assertSame($order->getKey(), $attempt->order_id);
+        $this->assertSame(get_debug_type($order->getKey()), get_debug_type($attempt->order_id));
         $token = app(PaymentReturnTokenService::class)->issue($order, $attempt);
+
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $token);
+        $this->assertSame(hash('sha256', $token), DB::table('payment_attempts')->where('id', $attempt->getKey())->value('payment_return_token_hash'));
+        $this->assertNotNull(DB::table('payment_attempts')->where('id', $attempt->getKey())->value('payment_return_token_expires_at'));
+        $this->assertStringNotContainsString($token, (string) DB::table('payment_attempts')->where('id', $attempt->getKey())->value('payment_return_token_hash'));
 
         $this->withToken($token)->getJson('/api/v1/payments/return')
             ->assertOk()
@@ -58,11 +67,17 @@ class PaymentReturnTest extends TestCase
             'payment_status' => PaymentStatus::Pending,
             'payment_expires_at' => now()->addMinutes(30),
         ]);
-        app(PaymentAttemptService::class)->create($otherOrder, PaymentMethod::Card, (string) Str::uuid());
-        $wrongBindingToken = app(PaymentReturnTokenService::class)->issue($otherOrder, $attempt);
+        $otherAttempt = app(PaymentAttemptService::class)->create($otherOrder, PaymentMethod::Card, (string) Str::uuid());
+        $this->assertSame($otherOrder->getKey(), $otherAttempt->order_id);
+        $this->assertSame(get_debug_type($otherOrder->getKey()), get_debug_type($otherAttempt->order_id));
+        $this->assertNotSame($otherOrder->getKey(), $attempt->order_id);
 
-        $this->withToken($wrongBindingToken)->getJson('/api/v1/payments/return')
-            ->assertUnauthorized();
+        try {
+            app(PaymentReturnTokenService::class)->issue($otherOrder, $attempt);
+            $this->fail('Issuing a return token for an attempt from another order must fail.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_return_token_binding_failed', $exception->errorCode);
+        }
     }
 
     public function test_tampered_and_expired_tokens_are_rejected(): void
