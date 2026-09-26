@@ -68,6 +68,27 @@ class PublicCardPaymentTest extends TestCase
             ->assertCreated();
     }
 
+    public function test_provider_rejection_remains_generic_to_the_public_api(): void
+    {
+        $order = $this->cardOrder();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'detail' => 'Raw provider detail customer@example.com secret=do-not-expose',
+            'raw_response' => 'client-secret-value and customer phone 01012345678',
+        ], 422)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+
+        $response = $this->withHeader('Idempotency-Key', (string) Str::uuid())->post($url);
+
+        $response->assertUnprocessable()
+            ->assertJson([
+                'code' => 'payment_provider_rejected',
+                'message' => 'The payment provider rejected the payment request.',
+            ]);
+        $this->assertStringNotContainsString('Raw provider detail', $response->getContent());
+        $this->assertStringNotContainsString('client-secret-value', $response->getContent());
+        $this->assertStringNotContainsString('customer@example.com', $response->getContent());
+    }
+
     public function test_signed_initiation_rejects_any_request_body_field(): void
     {
         $order = $this->cardOrder();

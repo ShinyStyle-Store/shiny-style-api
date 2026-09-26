@@ -96,7 +96,10 @@ final class PaymobCardIntentionService
         $snapshot = $prepared['snapshot'];
 
         try {
-            $response = $this->client->postJson('create_intention', $endpoint, $snapshot->payload);
+            $response = $this->client->postJson('create_intention', $endpoint, $snapshot->payload, [
+                'payment_attempt_public_id' => $preparedAttempt->public_id,
+                'merchant_reference' => $preparedAttempt->merchant_reference,
+            ]);
             $validated = $this->validateResponse($response, $snapshot, $integrationId);
         } catch (PaymobRequestException $exception) {
             if ($exception->errorCode === 'provider_client_error') {
