@@ -11,12 +11,12 @@ class AdminSocialLinkResource extends JsonResource
     {
         return [
             'id' => $this->getKey(),
-            'platform_code' => $this->platform_code,
+            'platformCode' => $this->platform_code,
             'url' => $this->url,
-            'is_enabled' => (bool) $this->is_enabled,
-            'sort_order' => $this->sort_order,
-            'created_at' => $this->created_at?->toISOString(),
-            'updated_at' => $this->updated_at?->toISOString(),
+            'isEnabled' => (bool) $this->is_enabled,
+            'sortOrder' => $this->sort_order,
+            'createdAt' => $this->created_at?->toISOString(),
+            'updatedAt' => $this->updated_at?->toISOString(),
         ];
     }
 }

@@ -10,7 +10,13 @@ use Illuminate\Validation\Validator;
 class SocialLinkRequest extends FormRequest
 {
     private const FIELDS = [
-        'platform_code', 'url', 'is_enabled', 'sort_order',
+        'platformCode', 'url', 'isEnabled', 'sortOrder',
+    ];
+
+    private const INTERNAL_FIELDS = [
+        'platformCode' => 'platform_code',
+        'isEnabled' => 'is_enabled',
+        'sortOrder' => 'sort_order',
     ];
 
     public function authorize(): bool
@@ -29,10 +35,10 @@ class SocialLinkRequest extends FormRequest
             $value = $this->input($field);
             if (is_string($value)) {
                 $value = trim($value);
-                if (in_array($field, ['platform_code', 'url'], true)) {
-                    $value = $field === 'platform_code' ? strtolower($value) : $value;
+                if (in_array($field, ['platformCode', 'url'], true)) {
+                    $value = $field === 'platformCode' ? strtolower($value) : $value;
                 }
-                if ($field === 'is_enabled' && in_array(strtolower($value), ['true', 'false', '1', '0'], true)) {
+                if ($field === 'isEnabled' && in_array(strtolower($value), ['true', 'false', '1', '0'], true)) {
                     $value = in_array(strtolower($value), ['true', '1'], true);
                 }
             }
@@ -50,7 +56,7 @@ class SocialLinkRequest extends FormRequest
         $link = $link instanceof SocialLink ? $link : null;
 
         return [
-            'platform_code' => [
+            'platformCode' => [
                 $presence,
                 'string',
                 'max:50',
@@ -58,8 +64,8 @@ class SocialLinkRequest extends FormRequest
                 Rule::unique('social_links', 'platform_code')->ignore($link?->getKey()),
             ],
             'url' => [$presence, 'string', 'max:2048', 'url:https'],
-            'is_enabled' => [$presence, 'boolean'],
-            'sort_order' => [$presence, 'integer', 'min:0'],
+            'isEnabled' => [$presence, 'boolean'],
+            'sortOrder' => [$presence, 'integer', 'min:0'],
         ];
     }
 
@@ -77,7 +83,7 @@ class SocialLinkRequest extends FormRequest
 
             $link = $this->route('socialLink');
             $link = $link instanceof SocialLink ? $link : null;
-            $platform = (string) ($this->input('platform_code') ?? $link?->platform_code);
+            $platform = (string) ($this->input('platformCode') ?? $link?->platform_code);
             $url = $this->input('url') ?? $link?->url;
             if (! is_string($url) || $url === '' || ! is_string($platform)) {
                 return;
@@ -107,5 +113,18 @@ class SocialLinkRequest extends FormRequest
                 $validator->errors()->add('url', 'The URL is not valid for the selected social platform.');
             }
         });
+    }
+
+    public function validated($key = null, $default = null)
+    {
+        $data = parent::validated();
+        foreach (self::INTERNAL_FIELDS as $external => $internal) {
+            if (array_key_exists($external, $data)) {
+                $data[$internal] = $data[$external];
+                unset($data[$external]);
+            }
+        }
+
+        return $key === null ? $data : data_get($data, $key, $default);
     }
 }

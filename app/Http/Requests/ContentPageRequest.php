@@ -8,7 +8,14 @@ use Illuminate\Validation\Validator;
 class ContentPageRequest extends FormRequest
 {
     private const FIELDS = [
-        'title_ar', 'title_en', 'body_ar', 'body_en',
+        'titleAr', 'titleEn', 'bodyAr', 'bodyEn',
+    ];
+
+    private const INTERNAL_FIELDS = [
+        'titleAr' => 'title_ar',
+        'titleEn' => 'title_en',
+        'bodyAr' => 'body_ar',
+        'bodyEn' => 'body_en',
     ];
 
     public function authorize(): bool
@@ -19,10 +26,10 @@ class ContentPageRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'title_ar' => ['required', 'string', 'max:255'],
-            'title_en' => ['required', 'string', 'max:255'],
-            'body_ar' => ['required', 'string', 'max:50000'],
-            'body_en' => ['required', 'string', 'max:50000'],
+            'titleAr' => ['required', 'string', 'max:255'],
+            'titleEn' => ['required', 'string', 'max:255'],
+            'bodyAr' => ['required', 'string', 'max:50000'],
+            'bodyEn' => ['required', 'string', 'max:50000'],
         ];
     }
 
@@ -39,5 +46,18 @@ class ContentPageRequest extends FormRequest
                 }
             }
         });
+    }
+
+    public function validated($key = null, $default = null)
+    {
+        $data = parent::validated();
+        foreach (self::INTERNAL_FIELDS as $external => $internal) {
+            if (array_key_exists($external, $data)) {
+                $data[$internal] = $data[$external];
+                unset($data[$external]);
+            }
+        }
+
+        return $key === null ? $data : data_get($data, $key, $default);
     }
 }

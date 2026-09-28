@@ -10,7 +10,15 @@ use Illuminate\Validation\Validator;
 class AdminShippingAreaRequest extends FormRequest
 {
     private const FIELDS = [
-        'code', 'name_ar', 'name_en', 'shipping_fee', 'is_active', 'sort_order',
+        'code', 'nameAr', 'nameEn', 'shippingFee', 'isActive', 'sortOrder',
+    ];
+
+    private const INTERNAL_FIELDS = [
+        'nameAr' => 'name_ar',
+        'nameEn' => 'name_en',
+        'shippingFee' => 'shipping_fee',
+        'isActive' => 'is_active',
+        'sortOrder' => 'sort_order',
     ];
 
     public function authorize(): bool
@@ -29,7 +37,7 @@ class AdminShippingAreaRequest extends FormRequest
                 $value = trim($value);
                 if ($field === 'code') {
                     $value = strtolower($value);
-                } elseif ($field === 'is_active' && in_array(strtolower($value), ['true', 'false'], true)) {
+                } elseif ($field === 'isActive' && in_array(strtolower($value), ['true', 'false'], true)) {
                     $value = strtolower($value) === 'true';
                 }
             }
@@ -55,13 +63,13 @@ class AdminShippingAreaRequest extends FormRequest
                 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/',
                 Rule::unique('shipping_areas', 'code')->ignore($shippingArea?->getKey()),
             ],
-            'name_ar' => [$presence, 'string', 'min:1', 'max:255'],
-            'name_en' => [$presence, 'string', 'min:1', 'max:255'],
-            'shipping_fee' => [
+            'nameAr' => [$presence, 'string', 'min:1', 'max:255'],
+            'nameEn' => [$presence, 'string', 'min:1', 'max:255'],
+            'shippingFee' => [
                 $presence, 'numeric', 'min:0', 'max:99999999.99', 'decimal:0,2',
             ],
-            'is_active' => [$presence, 'boolean'],
-            'sort_order' => [$presence, 'integer', 'min:0'],
+            'isActive' => [$presence, 'boolean'],
+            'sortOrder' => [$presence, 'integer', 'min:0'],
         ];
     }
 
@@ -78,5 +86,18 @@ class AdminShippingAreaRequest extends FormRequest
                 $validator->errors()->add('shipping_area', 'At least one shipping area field is required.');
             }
         });
+    }
+
+    public function validated($key = null, $default = null)
+    {
+        $data = parent::validated();
+        foreach (self::INTERNAL_FIELDS as $external => $internal) {
+            if (array_key_exists($external, $data)) {
+                $data[$internal] = $data[$external];
+                unset($data[$external]);
+            }
+        }
+
+        return $key === null ? $data : data_get($data, $key, $default);
     }
 }

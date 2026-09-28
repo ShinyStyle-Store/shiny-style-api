@@ -10,11 +10,11 @@ class StoreContactResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'support_phone' => $this->support_phone,
-            'support_whatsapp' => $this->support_whatsapp,
-            'support_email' => $this->support_email,
+            'supportPhone' => $this->support_phone,
+            'supportWhatsapp' => $this->support_whatsapp,
+            'supportEmail' => $this->support_email,
             'address' => app()->getLocale() === 'ar' ? $this->address_ar : $this->address_en,
-            'google_maps_url' => $this->google_maps_url,
+            'googleMapsUrl' => $this->google_maps_url,
         ];
     }
 }

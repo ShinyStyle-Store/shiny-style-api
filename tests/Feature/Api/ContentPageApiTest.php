@@ -42,8 +42,8 @@ class ContentPageApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(3, 'data')
             ->assertJsonPath('data.0.slug', 'about-us')
-            ->assertJsonPath('data.0.title_ar', null)
-            ->assertJsonPath('data.0.body_en', null)
+            ->assertJsonPath('data.0.titleAr', null)
+            ->assertJsonPath('data.0.bodyEn', null)
             ->assertJsonPath('data.2.slug', 'shipping-policy');
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/returns-policy')
@@ -51,10 +51,10 @@ class ContentPageApiTest extends TestCase
             ->assertJson([
                 'data' => [
                     'slug' => 'returns-policy',
-                    'title_ar' => null,
-                    'title_en' => null,
-                    'body_ar' => null,
-                    'body_en' => null,
+                    'titleAr' => null,
+                    'titleEn' => null,
+                    'bodyAr' => null,
+                    'bodyEn' => null,
                 ],
             ]);
     }
@@ -69,17 +69,18 @@ class ContentPageApiTest extends TestCase
     public function test_put_requires_all_non_blank_bilingual_fields_and_rejects_unknown_fields(): void
     {
         $payload = $this->payload();
-        unset($payload['body_en']);
+        unset($payload['bodyEn']);
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/content-pages/about-us', $payload)
-            ->assertUnprocessable()->assertJsonValidationErrors('body_en');
+            ->assertUnprocessable()->assertJsonValidationErrors('bodyEn');
 
         $blank = $this->payload([
-            'title_ar' => " \n\t ",
-            'body_en' => "\n  \n",
+            'titleAr' => " \n\t ",
+            'bodyEn' => "\n  \n",
+            'title_ar' => 'Legacy field',
             'extra' => 'not allowed',
         ]);
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/content-pages/about-us', $blank)
-            ->assertUnprocessable()->assertJsonValidationErrors(['title_ar', 'body_en', 'extra']);
+            ->assertUnprocessable()->assertJsonValidationErrors(['titleAr', 'bodyEn', 'title_ar', 'extra']);
 
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/content-pages/about-us', [
             ...$this->payload(),
@@ -90,16 +91,16 @@ class ContentPageApiTest extends TestCase
     public function test_put_saves_both_languages_atomically_and_makes_content_public_immediately(): void
     {
         $payload = $this->payload([
-            'body_ar' => "السطر الأول\nالسطر الثاني",
-            'body_en' => "First line\nSecond line",
+            'bodyAr' => "السطر الأول\nالسطر الثاني",
+            'bodyEn' => "First line\nSecond line",
         ]);
 
         $this->withToken($this->adminToken)
             ->putJson('/api/v1/admin/content-pages/about-us', $payload)
             ->assertOk()
             ->assertJsonPath('data.slug', 'about-us')
-            ->assertJsonPath('data.title_ar', 'من نحن')
-            ->assertJsonPath('data.body_en', "First line\nSecond line");
+            ->assertJsonPath('data.titleAr', 'من نحن')
+            ->assertJsonPath('data.bodyEn', "First line\nSecond line");
 
         $this->assertDatabaseHas('content_pages', [
             'slug' => 'about-us',
@@ -136,25 +137,25 @@ class ContentPageApiTest extends TestCase
     {
         foreach (['about-us', 'returns-policy', 'shipping-policy'] as $slug) {
             $this->withToken($this->adminToken)
-                ->putJson('/api/v1/admin/content-pages/'.$slug, $this->payload(['title_en' => $slug]))
+                ->putJson('/api/v1/admin/content-pages/'.$slug, $this->payload(['titleEn' => $slug]))
                 ->assertOk()->assertJsonPath('data.slug', $slug)
-                ->assertJsonPath('data.title_ar', 'من نحن')
-                ->assertJsonPath('data.title_en', $slug);
+                ->assertJsonPath('data.titleAr', 'من نحن')
+                ->assertJsonPath('data.titleEn', $slug);
         }
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
             ->assertOk()->assertJsonCount(3, 'data')
             ->assertJsonPath('data.1.slug', 'returns-policy')
-            ->assertJsonPath('data.1.body_ar', 'النص العربي');
+            ->assertJsonPath('data.1.bodyAr', 'النص العربي');
     }
 
     private function payload(array $overrides = []): array
     {
         return array_merge([
-            'title_ar' => 'من نحن',
-            'title_en' => 'About us',
-            'body_ar' => 'النص العربي',
-            'body_en' => 'English text',
+            'titleAr' => 'من نحن',
+            'titleEn' => 'About us',
+            'bodyAr' => 'النص العربي',
+            'bodyEn' => 'English text',
         ], $overrides);
     }
 }

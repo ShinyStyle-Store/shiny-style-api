@@ -63,7 +63,7 @@ class StoreSocialLinkController extends Controller
             || str_contains($message, 'social_links.platform_code')
             || str_contains($message, 'social_links_platform_code_unique')) {
             throw ValidationException::withMessages([
-                'platform_code' => 'A social link for this platform already exists.',
+                'platformCode' => 'A social link for this platform already exists.',
             ]);
         }
     }
