@@ -1,0 +1,82 @@
+<?php
+
+namespace App\Http\Requests;
+
+use App\Models\ShippingArea;
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
+
+class AdminShippingAreaRequest extends FormRequest
+{
+    private const FIELDS = [
+        'code', 'name_ar', 'name_en', 'shipping_fee', 'is_active', 'sort_order',
+    ];
+
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    protected function prepareForValidation(): void
+    {
+        $normalized = [];
+
+        foreach (self::FIELDS as $field) {
+            $value = $this->input($field);
+
+            if (is_string($value)) {
+                $value = trim($value);
+                if ($field === 'code') {
+                    $value = strtolower($value);
+                } elseif ($field === 'is_active' && in_array(strtolower($value), ['true', 'false'], true)) {
+                    $value = strtolower($value) === 'true';
+                }
+            }
+
+            if ($this->exists($field)) {
+                $normalized[$field] = $value;
+            }
+        }
+
+        $this->merge($normalized);
+    }
+
+    public function rules(): array
+    {
+        $updating = $this->isMethod('PATCH');
+        $presence = $updating ? 'sometimes' : 'required';
+        $shippingArea = $this->route('shippingArea');
+        $shippingArea = $shippingArea instanceof ShippingArea ? $shippingArea : null;
+
+        return [
+            'code' => [
+                $presence, 'string', 'min:1', 'max:255',
+                'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/',
+                Rule::unique('shipping_areas', 'code')->ignore($shippingArea?->getKey()),
+            ],
+            'name_ar' => [$presence, 'string', 'min:1', 'max:255'],
+            'name_en' => [$presence, 'string', 'min:1', 'max:255'],
+            'shipping_fee' => [
+                $presence, 'numeric', 'min:0', 'max:99999999.99', 'decimal:0,2',
+            ],
+            'is_active' => [$presence, 'boolean'],
+            'sort_order' => [$presence, 'integer', 'min:0'],
+        ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator): void {
+            $inputFields = array_keys($this->all());
+
+            foreach (array_diff($inputFields, self::FIELDS) as $field) {
+                $validator->errors()->add((string) $field, 'This field is not allowed.');
+            }
+
+            if ($this->isMethod('PATCH') && count(array_intersect($inputFields, self::FIELDS)) === 0) {
+                $validator->errors()->add('shipping_area', 'At least one shipping area field is required.');
+            }
+        });
+    }
+}
