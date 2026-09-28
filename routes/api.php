@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductOptionController;
 use App\Http\Controllers\Api\AdminSellableItemController;
+use App\Http\Controllers\Api\AdminShippingAreaController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -60,6 +61,12 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('shipping-areas', [AdminShippingAreaController::class, 'index']);
+        Route::get('shipping-areas/{shippingArea}', [AdminShippingAreaController::class, 'show'])
+            ->whereNumber('shippingArea');
+        Route::post('shipping-areas', [AdminShippingAreaController::class, 'store']);
+        Route::patch('shipping-areas/{shippingArea}', [AdminShippingAreaController::class, 'update'])
+            ->whereNumber('shippingArea');
         Route::get('categories', [AdminCategoryController::class, 'index']);
         Route::get('categories/archived', [AdminCategoryController::class, 'archived']);
         Route::post('categories/{category}/restore', [AdminCategoryController::class, 'restore'])->whereNumber('category');

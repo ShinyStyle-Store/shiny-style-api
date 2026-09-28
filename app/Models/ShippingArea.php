@@ -13,6 +13,8 @@ class ShippingArea extends Model
 {
     use HasFactory;
 
+    public const TYPE_GOVERNORATE = 'governorate';
+
     protected $fillable = [
         'code',
         'parent_id',
@@ -66,6 +68,13 @@ class ShippingArea extends Model
     protected function ordered(Builder $query): void
     {
         $query->orderBy('sort_order')->orderBy('id');
+    }
+
+    #[Scope]
+    protected function governorates(Builder $query): void
+    {
+        $query->where('type', self::TYPE_GOVERNORATE)
+            ->whereNull('parent_id');
     }
 
     public function localizedName(): string
