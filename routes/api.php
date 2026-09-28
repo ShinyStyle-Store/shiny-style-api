@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\ShippingAreaController;
+use App\Http\Controllers\Api\StoreContactController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
 
@@ -36,6 +37,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('categories/{slug}', [CategoryController::class, 'show']);
     Route::get('banners', [BannerController::class, 'index']);
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
+    Route::get('store/contact', [StoreContactController::class, 'showPublic']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
     Route::post('payments/paymob/webhook', [PaymobWebhookController::class, 'handle'])
@@ -61,6 +63,8 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('store/contact', [StoreContactController::class, 'adminShow']);
+        Route::put('store/contact', [StoreContactController::class, 'update']);
         Route::get('shipping-areas', [AdminShippingAreaController::class, 'index']);
         Route::get('shipping-areas/{shippingArea}', [AdminShippingAreaController::class, 'show'])
             ->whereNumber('shippingArea');
