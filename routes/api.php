@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOrderController;
+use App\Http\Controllers\Api\AdminOfferController;
 use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductOptionController;
@@ -115,6 +116,12 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::post('banners/{banner}/image', [AdminBannerController::class, 'image'])->whereNumber('banner');
         Route::delete('banners/{banner}', [AdminBannerController::class, 'destroy'])->whereNumber('banner');
         Route::put('profile/password', [AdminProfileController::class, 'updatePassword']);
+
+        Route::get('offers', [AdminOfferController::class, 'index']);
+        Route::post('offers', [AdminOfferController::class, 'store']);
+        Route::get('offers/{offer}', [AdminOfferController::class, 'show'])->whereNumber('offer');
+        Route::patch('offers/{offer}', [AdminOfferController::class, 'update'])->whereNumber('offer');
+        Route::post('offers/{offer}/deactivate', [AdminOfferController::class, 'deactivate'])->whereNumber('offer');
 
         Route::get('products', [AdminProductController::class, 'index']);
         Route::post('products', [AdminProductController::class, 'store']);
