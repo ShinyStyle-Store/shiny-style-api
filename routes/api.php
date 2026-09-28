@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Controllers\Api\StoreContactController;
 use App\Http\Controllers\Api\StoreSocialLinkController;
+use App\Http\Controllers\Api\ContentPageController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
 
@@ -40,6 +41,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
     Route::get('store/contact', [StoreContactController::class, 'showPublic']);
     Route::get('store/social-links', [StoreSocialLinkController::class, 'publicIndex']);
+    Route::get('content-pages/{slug}', [ContentPageController::class, 'publicShow']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
     Route::post('payments/paymob/webhook', [PaymobWebhookController::class, 'handle'])
@@ -73,6 +75,9 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             ->whereNumber('socialLink');
         Route::delete('store/social-links/{socialLink}', [StoreSocialLinkController::class, 'destroy'])
             ->whereNumber('socialLink');
+        Route::get('content-pages', [ContentPageController::class, 'adminIndex']);
+        Route::get('content-pages/{slug}', [ContentPageController::class, 'adminShow']);
+        Route::put('content-pages/{slug}', [ContentPageController::class, 'update']);
         Route::get('shipping-areas', [AdminShippingAreaController::class, 'index']);
         Route::get('shipping-areas/{shippingArea}', [AdminShippingAreaController::class, 'show'])
             ->whereNumber('shippingArea');
