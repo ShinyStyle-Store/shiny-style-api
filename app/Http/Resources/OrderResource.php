@@ -42,7 +42,13 @@ class OrderResource extends JsonResource
                     'value' => $this->localizedValue($option['value_ar'], $option['value_en']),
                 ])->values()->all(),
                 'quantity' => $item->quantity,
+                'base_unit_price' => (string) ($item->base_unit_price ?? $item->unit_price),
                 'unit_price' => (string) $item->unit_price,
+                'discount_amount' => (string) ($item->discount_amount ?? '0.00'),
+                'offer_id' => $item->offer_id,
+                'offer_discount_percentage' => $item->offer_discount_percentage === null
+                    ? null
+                    : (string) $item->offer_discount_percentage,
                 'line_total' => (string) $item->line_total,
             ])->values()->all(),
             'subtotal' => (string) $this->subtotal,

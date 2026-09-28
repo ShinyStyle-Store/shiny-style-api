@@ -19,6 +19,10 @@ class OrderItem extends Model
         'product_name_en',
         'options_snapshot',
         'unit_price',
+        'base_unit_price',
+        'discount_amount',
+        'offer_id',
+        'offer_discount_percentage',
         'quantity',
         'line_total',
     ];
@@ -28,6 +32,9 @@ class OrderItem extends Model
         return [
             'options_snapshot' => 'array',
             'unit_price' => 'decimal:2',
+            'base_unit_price' => 'decimal:2',
+            'discount_amount' => 'decimal:2',
+            'offer_discount_percentage' => 'decimal:2',
             'quantity' => 'integer',
             'line_total' => 'decimal:2',
         ];

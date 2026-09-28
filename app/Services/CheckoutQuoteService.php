@@ -5,10 +5,14 @@ namespace App\Services;
 use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use App\Support\ExactMoney;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Validation\ValidationException;
 
 class CheckoutQuoteService
 {
+    public function __construct(private readonly OfferPricingService $pricing) {}
+
     /**
      * @param  array<int, array{sellable_item_id: int, quantity: int}>  $items
      * @return array<string, mixed>
@@ -43,6 +47,12 @@ class CheckoutQuoteService
             ->get()
             ->keyBy(fn (SellableItem $item): int => $item->getKey());
 
+        $instant = CarbonImmutable::now()->utc();
+        $pricing = $this->pricing->calculateMany(
+            new EloquentCollection($sellableItems->values()->all()),
+            $instant,
+        )->keyBy(fn (array $result): int => (int) $result['sellableItemId']);
+
         $lines = [];
         $subtotal = '0';
 
@@ -56,7 +66,16 @@ class CheckoutQuoteService
                 ]);
             }
 
-            $unitPrice = ExactMoney::toMinorUnits((string) $sellableItem->price);
+            $linePricing = $pricing->get((int) $sellableItem->getKey());
+            if (! is_array($linePricing) || ($linePricing['eligible'] ?? false) !== true) {
+                throw ValidationException::withMessages([
+                    "items.{$index}.sellable_item_id" => ['The selected item is unavailable.'],
+                ]);
+            }
+
+            $baseUnitPrice = ExactMoney::toMinorUnits((string) $linePricing['basePrice']);
+            $unitPrice = ExactMoney::toMinorUnits((string) $linePricing['effectivePrice']);
+            $discountAmount = ExactMoney::toMinorUnits((string) $linePricing['discountAmount']);
             $lineTotal = ExactMoney::multiply($unitPrice, $quantity);
             $subtotal = ExactMoney::add($subtotal, $lineTotal);
 
@@ -69,7 +88,13 @@ class CheckoutQuoteService
                 ),
                 'selected_options' => $this->selectedOptions($sellableItem),
                 'quantity' => $quantity,
+                'base_unit_price' => ExactMoney::formatMinorUnits($baseUnitPrice),
                 'unit_price' => ExactMoney::formatMinorUnits($unitPrice),
+                'discount_amount' => ExactMoney::formatMinorUnits($discountAmount),
+                'offer_id' => $linePricing['offerApplied'] ? (int) $linePricing['offerId'] : null,
+                'offer_discount_percentage' => $linePricing['offerApplied']
+                    ? (string) $linePricing['discountPercentage']
+                    : null,
                 'line_total' => ExactMoney::formatMinorUnits($lineTotal),
             ];
         }

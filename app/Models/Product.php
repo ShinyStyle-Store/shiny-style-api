@@ -61,6 +61,11 @@ class Product extends Model
         return $this->hasMany(SellableItem::class);
     }
 
+    public function offers(): BelongsToMany
+    {
+        return $this->belongsToMany(Offer::class, 'offer_product');
+    }
+
     public function mediaAttachments(): MorphMany
     {
         return $this->morphMany(MediaAttachment::class, 'mediable')

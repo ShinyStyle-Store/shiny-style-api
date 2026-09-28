@@ -87,7 +87,7 @@ class ProductSectionApiTest extends TestCase
             ->assertJsonPath('data.0.slug', 'espresso-coffee-machine');
     }
 
-    public function test_offers_is_an_empty_paginated_placeholder(): void
+    public function test_offers_section_is_empty_when_no_active_offers_exist(): void
     {
         $this->getJson('/api/v1/products/sections/offers?per_page=7')
             ->assertOk()

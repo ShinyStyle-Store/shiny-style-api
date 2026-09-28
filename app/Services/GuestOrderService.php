@@ -10,13 +10,17 @@ use App\Models\OrderItem;
 use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use App\Support\ExactMoney;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class GuestOrderService
 {
+    public function __construct(private readonly OfferPricingService $pricing) {}
+
     /**
      * @param  array<string, mixed>  $data
      * @return array{order: Order, created: bool}
@@ -101,6 +105,12 @@ class GuestOrderService
             ->get()
             ->keyBy(fn (SellableItem $item): int => $item->getKey());
 
+        $instant = CarbonImmutable::now()->utc();
+        $pricing = $this->pricing->calculateMany(
+            new EloquentCollection($sellableItems->values()->all()),
+            $instant,
+        )->keyBy(fn (array $result): int => (int) $result['sellableItemId']);
+
         $missing = collect($ids)->first(fn (int $id): bool => ! $sellableItems->has($id));
         if ($missing !== null) {
             throw ValidationException::withMessages([
@@ -123,7 +133,14 @@ class GuestOrderService
             }
 
             try {
-                $unitPrice = ExactMoney::toMinorUnits((string) $sellableItem->price);
+                $linePricing = $pricing->get((int) $sellableItem->getKey());
+                if (! is_array($linePricing) || ($linePricing['eligible'] ?? false) !== true) {
+                    throw new \InvalidArgumentException('The selected item is unavailable.');
+                }
+
+                $baseUnitPrice = ExactMoney::toMinorUnits((string) $linePricing['basePrice']);
+                $unitPrice = ExactMoney::toMinorUnits((string) $linePricing['effectivePrice']);
+                $discountAmount = ExactMoney::toMinorUnits((string) $linePricing['discountAmount']);
             } catch (Throwable) {
                 throw ValidationException::withMessages([
                     'items' => ['One or more requested items are unavailable.'],
@@ -135,7 +152,13 @@ class GuestOrderService
             $lines[] = [
                 'item' => $sellableItem,
                 'quantity' => $quantity,
+                'base_unit_price' => $baseUnitPrice,
                 'unit_price' => $unitPrice,
+                'discount_amount' => $discountAmount,
+                'offer_id' => $linePricing['offerApplied'] ? (int) $linePricing['offerId'] : null,
+                'offer_discount_percentage' => $linePricing['offerApplied']
+                    ? (string) $linePricing['discountPercentage']
+                    : null,
                 'line_total' => $lineTotal,
                 'options_snapshot' => $this->optionsSnapshot($sellableItem),
             ];
@@ -181,7 +204,11 @@ class GuestOrderService
                 'product_name_ar' => $sellableItem->product->name_ar,
                 'product_name_en' => $sellableItem->product->name_en,
                 'options_snapshot' => $line['options_snapshot'],
+                'base_unit_price' => ExactMoney::formatMinorUnits($line['base_unit_price']),
                 'unit_price' => ExactMoney::formatMinorUnits($line['unit_price']),
+                'discount_amount' => ExactMoney::formatMinorUnits($line['discount_amount']),
+                'offer_id' => $line['offer_id'],
+                'offer_discount_percentage' => $line['offer_discount_percentage'],
                 'quantity' => $line['quantity'],
                 'line_total' => ExactMoney::formatMinorUnits($line['line_total']),
             ]);

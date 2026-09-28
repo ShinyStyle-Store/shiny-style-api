@@ -9,6 +9,8 @@ use App\Models\Category;
 use App\Models\Product;
 use App\Services\CategoryHierarchyService;
 use App\Services\HomeProductSectionService;
+use App\Services\OfferPricingService;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,7 +18,10 @@ use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
-    public function __construct(private readonly HomeProductSectionService $sections) {}
+    public function __construct(
+        private readonly HomeProductSectionService $sections,
+        private readonly OfferPricingService $pricing,
+    ) {}
 
     public function index(Request $request, CategoryHierarchyService $hierarchy)
     {
@@ -52,12 +57,15 @@ class ProductController extends Controller
             }
         }
 
+        $instant = CarbonImmutable::now()->utc();
         $products = $query
             ->with($this->sections->cardRelations($visibleCategoryIds))
             ->orderByDesc('published_at')
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 24)
             ->withQueryString();
+
+        $this->pricing->attachToProducts($products->getCollection(), $instant);
 
         return ProductListResource::collection($products);
     }
@@ -104,6 +112,7 @@ class ProductController extends Controller
 
     public function show(string $slug, CategoryHierarchyService $hierarchy)
     {
+        $instant = CarbonImmutable::now()->utc();
         $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
         $product = Product::query()
             ->visible($visibleCategoryIds)
@@ -117,6 +126,8 @@ class ProductController extends Controller
                 'productVideos.mediaAsset',
             ])
             ->firstOrFail();
+
+        $this->pricing->attachToProducts(collect([$product]), $instant);
 
         return new ProductDetailResource($product);
     }
