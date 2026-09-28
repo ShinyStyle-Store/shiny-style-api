@@ -10,7 +10,7 @@ class SocialLinkResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'platform_code' => $this->platform_code,
+            'platformCode' => $this->platform_code,
             'url' => $this->url,
         ];
     }

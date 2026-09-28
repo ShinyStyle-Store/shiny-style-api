@@ -8,8 +8,17 @@ use Illuminate\Validation\Validator;
 class StoreContactRequest extends FormRequest
 {
     private const FIELDS = [
-        'support_phone', 'support_whatsapp', 'support_email',
-        'address_ar', 'address_en', 'google_maps_url',
+        'supportPhone', 'supportWhatsapp', 'supportEmail',
+        'addressAr', 'addressEn', 'googleMapsUrl',
+    ];
+
+    private const INTERNAL_FIELDS = [
+        'supportPhone' => 'support_phone',
+        'supportWhatsapp' => 'support_whatsapp',
+        'supportEmail' => 'support_email',
+        'addressAr' => 'address_ar',
+        'addressEn' => 'address_en',
+        'googleMapsUrl' => 'google_maps_url',
     ];
 
     public function authorize(): bool
@@ -29,7 +38,7 @@ class StoreContactRequest extends FormRequest
             $value = $this->input($field);
             if (is_string($value)) {
                 $value = trim($value);
-                if (in_array($field, ['support_phone', 'support_whatsapp', 'support_email', 'google_maps_url'], true)
+                if (in_array($field, ['supportPhone', 'supportWhatsapp', 'supportEmail', 'googleMapsUrl'], true)
                     && $value === '') {
                     $value = null;
                 }
@@ -43,12 +52,12 @@ class StoreContactRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'support_phone' => ['required', 'nullable', 'string', 'max:30', 'regex:/^\+?[0-9][0-9\s().-]{6,29}$/'],
-            'support_whatsapp' => ['required', 'nullable', 'string', 'max:30', 'regex:/^\+?[0-9][0-9\s().-]{6,29}$/'],
-            'support_email' => ['required', 'nullable', 'email', 'max:255'],
-            'address_ar' => ['required', 'string', 'min:1', 'max:5000'],
-            'address_en' => ['required', 'string', 'min:1', 'max:5000'],
-            'google_maps_url' => ['required', 'nullable', 'string', 'max:2048', 'url:https'],
+            'supportPhone' => ['required', 'nullable', 'string', 'max:30', 'regex:/^\+?[0-9][0-9\s().-]{6,29}$/'],
+            'supportWhatsapp' => ['required', 'nullable', 'string', 'max:30', 'regex:/^\+?[0-9][0-9\s().-]{6,29}$/'],
+            'supportEmail' => ['required', 'nullable', 'email', 'max:255'],
+            'addressAr' => ['required', 'string', 'min:1', 'max:5000'],
+            'addressEn' => ['required', 'string', 'min:1', 'max:5000'],
+            'googleMapsUrl' => ['required', 'nullable', 'string', 'max:2048', 'url:https'],
         ];
     }
 
@@ -59,7 +68,7 @@ class StoreContactRequest extends FormRequest
                 $validator->errors()->add((string) $field, 'This field is not allowed.');
             }
 
-            $url = $this->input('google_maps_url');
+            $url = $this->input('googleMapsUrl');
             if (is_string($url) && $url !== '') {
                 $parts = parse_url($url);
                 $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
@@ -70,9 +79,22 @@ class StoreContactRequest extends FormRequest
 
                 if (! is_array($parts) || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
                     || ! $isAllowedHost || $hasCredentials || $hasNonStandardPort) {
-                    $validator->errors()->add('google_maps_url', 'The Google Maps URL must use HTTPS.');
+                    $validator->errors()->add('googleMapsUrl', 'The Google Maps URL must use HTTPS.');
                 }
             }
         });
+    }
+
+    public function validated($key = null, $default = null)
+    {
+        $data = parent::validated();
+        foreach (self::INTERNAL_FIELDS as $external => $internal) {
+            if (array_key_exists($external, $data)) {
+                $data[$internal] = $data[$external];
+                unset($data[$external]);
+            }
+        }
+
+        return $key === null ? $data : data_get($data, $key, $default);
     }
 }

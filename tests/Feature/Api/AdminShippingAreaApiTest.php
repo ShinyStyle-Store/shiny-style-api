@@ -35,7 +35,7 @@ class AdminShippingAreaApiTest extends TestCase
         $this->getJson('/api/v1/admin/shipping-areas')->assertUnauthorized();
         $this->getJson('/api/v1/admin/shipping-areas/'.$area->id)->assertUnauthorized();
         $this->postJson('/api/v1/admin/shipping-areas', $this->payload())->assertUnauthorized();
-        $this->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['name_en' => 'Changed'])
+        $this->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['nameEn' => 'Changed'])
             ->assertUnauthorized();
 
         $customer = User::factory()->create();
@@ -71,13 +71,14 @@ class AdminShippingAreaApiTest extends TestCase
         $response = $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/shipping-areas', $this->payload([
                 'code' => 'new-area',
-                'parent_id' => 999,
+                'parentId' => 999,
                 'type' => 'city',
-                'is_selectable' => false,
+                'isSelectable' => false,
+                'name_en' => 'Legacy field',
             ]));
 
         $response->assertUnprocessable()->assertJsonValidationErrors([
-            'parent_id', 'type', 'is_selectable',
+            'parentId', 'type', 'isSelectable', 'name_en',
         ]);
 
         $response = $this->withToken($this->adminToken)
@@ -102,13 +103,13 @@ class AdminShippingAreaApiTest extends TestCase
 
         $this->withToken($this->adminToken)->postJson('/api/v1/admin/shipping-areas', $this->payload([
             'code' => $area->code,
-            'shipping_fee' => '-1.00',
-            'sort_order' => -1,
-        ]))->assertUnprocessable()->assertJsonValidationErrors(['code', 'shipping_fee', 'sort_order']);
+            'shippingFee' => '-1.00',
+            'sortOrder' => -1,
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['code', 'shippingFee', 'sortOrder']);
 
         $this->withToken($this->adminToken)->postJson('/api/v1/admin/shipping-areas', $this->payload([
-            'shipping_fee' => '10.999',
-        ]))->assertUnprocessable()->assertJsonValidationErrors('shipping_fee');
+            'shippingFee' => '10.999',
+        ]))->assertUnprocessable()->assertJsonValidationErrors('shippingFee');
 
         $this->withToken($this->adminToken)->patchJson('/api/v1/admin/shipping-areas/'.$area->id, [])
             ->assertUnprocessable()->assertJsonValidationErrors('shipping_area');
@@ -119,12 +120,12 @@ class AdminShippingAreaApiTest extends TestCase
         $area = $this->area('visibility');
 
         $this->withToken($this->adminToken)
-            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['is_active' => false])
+            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['isActive' => false])
             ->assertOk()->assertJsonPath('data.isActive', false);
         $this->getJson('/api/v1/shipping-areas')->assertOk()->assertJsonMissing(['id' => $area->id]);
 
         $this->withToken($this->adminToken)
-            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['is_active' => true])
+            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['isActive' => true])
             ->assertOk();
         $this->getJson('/api/v1/shipping-areas')->assertOk()->assertJsonFragment(['id' => $area->id]);
     }
@@ -135,7 +136,7 @@ class AdminShippingAreaApiTest extends TestCase
         $child = $this->area('child', ['parent_id' => $parent->id, 'type' => 'city']);
 
         $this->withToken($this->adminToken)
-            ->patchJson('/api/v1/admin/shipping-areas/'.$parent->id, ['is_active' => false])
+            ->patchJson('/api/v1/admin/shipping-areas/'.$parent->id, ['isActive' => false])
             ->assertStatus(409)->assertJsonPath('code', 'governorate_has_children');
 
         $this->assertTrue($parent->refresh()->is_active);
@@ -154,7 +155,7 @@ class AdminShippingAreaApiTest extends TestCase
 
         $oldOrder = $this->createOrder($area, $item);
         $this->withToken($this->adminToken)
-            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['shipping_fee' => '25.50'])
+            ->patchJson('/api/v1/admin/shipping-areas/'.$area->id, ['shippingFee' => '25.50'])
             ->assertOk()->assertJsonPath('data.shippingFee', '25.50');
 
         $this->postJson('/api/v1/checkout/quote', [
@@ -173,11 +174,11 @@ class AdminShippingAreaApiTest extends TestCase
     {
         return array_merge([
             'code' => 'cairo',
-            'name_ar' => 'القاهرة',
-            'name_en' => 'Cairo',
-            'shipping_fee' => '25.50',
-            'is_active' => true,
-            'sort_order' => 1,
+            'nameAr' => 'القاهرة',
+            'nameEn' => 'Cairo',
+            'shippingFee' => '25.50',
+            'isActive' => true,
+            'sortOrder' => 1,
         ], $overrides);
     }
 

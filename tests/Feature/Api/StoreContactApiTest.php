@@ -29,14 +29,14 @@ class StoreContactApiTest extends TestCase
             ->assertOk()
             ->assertJson([
                 'data' => [
-                    'support_phone' => null,
-                    'support_whatsapp' => null,
-                    'support_email' => null,
+                    'supportPhone' => null,
+                    'supportWhatsapp' => null,
+                    'supportEmail' => null,
                     'address' => null,
-                    'google_maps_url' => null,
+                    'googleMapsUrl' => null,
                 ],
             ])
-            ->assertJsonMissing(['address_ar' => null, 'address_en' => null]);
+            ->assertJsonMissing(['addressAr' => null, 'addressEn' => null]);
     }
 
     public function test_admin_routes_require_admin_authorization(): void
@@ -55,25 +55,26 @@ class StoreContactApiTest extends TestCase
         $this->withToken($this->adminToken)
             ->putJson('/api/v1/admin/store/contact', [
                 ...$this->payload(),
-                'support_phone' => 'not-a-phone',
-                'support_email' => 'invalid-email',
-                'google_maps_url' => 'http://maps.google.com/example',
+                'supportPhone' => 'not-a-phone',
+                'supportEmail' => 'invalid-email',
+                'googleMapsUrl' => 'http://maps.google.com/example',
+                'support_phone' => 'legacy-field',
                 'secret' => 'not-allowed',
             ])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['support_phone', 'support_email', 'google_maps_url', 'secret']);
+            ->assertJsonValidationErrors(['supportPhone', 'supportEmail', 'googleMapsUrl', 'support_phone', 'secret']);
 
         $partial = $this->payload();
-        unset($partial['address_en']);
+        unset($partial['addressEn']);
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/store/contact', $partial)
-            ->assertUnprocessable()->assertJsonValidationErrors('address_en');
+            ->assertUnprocessable()->assertJsonValidationErrors('addressEn');
     }
 
     public function test_google_maps_url_accepts_only_the_supported_https_hosts(): void
     {
         foreach (['https://maps.google.com/?q=Shiny+Style', 'https://maps.app.goo.gl/abc123'] as $url) {
             $this->withToken($this->adminToken)
-                ->putJson('/api/v1/admin/store/contact', $this->payload(['google_maps_url' => $url]))
+                ->putJson('/api/v1/admin/store/contact', $this->payload(['googleMapsUrl' => $url]))
                 ->assertOk();
         }
 
@@ -85,9 +86,9 @@ class StoreContactApiTest extends TestCase
             'https://maps.google.com:8443/maps',
         ] as $url) {
             $this->withToken($this->adminToken)
-                ->putJson('/api/v1/admin/store/contact', $this->payload(['google_maps_url' => $url]))
+                ->putJson('/api/v1/admin/store/contact', $this->payload(['googleMapsUrl' => $url]))
                 ->assertUnprocessable()
-                ->assertJsonValidationErrors('google_maps_url');
+                ->assertJsonValidationErrors('googleMapsUrl');
         }
     }
 
@@ -96,22 +97,22 @@ class StoreContactApiTest extends TestCase
         $this->withToken($this->adminToken)
             ->putJson('/api/v1/admin/store/contact', $this->payload())
             ->assertOk()
-            ->assertJsonPath('data.address_ar', 'شارع التحرير');
+            ->assertJsonPath('data.addressAr', 'شارع التحرير');
 
         $this->withToken($this->adminToken)
             ->putJson('/api/v1/admin/store/contact', $this->payload([
-                'support_phone' => '+201111111111',
-                'support_whatsapp' => '+201222222222',
-                'address_en' => 'Updated Tahrir Street',
+                'supportPhone' => '+201111111111',
+                'supportWhatsapp' => '+201222222222',
+                'addressEn' => 'Updated Tahrir Street',
             ]))
             ->assertOk()
-            ->assertJsonPath('data.support_phone', '+201111111111')
-            ->assertJsonPath('data.support_whatsapp', '+201222222222')
-            ->assertJsonPath('data.address_en', 'Updated Tahrir Street');
+            ->assertJsonPath('data.supportPhone', '+201111111111')
+            ->assertJsonPath('data.supportWhatsapp', '+201222222222')
+            ->assertJsonPath('data.addressEn', 'Updated Tahrir Street');
 
         $this->assertSame(1, StoreContact::query()->count());
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/store/contact')
-            ->assertOk()->assertJsonPath('data.address_ar', 'شارع التحرير');
+            ->assertOk()->assertJsonPath('data.addressAr', 'شارع التحرير');
     }
 
     public function test_public_contact_localizes_only_the_address_and_preserves_distinct_numbers(): void
@@ -121,11 +122,11 @@ class StoreContactApiTest extends TestCase
 
         $this->withHeader('Accept-Language', 'ar')->getJson('/api/v1/store/contact')
             ->assertOk()
-            ->assertJsonPath('data.support_phone', '+201111111111')
-            ->assertJsonPath('data.support_whatsapp', '+201222222222')
+            ->assertJsonPath('data.supportPhone', '+201111111111')
+            ->assertJsonPath('data.supportWhatsapp', '+201222222222')
             ->assertJsonPath('data.address', 'شارع التحرير')
-            ->assertJsonMissing(['address_ar' => 'شارع التحرير'])
-            ->assertJsonMissing(['address_en' => 'Tahrir Street']);
+            ->assertJsonMissing(['addressAr' => 'شارع التحرير'])
+            ->assertJsonMissing(['addressEn' => 'Tahrir Street']);
 
         $this->withHeader('Accept-Language', 'en-US')->getJson('/api/v1/store/contact')
             ->assertOk()->assertJsonPath('data.address', 'Tahrir Street');
@@ -134,12 +135,12 @@ class StoreContactApiTest extends TestCase
     private function payload(array $overrides = []): array
     {
         return array_merge([
-            'support_phone' => '+201111111111',
-            'support_whatsapp' => '+201222222222',
-            'support_email' => 'support@shiny-style.example',
-            'address_ar' => 'شارع التحرير',
-            'address_en' => 'Tahrir Street',
-            'google_maps_url' => 'https://maps.google.com/?q=Shiny+Style',
+            'supportPhone' => '+201111111111',
+            'supportWhatsapp' => '+201222222222',
+            'supportEmail' => 'support@shiny-style.example',
+            'addressAr' => 'شارع التحرير',
+            'addressEn' => 'Tahrir Street',
+            'googleMapsUrl' => 'https://maps.google.com/?q=Shiny+Style',
         ], $overrides);
     }
 }

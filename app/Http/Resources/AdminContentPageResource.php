@@ -11,12 +11,12 @@ class AdminContentPageResource extends JsonResource
     {
         return [
             'slug' => $this->slug,
-            'title_ar' => $this->title_ar,
-            'title_en' => $this->title_en,
-            'body_ar' => $this->body_ar,
-            'body_en' => $this->body_en,
-            'created_at' => $this->created_at?->toISOString(),
-            'updated_at' => $this->updated_at?->toISOString(),
+            'titleAr' => $this->title_ar,
+            'titleEn' => $this->title_en,
+            'bodyAr' => $this->body_ar,
+            'bodyEn' => $this->body_en,
+            'createdAt' => $this->created_at?->toISOString(),
+            'updatedAt' => $this->updated_at?->toISOString(),
         ];
     }
 }

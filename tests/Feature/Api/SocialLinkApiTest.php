@@ -46,20 +46,20 @@ class SocialLinkApiTest extends TestCase
     {
         $created = $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'facebook',
+                'platformCode' => 'facebook',
                 'url' => 'https://www.facebook.com/shiny-style',
             ]))
             ->assertCreated()
-            ->assertJsonPath('data.platform_code', 'facebook')
-            ->assertJsonPath('data.is_enabled', true);
+            ->assertJsonPath('data.platformCode', 'facebook')
+            ->assertJsonPath('data.isEnabled', true);
         $id = $created->json('data.id');
 
         $this->withToken($this->adminToken)
             ->patchJson('/api/v1/admin/store/social-links/'.$id, [
-                'is_enabled' => false,
+                'isEnabled' => false,
             ])
             ->assertOk()
-            ->assertJsonPath('data.is_enabled', false);
+            ->assertJsonPath('data.isEnabled', false);
 
         $this->withToken($this->adminToken)
             ->deleteJson('/api/v1/admin/store/social-links/'.$id)
@@ -70,10 +70,10 @@ class SocialLinkApiTest extends TestCase
     public function test_platform_registry_accepts_supported_hosts_and_rejects_unknown_platforms(): void
     {
         $valid = [
-            ['platform_code' => 'facebook', 'url' => 'https://facebook.com/shiny-style'],
-            ['platform_code' => 'instagram', 'url' => 'https://www.instagram.com/shiny-style'],
-            ['platform_code' => 'tiktok', 'url' => 'https://www.tiktok.com/@shiny-style'],
-            ['platform_code' => 'whatsapp', 'url' => 'https://wa.me/201111111111'],
+            ['platformCode' => 'facebook', 'url' => 'https://facebook.com/shiny-style'],
+            ['platformCode' => 'instagram', 'url' => 'https://www.instagram.com/shiny-style'],
+            ['platformCode' => 'tiktok', 'url' => 'https://www.tiktok.com/@shiny-style'],
+            ['platformCode' => 'whatsapp', 'url' => 'https://wa.me/201111111111'],
         ];
 
         foreach ($valid as $payload) {
@@ -84,10 +84,11 @@ class SocialLinkApiTest extends TestCase
 
         $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'youtube',
+                'platformCode' => 'youtube',
                 'url' => 'https://youtube.com/shiny-style',
+                'platform_code' => 'legacy-field',
             ]))
-            ->assertUnprocessable()->assertJsonValidationErrors('platform_code');
+            ->assertUnprocessable()->assertJsonValidationErrors(['platformCode', 'platform_code']);
     }
 
     public function test_duplicate_platforms_return_a_validation_error(): void
@@ -100,32 +101,32 @@ class SocialLinkApiTest extends TestCase
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
                 'url' => 'https://www.facebook.com/another-page',
             ]))
-            ->assertUnprocessable()->assertJsonValidationErrors('platform_code');
+            ->assertUnprocessable()->assertJsonValidationErrors('platformCode');
     }
 
     public function test_facebook_page_and_group_can_coexist_but_each_code_is_unique(): void
     {
         $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'facebook',
+                'platformCode' => 'facebook',
                 'url' => 'https://www.facebook.com/shiny-style',
             ]))->assertCreated();
 
         $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'facebook_group',
+                'platformCode' => 'facebook_group',
                 'url' => 'https://www.facebook.com/groups/shiny-style',
             ]))->assertCreated();
 
         $this->assertDatabaseCount('social_links', 2);
 
         foreach ([
-            ['platform_code' => 'facebook', 'url' => 'https://facebook.com/another-page'],
-            ['platform_code' => 'facebook_group', 'url' => 'https://facebook.com/groups/another-group'],
+            ['platformCode' => 'facebook', 'url' => 'https://facebook.com/another-page'],
+            ['platformCode' => 'facebook_group', 'url' => 'https://facebook.com/groups/another-group'],
         ] as $duplicate) {
             $this->withToken($this->adminToken)
                 ->postJson('/api/v1/admin/store/social-links', $this->payload($duplicate))
-                ->assertUnprocessable()->assertJsonValidationErrors('platform_code');
+                ->assertUnprocessable()->assertJsonValidationErrors('platformCode');
         }
     }
 
@@ -149,14 +150,14 @@ class SocialLinkApiTest extends TestCase
     {
         $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'facebook_group',
+                'platformCode' => 'facebook_group',
                 'url' => 'https://www.facebook.com/shiny-style',
             ]))
             ->assertUnprocessable()->assertJsonValidationErrors('url');
 
         $this->withToken($this->adminToken)
             ->postJson('/api/v1/admin/store/social-links', $this->payload([
-                'platform_code' => 'facebook',
+                'platformCode' => 'facebook',
                 'url' => 'https://www.facebook.com/groups/shiny-style',
             ]))
             ->assertUnprocessable()->assertJsonValidationErrors('url');
@@ -164,39 +165,37 @@ class SocialLinkApiTest extends TestCase
 
     public function test_disabled_links_are_hidden_publicly_and_ordering_is_sort_order_then_id(): void
     {
-        $first = SocialLink::query()->create($this->payload([
-            'platform_code' => 'facebook', 'sort_order' => 2,
-        ]));
-        $second = SocialLink::query()->create($this->payload([
-            'platform_code' => 'instagram', 'sort_order' => 1,
-            'url' => 'https://instagram.com/shiny-style',
-        ]));
-        SocialLink::query()->create($this->payload([
-            'platform_code' => 'tiktok', 'sort_order' => 3, 'is_enabled' => false,
-            'url' => 'https://tiktok.com/@shiny-style',
-        ]));
+        $first = SocialLink::query()->create([
+            'platform_code' => 'facebook', 'url' => 'https://facebook.com/shiny-style', 'is_enabled' => true, 'sort_order' => 2,
+        ]);
+        $second = SocialLink::query()->create([
+            'platform_code' => 'instagram', 'url' => 'https://instagram.com/shiny-style', 'is_enabled' => true, 'sort_order' => 1,
+        ]);
+        SocialLink::query()->create([
+            'platform_code' => 'tiktok', 'url' => 'https://tiktok.com/@shiny-style', 'is_enabled' => false, 'sort_order' => 3,
+        ]);
 
         $this->getJson('/api/v1/store/social-links')
             ->assertOk()
-            ->assertJsonPath('data.0.platform_code', 'instagram')
-            ->assertJsonPath('data.1.platform_code', 'facebook')
-            ->assertJsonMissing(['platform_code' => 'tiktok'])
-            ->assertJsonStructure(['data' => [['platform_code', 'url']]]);
+            ->assertJsonPath('data.0.platformCode', 'instagram')
+            ->assertJsonPath('data.1.platformCode', 'facebook')
+            ->assertJsonMissing(['platformCode' => 'tiktok'])
+            ->assertJsonStructure(['data' => [['platformCode', 'url']]]);
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/store/social-links')
             ->assertOk()
             ->assertJsonPath('data.0.id', $second->id)
             ->assertJsonPath('data.1.id', $first->id)
-            ->assertJsonPath('data.2.is_enabled', false);
+            ->assertJsonPath('data.2.isEnabled', false);
     }
 
     private function payload(array $overrides = []): array
     {
         return array_merge([
-            'platform_code' => 'facebook',
+            'platformCode' => 'facebook',
             'url' => 'https://facebook.com/shiny-style',
-            'is_enabled' => true,
-            'sort_order' => 1,
+            'isEnabled' => true,
+            'sortOrder' => 1,
         ], $overrides);
     }
 }
