@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\OrderStatus;
 use App\Models\OrderItem;
+use Carbon\CarbonImmutable;
 use App\Models\Product;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -13,16 +14,17 @@ final class HomeProductSectionService
 {
     public function __construct(private readonly CategoryHierarchyService $hierarchy) {}
 
-    /** @return array{featured: Collection<int, Product>, bestSelling: Collection<int, Product>, newest: Collection<int, Product>, offers: list<mixed>} */
-    public function sections(int $limit): array
+    /** @return array{featured: Collection<int, Product>, bestSelling: Collection<int, Product>, newest: Collection<int, Product>, offers: Collection<int, Product>} */
+    public function sections(int $limit, ?CarbonImmutable $at = null): array
     {
         $visibleCategoryIds = $this->hierarchy->effectiveVisibleIds();
+        $instant = ($at ?? CarbonImmutable::now())->utc();
 
         return [
             'featured' => $this->featured($limit, $visibleCategoryIds),
             'bestSelling' => $this->bestSelling($limit, $visibleCategoryIds),
             'newest' => $this->newest($limit, $visibleCategoryIds),
-            'offers' => [],
+            'offers' => $this->offers($limit, $visibleCategoryIds, $instant),
         ];
     }
 
@@ -46,9 +48,10 @@ final class HomeProductSectionService
         return $this->bestSellingQuery($visibleCategoryIds)->limit($limit)->get();
     }
 
-    public function paginateSection(string $section, int $perPage, int $page = 1): LengthAwarePaginator
+    public function paginateSection(string $section, int $perPage, int $page = 1, ?CarbonImmutable $at = null): LengthAwarePaginator
     {
         $visibleCategoryIds = $this->hierarchy->effectiveVisibleIds();
+        $instant = ($at ?? CarbonImmutable::now())->utc();
 
         $paginator = match ($section) {
             'featured' => $this->sectionQuery($visibleCategoryIds, 'featured')
@@ -59,12 +62,30 @@ final class HomeProductSectionService
                 ->paginate($perPage, ['*'], 'page', $page),
             'best-selling' => $this->bestSellingQuery($visibleCategoryIds)
                 ->paginate($perPage, ['*'], 'page', $page),
-            'offers' => Product::query()->whereRaw('1 = 0')
+            'offers' => $this->baseQuery($visibleCategoryIds)
+                ->whereHas('offers', fn ($query) => $query
+                    ->where('is_enabled', true)
+                    ->where('starts_at', '<=', $instant)
+                    ->where('ends_at', '>', $instant))
+                ->orderByDesc('published_at')->orderByDesc('id')
                 ->paginate($perPage, ['*'], 'page', $page),
             default => throw new \InvalidArgumentException('Unsupported product section.'),
         };
 
         return $paginator->withQueryString();
+    }
+
+    /** @param list<int> $visibleCategoryIds @return Collection<int, Product> */
+    private function offers(int $limit, array $visibleCategoryIds, CarbonImmutable $at): Collection
+    {
+        return $this->baseQuery($visibleCategoryIds)
+            ->whereHas('offers', fn ($query) => $query
+                ->where('is_enabled', true)
+                ->where('starts_at', '<=', $at)
+                ->where('ends_at', '>', $at))
+            ->orderByDesc('published_at')->orderByDesc('id')
+            ->limit($limit)
+            ->get();
     }
 
     /** @param list<int>|null $visibleCategoryIds @return Builder */

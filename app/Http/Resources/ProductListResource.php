@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\SellableItem;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Collection;
@@ -24,10 +25,7 @@ class ProductListResource extends JsonResource
                 'slug' => $category->slug,
                 'name' => $this->localizedValue($category->name_ar, $category->name_en),
             ] : null,
-            'price' => $sellableItem ? (float) $sellableItem->price : null,
-            'originalPrice' => $sellableItem?->original_price === null
-                ? null
-                : (float) $sellableItem->original_price,
+            ...$this->pricePresentation($sellableItem),
             'badge' => $this->badge,
             'inStock' => $sellableItems->contains(
                 fn ($item): bool => $item->stock_quantity > 0,
@@ -51,6 +49,42 @@ class ProductListResource extends JsonResource
     protected function displaySellableItem(Collection $sellableItems)
     {
         return $this->resource->displaySellableItem($sellableItems);
+    }
+
+    /** @return array{price: ?float, originalPrice: ?float, offerApplied: bool, offerId: ?string, discountPercentage: ?float} */
+    protected function pricePresentation(?SellableItem $sellableItem): array
+    {
+        if ($sellableItem === null) {
+            return [
+                'price' => null,
+                'originalPrice' => null,
+                'offerApplied' => false,
+                'offerId' => null,
+                'discountPercentage' => null,
+            ];
+        }
+
+        $pricing = $this->pricingFor($sellableItem);
+        $hasOffer = ($pricing['offerApplied'] ?? false) === true;
+
+        return [
+            'price' => $hasOffer ? (float) $pricing['effectivePrice'] : (float) $sellableItem->price,
+            'originalPrice' => $hasOffer
+                ? (float) $pricing['basePrice']
+                : ($sellableItem->original_price === null ? null : (float) $sellableItem->original_price),
+            'offerApplied' => $hasOffer,
+            'offerId' => $hasOffer ? (string) $pricing['offerId'] : null,
+            'discountPercentage' => $hasOffer ? (float) $pricing['discountPercentage'] : null,
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function pricingFor(SellableItem $sellableItem): ?array
+    {
+        $pricing = $this->resource->getAttribute('offerPricing');
+        $result = is_array($pricing) ? ($pricing[(int) $sellableItem->getKey()] ?? null) : null;
+
+        return is_array($result) ? $result : null;
     }
 
     protected function localizedValue(mixed $arabic, mixed $english): mixed

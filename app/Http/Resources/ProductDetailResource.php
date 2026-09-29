@@ -44,10 +44,7 @@ class ProductDetailResource extends ProductListResource
             'sellableItems' => $sellableItems->map(fn ($item): array => [
                 'id' => (string) $item->getKey(),
                 'sku' => $item->sku,
-                'price' => (float) $item->price,
-                'originalPrice' => $item->original_price === null
-                    ? null
-                    : (float) $item->original_price,
+                ...$this->pricePresentation($item),
                 'inStock' => $item->stock_quantity > 0,
                 'images' => $item->variantImages
                     ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
