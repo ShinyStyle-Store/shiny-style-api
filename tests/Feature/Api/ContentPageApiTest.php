@@ -40,11 +40,14 @@ class ContentPageApiTest extends TestCase
     {
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
             ->assertOk()
-            ->assertJsonCount(3, 'data')
+            ->assertJsonCount(4, 'data')
             ->assertJsonPath('data.0.slug', 'about-us')
             ->assertJsonPath('data.0.titleAr', null)
             ->assertJsonPath('data.0.bodyEn', null)
-            ->assertJsonPath('data.2.slug', 'shipping-policy');
+            ->assertJsonPath('data.2.slug', 'shipping-policy')
+            ->assertJsonPath('data.3.slug', 'privacy-policy')
+            ->assertJsonPath('data.3.titleEn', null)
+            ->assertJsonPath('data.3.bodyAr', null);
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/returns-policy')
             ->assertOk()
@@ -57,11 +60,24 @@ class ContentPageApiTest extends TestCase
                     'bodyEn' => null,
                 ],
             ]);
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/privacy-policy')
+            ->assertOk()
+            ->assertJson([
+                'data' => [
+                    'slug' => 'privacy-policy',
+                    'titleAr' => null,
+                    'titleEn' => null,
+                    'bodyAr' => null,
+                    'bodyEn' => null,
+                ],
+            ]);
     }
 
     public function test_public_pages_are_not_available_before_first_save_and_unknown_slugs_are_not_found(): void
     {
         $this->getJson('/api/v1/content-pages/about-us')->assertNotFound();
+        $this->getJson('/api/v1/content-pages/privacy-policy')->assertNotFound();
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/not-a-page')->assertNotFound();
         $this->getJson('/api/v1/content-pages/not-a-page')->assertNotFound();
     }
@@ -135,7 +151,7 @@ class ContentPageApiTest extends TestCase
 
     public function test_each_supported_slug_can_be_saved_and_admin_returns_both_languages(): void
     {
-        foreach (['about-us', 'returns-policy', 'shipping-policy'] as $slug) {
+        foreach (['about-us', 'returns-policy', 'shipping-policy', 'privacy-policy'] as $slug) {
             $this->withToken($this->adminToken)
                 ->putJson('/api/v1/admin/content-pages/'.$slug, $this->payload(['titleEn' => $slug]))
                 ->assertOk()->assertJsonPath('data.slug', $slug)
@@ -144,9 +160,51 @@ class ContentPageApiTest extends TestCase
         }
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
-            ->assertOk()->assertJsonCount(3, 'data')
+            ->assertOk()->assertJsonCount(4, 'data')
             ->assertJsonPath('data.1.slug', 'returns-policy')
-            ->assertJsonPath('data.1.bodyAr', 'النص العربي');
+            ->assertJsonPath('data.1.bodyAr', 'النص العربي')
+            ->assertJsonPath('data.3.slug', 'privacy-policy');
+    }
+
+    public function test_privacy_policy_is_localized_and_preserves_body_line_breaks(): void
+    {
+        $payload = [
+            'titleAr' => 'سياسة الخصوصية',
+            'titleEn' => 'Privacy Policy',
+            'bodyAr' => "السطر الأول\nالسطر الثاني",
+            'bodyEn' => "First line\nSecond line",
+        ];
+
+        $this->withToken($this->adminToken)
+            ->putJson('/api/v1/admin/content-pages/privacy-policy', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.slug', 'privacy-policy')
+            ->assertJsonPath('data.titleAr', 'سياسة الخصوصية')
+            ->assertJsonPath('data.titleEn', 'Privacy Policy')
+            ->assertJsonPath('data.bodyAr', "السطر الأول\nالسطر الثاني")
+            ->assertJsonPath('data.bodyEn', "First line\nSecond line");
+
+        $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/content-pages/privacy-policy')
+            ->assertOk()
+            ->assertHeader('Content-Language', 'ar')
+            ->assertJsonPath('data.title', 'سياسة الخصوصية')
+            ->assertJsonPath('data.body', "السطر الأول\nالسطر الثاني");
+
+        $this->withHeader('Accept-Language', 'en-US')
+            ->getJson('/api/v1/content-pages/privacy-policy')
+            ->assertOk()
+            ->assertHeader('Content-Language', 'en')
+            ->assertJsonPath('data.title', 'Privacy Policy')
+            ->assertJsonPath('data.body', "First line\nSecond line");
+
+        $this->withToken($this->adminToken)
+            ->putJson('/api/v1/admin/content-pages/privacy-policy', [
+                ...$payload,
+                'extra' => 'not allowed',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('extra');
     }
 
     private function payload(array $overrides = []): array

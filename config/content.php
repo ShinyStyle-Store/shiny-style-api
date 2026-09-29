@@ -5,5 +5,6 @@ return [
         'about-us',
         'returns-policy',
         'shipping-policy',
+        'privacy-policy',
     ],
 ];
