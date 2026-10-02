@@ -293,6 +293,28 @@ For `features` and `specifications`, bilingual top-level JSON with `ar` and
 `en` keys is resolved to the requested locale. Legacy language-neutral JSON is
 returned unchanged. The API does not invent translations.
 
+Admin product create and update requests accept the same JSON fields. The
+recommended bilingual shape is:
+
+```json
+{
+  "features": {
+    "ar": ["ميزة عربية"],
+    "en": ["English feature"]
+  },
+  "specifications": {
+    "ar": {"اللون": "أحمر"},
+    "en": {"Color": "Red"}
+  }
+}
+```
+
+The Admin product response returns both language branches unchanged. On
+`PATCH`, omitted fields are preserved, `null` clears a field, and an empty
+array replaces it with an empty array. Sending `features` or `specifications`
+replaces that whole JSON field; it does not merge language branches. Clients
+must therefore send both `ar` and `en` branches when updating bilingual data.
+
 ## 10. Errors
 
 - `404 Not Found`: missing or non-public product/category, or an unavailable
@@ -331,4 +353,3 @@ The following are not part of the current catalog contract:
 - Admin APIs
 - Payments
 - Notifications
-
