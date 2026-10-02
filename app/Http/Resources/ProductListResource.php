@@ -28,7 +28,7 @@ class ProductListResource extends JsonResource
             ...$this->pricePresentation($sellableItem),
             'badge' => $this->badge,
             'inStock' => $sellableItems->contains(
-                fn ($item): bool => $item->stock_quantity > 0,
+                fn ($item): bool => $item->availableQuantity() > 0,
             ),
             'image' => $this->mediaUrl($image),
         ];

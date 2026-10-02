@@ -206,13 +206,21 @@ values are arrays or objects as shown; `description`, `videoUrl`, and nullable
 localized fields can be `null`. The actual collections may contain multiple
 entries.
 
-Inactive and soft-deleted variants are hidden. Active out-of-stock variants
-remain present and have `inStock: false`. Product `inStock` is true when any
-active variant has stock. The display variant is selected in this order:
+Inactive and soft-deleted variants are hidden. Active variants with no
+available-to-sell inventory remain present and have `inStock: false`.
+Availability is calculated as `stock_quantity - reserved_quantity`; reservations
+therefore reduce availability immediately. Product `inStock` is true when any
+active public variant has available-to-sell inventory. The display variant is
+selected in this order:
 
 1. Active default variant.
-2. First active, in-stock variant by ascending ID.
+2. First active variant with available-to-sell inventory by ascending ID.
 3. First active variant by ascending ID.
+
+The checkout quote checks current availability but does not reserve stock.
+Order creation performs the final availability check and creates the
+reservation. A successful quote therefore does not guarantee that the same
+quantity will still be available when the order is submitted.
 
 The endpoint returns `404` when the product is missing, inactive, unpublished,
 has no active variant, or has no active category.
