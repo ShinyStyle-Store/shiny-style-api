@@ -10,6 +10,7 @@ use App\Enums\PaymentStatus;
 use App\Exceptions\InvalidOrderLifecycleException;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\ReturnReceiptItem;
 use App\Models\SellableItem;
 use Illuminate\Support\Facades\DB;
 
@@ -69,6 +70,7 @@ class OrderLifecycleService
 
             if ($target === OrderStatus::Delivered) {
                 $this->validateDeliveryPaymentState($lockedOrder);
+                $this->validatePhysicalReturnDeliveryGuard($lockedOrder);
             }
 
             if ($target === OrderStatus::Shipped || $target === OrderStatus::Cancelled) {
@@ -228,6 +230,39 @@ class OrderLifecycleService
         if (! in_array($order->payment_status, [PaymentStatus::Unpaid, PaymentStatus::Paid], true)
             || ($order->status === OrderStatus::Delivered && $order->payment_status !== PaymentStatus::Paid)) {
             throw new InvalidOrderLifecycleException('The COD payment state is inconsistent with delivery.');
+        }
+    }
+
+    private function validatePhysicalReturnDeliveryGuard(Order $order): void
+    {
+        if ($order->status !== OrderStatus::Shipped) {
+            return;
+        }
+
+        $items = OrderItem::query()->where('order_id', $order->getKey())->get(['id', 'quantity']);
+        $returned = ReturnReceiptItem::query()
+            ->select('order_item_id')
+            ->selectRaw('SUM(effective_received_quantity) AS returned_quantity')
+            ->whereHas('receipt', fn ($query) => $query->where('order_id', $order->getKey()))
+            ->groupBy('order_item_id')
+            ->pluck('returned_quantity', 'order_item_id');
+
+        $hasPhysicalReturn = false;
+        $fullPhysicalReturn = true;
+        foreach ($items as $item) {
+            $quantity = (int) ($returned[$item->getKey()] ?? 0);
+            $hasPhysicalReturn = $hasPhysicalReturn || $quantity > 0;
+            if ($quantity < (int) $item->quantity) {
+                $fullPhysicalReturn = false;
+            }
+        }
+
+        if ($fullPhysicalReturn && $hasPhysicalReturn) {
+            throw new InvalidOrderLifecycleException('A fully returned order cannot be delivered.');
+        }
+
+        if ($order->payment_method === PaymentMethod::CashOnDelivery && $hasPhysicalReturn) {
+            throw new InvalidOrderLifecycleException('COD delivery is temporarily unavailable after a physical return.');
         }
     }
 

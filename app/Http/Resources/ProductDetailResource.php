@@ -45,7 +45,7 @@ class ProductDetailResource extends ProductListResource
                 'id' => (string) $item->getKey(),
                 'sku' => $item->sku,
                 ...$this->pricePresentation($item),
-                'inStock' => $item->stock_quantity > 0,
+                'inStock' => $item->availableQuantity() > 0,
                 'images' => $item->variantImages
                     ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
                     ->filter(fn (?string $url): bool => $url !== null)

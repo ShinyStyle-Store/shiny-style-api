@@ -708,6 +708,112 @@ class ProductApiTest extends TestCase
             ->assertJsonPath('meta.per_page', 1);
     }
 
+    public function test_public_availability_uses_available_quantity_and_preserves_display_variant_priority(): void
+    {
+        $product = $this->createProductWithVariant(
+            [
+                'slug' => 'reserved-default-availability',
+                'is_featured' => true,
+            ],
+            [
+                'stock_quantity' => 10,
+                'reserved_quantity' => 10,
+            ],
+        );
+        $available = $this->addVariant($product, [
+            'sku' => 'AVAILABLE-'.strtoupper(uniqid()),
+            'stock_quantity' => 4,
+            'reserved_quantity' => 1,
+            'is_default' => false,
+        ]);
+
+        $detail = $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.inStock', true)
+            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', true)->value('id'))
+            ->assertJsonPath('data.sellableItems.0.inStock', false)
+            ->assertJsonPath('data.sellableItems.1.inStock', true);
+
+        $this->assertSame((string) $available->getKey(), $detail->json('data.sellableItems.1.id'));
+
+        $listing = $this->getJson('/api/v1/products?per_page=100')->assertOk();
+        $listingIndex = collect($listing->json('data'))
+            ->search(fn (array $item): bool => $item['slug'] === $product->slug);
+        $this->assertIsInt($listingIndex);
+        $this->assertTrue($listing->json("data.{$listingIndex}.inStock"));
+
+        $home = $this->getJson('/api/v1/home/products?limit=20')->assertOk();
+        $homeIndex = collect($home->json('data.featured'))
+            ->search(fn (array $item): bool => $item['slug'] === $product->slug);
+        $this->assertIsInt($homeIndex);
+        $this->assertTrue($home->json("data.featured.{$homeIndex}.inStock"));
+
+        $product->sellableItems()->whereKey($available->getKey())->update(['reserved_quantity' => 4]);
+
+        $product->refresh();
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.inStock', false)
+            ->assertJsonPath('data.sellableItems.0.inStock', false)
+            ->assertJsonPath('data.sellableItems.1.inStock', false)
+            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', true)->value('id'));
+
+        $listing = $this->getJson('/api/v1/products?per_page=100')->assertOk();
+        $listingIndex = collect($listing->json('data'))
+            ->search(fn (array $item): bool => $item['slug'] === $product->slug);
+        $this->assertIsInt($listingIndex);
+        $this->assertFalse($listing->json("data.{$listingIndex}.inStock"));
+
+        $home = $this->getJson('/api/v1/home/products?limit=20')->assertOk();
+        $homeIndex = collect($home->json('data.featured'))
+            ->search(fn (array $item): bool => $item['slug'] === $product->slug);
+        $this->assertIsInt($homeIndex);
+        $this->assertFalse($home->json("data.featured.{$homeIndex}.inStock"));
+    }
+
+    public function test_public_display_fallback_skips_unavailable_variants_and_ignores_inactive_or_deleted_variants(): void
+    {
+        $product = $this->createProductWithVariant(
+            ['slug' => 'fallback-availability-product'],
+            [
+                'stock_quantity' => 10,
+                'reserved_quantity' => 10,
+                'is_default' => false,
+            ],
+        );
+        $fallback = $this->addVariant($product, [
+            'sku' => 'FALLBACK-'.strtoupper(uniqid()),
+            'stock_quantity' => 3,
+            'reserved_quantity' => 0,
+            'is_default' => false,
+        ]);
+
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.inStock', true)
+            ->assertJsonPath('data.defaultSellableItemId', (string) $fallback->getKey());
+
+        $inactive = $this->addVariant($product, [
+            'sku' => 'INACTIVE-'.strtoupper(uniqid()),
+            'stock_quantity' => 20,
+            'reserved_quantity' => 0,
+            'status' => 'inactive',
+            'is_default' => false,
+        ]);
+        $deleted = $this->addVariant($product, [
+            'sku' => 'DELETED-'.strtoupper(uniqid()),
+            'stock_quantity' => 20,
+            'reserved_quantity' => 0,
+            'is_default' => false,
+        ]);
+        $deleted->delete();
+
+        $response = $this->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $this->assertNotContains((string) $inactive->getKey(), $response->json('data.sellableItems.*.id'));
+        $this->assertNotContains((string) $deleted->getKey(), $response->json('data.sellableItems.*.id'));
+        $this->assertSame((string) $fallback->getKey(), $response->json('data.defaultSellableItemId'));
+    }
+
     public function test_search_excludes_inactive_and_unpublished_matching_products(): void
     {
         Product::create([

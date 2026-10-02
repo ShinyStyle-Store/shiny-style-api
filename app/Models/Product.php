@@ -132,7 +132,7 @@ class Product extends Model
 
         return $publicSellableItems->firstWhere('is_default', true)
             ?? $publicSellableItems->first(
-                fn (SellableItem $sellableItem): bool => $sellableItem->stock_quantity > 0,
+                fn (SellableItem $sellableItem): bool => $sellableItem->availableQuantity() > 0,
             )
             ?? $publicSellableItems->first();
     }
