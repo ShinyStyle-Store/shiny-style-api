@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources;
 
+use App\Support\ProductFeatures;
+use App\Support\ProductSpecifications;
 use Illuminate\Http\Request;
 
 class ProductDetailResource extends ProductListResource
@@ -20,8 +22,8 @@ class ProductDetailResource extends ProductListResource
         return [
             ...parent::toArray($request),
             'description' => $this->localizedValue($this->description_ar, $this->description_en),
-            'features' => $this->localizedJsonValue($this->features),
-            'specifications' => $this->localizedJsonValue($this->specifications),
+            'features' => ProductFeatures::localize($this->features),
+            'specifications' => ProductSpecifications::localize($this->specifications),
             'gallery' => $this->productImages
                 ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
                 ->filter(fn (?string $url): bool => $url !== null)

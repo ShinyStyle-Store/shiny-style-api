@@ -297,19 +297,22 @@ order is:
 3. English.
 4. `null`.
 
-For `features` and `specifications`, bilingual top-level JSON with `ar` and
-`en` keys is resolved to the requested locale. Legacy language-neutral JSON is
-returned unchanged. The API does not invent translations.
+For `specifications`, bilingual top-level JSON with `ar` and `en` keys is
+resolved to the requested locale. For new `features`, the admin API uses a
+paired list so each entry keeps its own translations. The public API resolves
+each paired feature independently and falls back to the other language when
+the requested translation is missing or blank. Legacy feature formats remain
+readable and retain their existing localization behavior; the API does not
+invent translation pairings.
 
 Admin product create and update requests accept the same JSON fields. The
 recommended bilingual shape is:
 
 ```json
 {
-  "features": {
-    "ar": ["ميزة عربية"],
-    "en": ["English feature"]
-  },
+  "features": [
+    {"ar": "ميزة عربية", "en": "English feature"}
+  ],
   "specifications": {
     "ar": {"اللون": "أحمر"},
     "en": {"Color": "Red"}
@@ -317,11 +320,86 @@ recommended bilingual shape is:
 }
 ```
 
-The Admin product response returns both language branches unchanged. On
-`PATCH`, omitted fields are preserved, `null` clears a field, and an empty
-array replaces it with an empty array. Sending `features` or `specifications`
-replaces that whole JSON field; it does not merge language branches. Clients
-must therefore send both `ar` and `en` branches when updating bilingual data.
+The Admin product response returns paired features unchanged:
+
+```json
+{
+  "features": [
+    {"ar": "خامة عالية الجودة", "en": "High-quality fabric"},
+    {"ar": "سهل التنظيف", "en": "Easy to clean"}
+  ]
+}
+```
+
+Public product details still return a localized string list, not bilingual
+objects:
+
+```json
+// Accept-Language: ar
+{"features": ["خامة عالية الجودة", "سهل التنظيف"]}
+
+// Accept-Language: en
+{"features": ["High-quality fabric", "Easy to clean"]}
+```
+
+Each new feature object must contain only `ar` and `en`; both keys are
+required, values are strings or `null`, and at least one translation must be
+nonempty. Surrounding whitespace is trimmed and blank values become `null`.
+On `PATCH`, omitted `features` is preserved, `null` clears it, and `[]`
+replaces it with an empty list. Sending entries replaces the whole list; it
+does not merge entries. The frontend must send the complete paired list when
+editing one translation.
+
+Existing legacy feature data is detected as either a language-keyed list
+(`{"ar": [...], "en": [...]}`), a flat string list, or empty/null. These
+legacy shapes remain readable and accepted with their format-specific
+validation. The backend does not zip independent language arrays or guess a
+language for flat strings. An admin must explicitly review and save a paired
+list to establish translation pairs. Specifications retain their existing
+shape and behavior unless the new paired specification list is used.
+
+The recommended admin shape for new specifications is:
+
+```json
+{
+  "specifications": [
+    {
+      "ar": {"label": "الخامة", "value": "قطن"},
+      "en": {"label": "Material", "value": "Cotton"}
+    },
+    {
+      "ar": {"label": "العناية", "value": "غسيل بارد"},
+      "en": {"label": "Care", "value": "Cold wash"}
+    }
+  ]
+}
+```
+
+Each paired specification requires both `ar` and `en`. Each translation must
+contain only `label` and `value`; both fields are strings or `null`, and a
+translation must contain both nonempty fields or both `null`. At least one
+complete translation is required per entry. Labels are normalized before
+validation, and duplicate labels are rejected for both Arabic and English
+public projections, including collisions caused by fallback. The backend
+never combines a label from one language with a value from another.
+
+Public details serialize paired specifications as a localized label/value
+object while preserving order:
+
+```json
+// Accept-Language: ar
+{"specifications": {"الخامة": "قطن", "Care": "Cold wash"}}
+
+// Accept-Language: en
+{"specifications": {"Material": "Cotton", "Care": "Cold wash"}}
+```
+
+Legacy language-keyed objects, single-language objects, and empty/null values
+remain readable and accepted with their existing behavior. The backend does
+not pair legacy objects by order, count, or matching labels. An admin must
+explicitly review and replace legacy data with the paired list. `PATCH`
+omission preserves `specifications`, `null` clears it, `[]` stores an empty
+list, and a supplied list replaces the complete field.
 
 ## 10. Errors
 

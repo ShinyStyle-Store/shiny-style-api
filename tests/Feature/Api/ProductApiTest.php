@@ -144,6 +144,69 @@ class ProductApiTest extends TestCase
             ->assertJsonPath('data.specifications', ['material' => 'Cotton']);
     }
 
+    public function test_paired_features_are_localized_per_entry_with_translation_fallback(): void
+    {
+        $product = $this->createProductWithVariant([
+            'slug' => 'paired-features-product',
+            'features' => [
+                ['ar' => 'خامة عالية الجودة', 'en' => 'High-quality fabric'],
+                ['ar' => 'سهل التنظيف', 'en' => null],
+                ['ar' => null, 'en' => 'Lightweight'],
+            ],
+        ]);
+
+        $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.features', ['خامة عالية الجودة', 'سهل التنظيف', 'Lightweight']);
+
+        $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.features', ['High-quality fabric', 'سهل التنظيف', 'Lightweight']);
+    }
+
+    public function test_legacy_language_keyed_feature_lists_are_not_zipped(): void
+    {
+        $product = $this->createProductWithVariant([
+            'slug' => 'unequal-legacy-features-product',
+            'features' => [
+                'ar' => ['ميزة عربية أولى', 'ميزة عربية ثانية'],
+                'en' => ['First English feature'],
+            ],
+        ]);
+
+        $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.features', ['ميزة عربية أولى', 'ميزة عربية ثانية']);
+        $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.features', ['First English feature']);
+    }
+
+    public function test_paired_specifications_are_localized_per_entry_without_mixing_translations(): void
+    {
+        $product = $this->createProductWithVariant([
+            'slug' => 'paired-specifications-product',
+            'specifications' => [
+                ['ar' => ['label' => 'الخامة', 'value' => 'قطن'], 'en' => ['label' => 'Material', 'value' => 'Cotton']],
+                ['ar' => ['label' => null, 'value' => null], 'en' => ['label' => 'Care', 'value' => 'Cold wash']],
+            ],
+        ]);
+
+        $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.specifications', ['الخامة' => 'قطن', 'Care' => 'Cold wash']);
+
+        $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.specifications', ['Material' => 'Cotton', 'Care' => 'Cold wash']);
+    }
+
     public function test_unversioned_catalog_routes_are_not_available(): void
     {
         $this->getJson('/api/products')->assertNotFound();
