@@ -96,6 +96,180 @@ class AdminProductApiTest extends TestCase
             ->assertJsonPath('data.specifications.en', ['Color' => 'Red']);
     }
 
+    public function test_paired_features_round_trip_and_patch_replaces_the_complete_list(): void
+    {
+        $response = $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
+            'name_ar' => 'منتج المميزات',
+            'name_en' => 'Feature Product',
+            'features' => [
+                ['ar' => '  خامة عالية الجودة  ', 'en' => '  High-quality fabric  '],
+                ['ar' => 'سهل التنظيف', 'en' => null],
+            ],
+        ])->assertCreated();
+
+        $product = Product::findOrFail($response->json('data.id'));
+        $expected = [
+            ['ar' => 'خامة عالية الجودة', 'en' => 'High-quality fabric'],
+            ['ar' => 'سهل التنظيف', 'en' => null],
+        ];
+        $response->assertJsonPath('data.features', $expected);
+        $this->assertSame($expected, $product->features);
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id)
+            ->assertOk()->assertJsonPath('data.features', $expected);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'features' => [
+                ['ar' => 'سهل التنظيف', 'en' => 'Easy to clean'],
+            ],
+        ])->assertOk()->assertJsonPath('data.features', [
+            ['ar' => 'سهل التنظيف', 'en' => 'Easy to clean'],
+        ]);
+
+        $this->assertSame([
+            ['ar' => 'سهل التنظيف', 'en' => 'Easy to clean'],
+        ], $product->refresh()->features);
+    }
+
+    public function test_paired_features_patch_omitted_null_and_empty_list_semantics_are_preserved(): void
+    {
+        $product = $this->product('paired-feature-semantics', [
+            'features' => [['ar' => 'ميزة', 'en' => 'Feature']],
+        ]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'name_en' => 'Updated name',
+        ])->assertOk();
+        $this->assertSame([['ar' => 'ميزة', 'en' => 'Feature']], $product->refresh()->features);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'features' => null,
+        ])->assertOk();
+        $this->assertNull($product->refresh()->features);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'features' => [],
+        ])->assertOk()->assertJsonPath('data.features', []);
+        $this->assertSame([], $product->refresh()->features);
+    }
+
+    public function test_paired_features_are_decoded_from_multipart_json(): void
+    {
+        $response = $this->withToken($this->adminToken)->post('/api/v1/admin/products', [
+            'name_ar' => 'منتج multipart',
+            'name_en' => 'Multipart Feature Product',
+            'features' => json_encode([
+                ['ar' => 'ميزة عربية', 'en' => 'English feature'],
+            ], JSON_UNESCAPED_UNICODE),
+        ])->assertCreated();
+
+        $response->assertJsonPath('data.features', [
+            ['ar' => 'ميزة عربية', 'en' => 'English feature'],
+        ]);
+    }
+
+    public function test_paired_specifications_round_trip_show_and_whole_list_update(): void
+    {
+        $specifications = [
+            [
+                'ar' => ['label' => '  الخامة  ', 'value' => '  قطن  '],
+                'en' => ['label' => '  Material  ', 'value' => '  Cotton  '],
+            ],
+            [
+                'ar' => ['label' => 'العناية', 'value' => 'غسيل بارد'],
+                'en' => ['label' => 'Care', 'value' => 'Cold wash'],
+            ],
+        ];
+        $expected = [
+            [
+                'ar' => ['label' => 'الخامة', 'value' => 'قطن'],
+                'en' => ['label' => 'Material', 'value' => 'Cotton'],
+            ],
+            [
+                'ar' => ['label' => 'العناية', 'value' => 'غسيل بارد'],
+                'en' => ['label' => 'Care', 'value' => 'Cold wash'],
+            ],
+        ];
+
+        $response = $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
+            'name_ar' => 'منتج المواصفات',
+            'name_en' => 'Specification Product',
+            'specifications' => $specifications,
+        ])->assertCreated()->assertJsonPath('data.specifications', $expected);
+        $product = Product::findOrFail($response->json('data.id'));
+        $this->assertSame($expected, $product->specifications);
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id)
+            ->assertOk()->assertJsonPath('data.specifications', $expected);
+
+        $replacement = [$expected[1]];
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'specifications' => $replacement,
+        ])->assertOk()->assertJsonPath('data.specifications', $replacement);
+        $this->assertSame($replacement, $product->refresh()->specifications);
+    }
+
+    public function test_paired_specifications_support_multipart_and_patch_clear_semantics(): void
+    {
+        $response = $this->withToken($this->adminToken)->post('/api/v1/admin/products', [
+            'name_ar' => 'منتج مواصفات multipart',
+            'name_en' => 'Multipart Specification Product',
+            'specifications' => json_encode([
+                ['ar' => ['label' => 'الخامة', 'value' => 'قطن'], 'en' => ['label' => 'Material', 'value' => 'Cotton']],
+            ], JSON_UNESCAPED_UNICODE),
+        ])->assertCreated();
+        $product = Product::findOrFail($response->json('data.id'));
+        $this->assertSame([
+            ['ar' => ['label' => 'الخامة', 'value' => 'قطن'], 'en' => ['label' => 'Material', 'value' => 'Cotton']],
+        ], $product->specifications);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'name_en' => 'Still has specifications',
+        ])->assertOk();
+        $this->assertNotNull($product->refresh()->specifications);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'specifications' => null,
+        ])->assertOk();
+        $this->assertNull($product->refresh()->specifications);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'specifications' => [],
+        ])->assertOk()->assertJsonPath('data.specifications', []);
+    }
+
+    public function test_paired_specifications_reject_invalid_translations_and_duplicate_projection_labels(): void
+    {
+        foreach ([
+            ['specifications' => [['ar' => ['label' => 'Material'], 'en' => ['label' => 'Material', 'value' => 'Cotton']]], 'error' => 'specifications.0.ar.value'],
+            ['specifications' => [['ar' => ['label' => 'Material', 'value' => 'Cotton', 'extra' => 'x'], 'en' => ['label' => 'Material EN', 'value' => 'Cotton']]], 'error' => 'specifications.0.ar.extra'],
+            ['specifications' => [['ar' => ['label' => ['nested'], 'value' => 'Cotton'], 'en' => ['label' => 'Material', 'value' => 'Cotton']]], 'error' => 'specifications.0.ar.label'],
+            ['specifications' => [['ar' => ['label' => 'Material', 'value' => 'Cotton'], 'en' => ['label' => 'Material', 'value' => 'Cotton']], ['ar' => ['label' => 'Material', 'value' => 'Wool'], 'en' => ['label' => 'Other', 'value' => 'Wool']]], 'error' => 'specifications.1.ar.label'],
+            ['specifications' => [['ar' => ['label' => null, 'value' => null], 'en' => ['label' => null, 'value' => null]]], 'error' => 'specifications.0'],
+        ] as $case) {
+            $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
+                'name_ar' => 'منتج مواصفات غير صالح',
+                'name_en' => 'Invalid Specification Product',
+                'specifications' => $case['specifications'],
+            ])->assertUnprocessable()->assertJsonValidationErrors($case['error']);
+        }
+    }
+
+    public function test_invalid_paired_features_are_rejected_with_field_errors(): void
+    {
+        foreach ([
+            ['features' => [['ar' => ' ', 'en' => '']], 'error' => 'features.0'],
+            ['features' => [['ar' => 'Valid', 'en' => 'Valid', 'unexpected' => 'x']], 'error' => 'features.0.unexpected'],
+            ['features' => [['ar' => ['nested'], 'en' => 'Valid']], 'error' => 'features.0.ar'],
+            ['features' => [['ar' => 'Missing English']], 'error' => 'features.0.en'],
+        ] as $case) {
+            $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
+                'name_ar' => 'منتج غير صالح',
+                'name_en' => 'Invalid Feature Product',
+                'features' => $case['features'],
+            ])->assertUnprocessable()->assertJsonValidationErrors($case['error']);
+        }
+    }
+
     public function test_patch_replaces_the_complete_json_field_and_omitted_fields_are_preserved(): void
     {
         $product = $this->product('bilingual-patch', [
