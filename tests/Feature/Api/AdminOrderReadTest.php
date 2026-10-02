@@ -9,9 +9,12 @@ use App\Enums\PaymentStatus;
 use App\Models\AdminMembership;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Product;
 use App\Models\ShippingArea;
+use App\Models\SellableItem;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AdminOrderReadTest extends TestCase
@@ -235,6 +238,121 @@ class AdminOrderReadTest extends TestCase
         $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->id)->assertNotFound();
         $this->withToken($token)->getJson('/api/v1/admin/orders/not-a-ulid')->assertNotFound();
         $this->withToken($token)->getJson('/api/v1/admin/orders/01J00000000000000000000000')->assertNotFound();
+    }
+
+    public function test_detail_item_ids_are_order_item_ids_and_can_create_a_physical_return(): void
+    {
+        $order = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
+        $items = OrderItem::factory()->count(2)->create(['order_id' => $order->id, 'quantity' => 1]);
+        $otherOrder = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
+        $otherItem = OrderItem::factory()->create(['order_id' => $otherOrder->id, 'quantity' => 1]);
+        $token = $this->adminToken();
+
+        $detail = $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
+        $detail->assertJsonPath('data.items.0.id', $items[0]->id)
+            ->assertJsonPath('data.items.1.id', $items[1]->id);
+
+        $this->app['auth']->forgetGuards();
+        $return = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', [
+                'default_reason' => 'changed_mind',
+                'items' => [
+                    ['order_item_id' => $items[0]->id, 'received_quantity' => 1, 'restock_quantity' => 0],
+                    ['order_item_id' => $items[1]->id, 'received_quantity' => 1, 'restock_quantity' => 0],
+                ],
+            ])->assertCreated();
+        $return->assertJsonPath('data.items.0.order_item_id', $items[0]->id)
+            ->assertJsonPath('data.items.1.order_item_id', $items[1]->id);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', [
+                'default_reason' => 'changed_mind',
+                'items' => [['order_item_id' => $otherItem->id, 'received_quantity' => 1, 'restock_quantity' => 0]],
+            ])->assertUnprocessable();
+        $this->assertDatabaseCount('return_receipts', 1);
+    }
+
+    public function test_detail_exposes_catalog_ids_for_each_item_without_using_catalog_visibility(): void
+    {
+        $productA = Product::create([
+            'slug' => 'admin-order-read-product-a',
+            'name_ar' => 'منتج أ',
+            'name_en' => 'Product A',
+        ]);
+        $productB = Product::create([
+            'slug' => 'admin-order-read-product-b',
+            'name_ar' => 'منتج ب',
+            'name_en' => 'Product B',
+        ]);
+        $sellableA = SellableItem::create([
+            'product_id' => $productA->id,
+            'sku' => 'ADMIN-READ-A',
+            'price' => '10.00',
+        ]);
+        $sellableB = SellableItem::create([
+            'product_id' => $productB->id,
+            'sku' => 'ADMIN-READ-B',
+            'price' => '20.00',
+        ]);
+        $order = Order::factory()->create();
+        $first = OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $productA->id,
+            'sellable_item_id' => $sellableA->id,
+        ]);
+        $second = OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $productB->id,
+            'sellable_item_id' => $sellableB->id,
+        ]);
+        $productB->delete();
+        $sellableB->delete();
+        $token = $this->adminToken();
+
+        $response = $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
+
+        $response->assertJsonPath('data.items.0.id', $first->id)
+            ->assertJsonPath('data.items.0.product_id', $productA->id)
+            ->assertJsonPath('data.items.0.sellable_item_id', $sellableA->id)
+            ->assertJsonPath('data.items.1.id', $second->id)
+            ->assertJsonPath('data.items.1.product_id', $productB->id)
+            ->assertJsonPath('data.items.1.sellable_item_id', $sellableB->id)
+            ->assertJsonPath('data.items.1.sku', $second->sku)
+            ->assertJsonPath('data.items.1.product_name', $second->product_name_en);
+    }
+
+    public function test_detail_returns_null_catalog_ids_after_referenced_rows_are_hard_deleted(): void
+    {
+        $product = Product::create([
+            'slug' => 'admin-order-read-missing-product',
+            'name_ar' => 'منتج محذوف',
+            'name_en' => 'Deleted Product',
+        ]);
+        $sellable = SellableItem::create([
+            'product_id' => $product->id,
+            'sku' => 'ADMIN-READ-MISSING',
+            'price' => '10.00',
+        ]);
+        $order = Order::factory()->create();
+        $item = OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'sellable_item_id' => $sellable->id,
+            'sku' => 'HISTORICAL-SKU',
+            'product_name_en' => 'Historical Product Name',
+        ]);
+        $sellable->forceDelete();
+        $product->forceDelete();
+        $token = $this->adminToken();
+
+        $response = $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
+
+        $response->assertJsonPath('data.items.0.id', $item->id)
+            ->assertJsonPath('data.items.0.product_id', null)
+            ->assertJsonPath('data.items.0.sellable_item_id', null)
+            ->assertJsonPath('data.items.0.sku', 'HISTORICAL-SKU')
+            ->assertJsonPath('data.items.0.product_name', 'Historical Product Name');
     }
 
     private function adminToken(): string

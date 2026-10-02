@@ -33,6 +33,9 @@ class AdminOrderDetailResource extends JsonResource
                 'shipping_fee' => (string) $this->shipping_fee,
             ],
             'items' => $this->items->map(fn ($item): array => [
+                'id' => (int) $item->getKey(),
+                'product_id' => $item->product_id === null ? null : (int) $item->product_id,
+                'sellable_item_id' => $item->sellable_item_id === null ? null : (int) $item->sellable_item_id,
                 'sku' => $item->sku,
                 'product_name' => $this->localizedValue($item->product_name_ar, $item->product_name_en),
                 'selected_options' => collect($item->options_snapshot)->map(fn (array $option): array => [
@@ -49,6 +52,7 @@ class AdminOrderDetailResource extends JsonResource
                     : (string) $item->offer_discount_percentage,
                 'line_total' => (string) $item->line_total,
             ])->values()->all(),
+            'return_summary' => $this->return_summary ?? 'none',
             'subtotal' => (string) $this->subtotal,
             'total' => (string) $this->total,
             'order_note' => $this->customer_note,

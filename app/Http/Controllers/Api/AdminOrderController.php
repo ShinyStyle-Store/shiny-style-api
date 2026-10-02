@@ -11,16 +11,24 @@ use App\Http\Requests\AdminOrderCancellationRequest;
 use App\Http\Requests\AdminOrderContactStatusRequest;
 use App\Http\Requests\AdminOrderEmptyActionRequest;
 use App\Http\Requests\AdminOrderIndexRequest;
+use App\Http\Requests\AdminReturnCorrectionRequest;
+use App\Http\Requests\AdminReturnReceiptIndexRequest;
+use App\Http\Requests\AdminReturnReceiptRequest;
 use App\Http\Resources\AdminOrderDetailResource;
 use App\Http\Resources\AdminOrderListResource;
+use App\Http\Resources\AdminReturnCorrectionResource;
+use App\Http\Resources\AdminReturnReceiptResource;
+use App\Exceptions\PhysicalReturnConflictException;
 use App\Models\Order;
 use App\Services\OrderLifecycleService;
+use App\Services\PhysicalReturnService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class AdminOrderController extends Controller
 {
@@ -75,8 +83,79 @@ class AdminOrderController extends Controller
             ->where('public_id', $public_id)
             ->with('items')
             ->firstOrFail();
+        $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
+    }
+
+    public function returns(AdminReturnReceiptIndexRequest $request, string $public_id)
+    {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+        $receipts = $order->returnReceipts()
+            ->with('items.orderItem')
+            ->orderByDesc('received_at')->orderByDesc('id')
+            ->paginate($request->validated('per_page', 20))
+            ->withQueryString();
+        $orderSummary = app(PhysicalReturnService::class)->summary($order);
+        $receipts->getCollection()->each(fn ($receipt) => $receipt->setAttribute('order_summary', $orderSummary));
+
+        return AdminReturnReceiptResource::collection($receipts);
+    }
+
+    public function showReturn(string $public_id, int $return_receipt): AdminReturnReceiptResource
+    {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+        $receipt = $order->returnReceipts()->whereKey($return_receipt)->with([
+            'items.orderItem', 'corrections.items',
+        ])->firstOrFail();
+        $receipt->setAttribute('order_summary', app(PhysicalReturnService::class)->summary($order));
+
+        return new AdminReturnReceiptResource($receipt);
+    }
+
+    public function storeReturn(
+        AdminReturnReceiptRequest $request,
+        string $public_id,
+        PhysicalReturnService $returns,
+    ): JsonResponse|AdminReturnReceiptResource {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+
+        try {
+            $result = $returns->create($order, $request->servicePayload(), (int) $request->user()->getKey(), $request->idempotencyKey());
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
+        } catch (ValidationException $exception) {
+            throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
+        }
+
+        $result['receipt']->setAttribute('order_summary', $returns->summary($order));
+        $response = new AdminReturnReceiptResource($result['receipt']);
+        return $result['replayed'] ? $response : $response->response()->setStatusCode(201);
+    }
+
+    public function correctReturn(
+        AdminReturnCorrectionRequest $request,
+        string $public_id,
+        int $return_receipt,
+        PhysicalReturnService $returns,
+    ): JsonResponse|AdminReturnCorrectionResource {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+        $receipt = $order->returnReceipts()->whereKey($return_receipt)->firstOrFail();
+
+        try {
+            $result = $returns->correct($receipt, $request->servicePayload(), (int) $request->user()->getKey(), $request->idempotencyKey());
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
+        } catch (ValidationException $exception) {
+            throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
+        }
+
+        $result['receipt']->setAttribute('order_summary', $returns->summary($order));
+        $payload = [
+            'operation' => (new AdminReturnCorrectionResource($result['correction']))->resolve($request),
+            'receipt' => (new AdminReturnReceiptResource($result['receipt']))->resolve($request),
+        ];
+        return response()->json(['data' => $payload]);
     }
 
     public function confirm(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
@@ -178,6 +257,7 @@ class AdminOrderController extends Controller
             ->where('public_id', $publicId)
             ->with('items')
             ->firstOrFail();
+        $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
     }
@@ -201,5 +281,28 @@ class AdminOrderController extends Controller
                     ->orWhere('alternate_phone', $canonicalPhone);
             }
         });
+    }
+
+    /** @param array<string, list<string>> $errors @return array<string, list<string>> */
+    private function mapReturnValidationErrors(array $errors): array
+    {
+        $segments = [
+            'request_received_at' => 'return_requested_at',
+            'received_at' => 'items_received_at',
+            'restockable_quantity' => 'restock_quantity',
+            'expected_revision' => 'expected_version',
+            'explanation' => 'correction_reason',
+        ];
+
+        $mapped = [];
+        foreach ($errors as $key => $messages) {
+            $mappedKey = implode('.', array_map(
+                static fn (string $segment): string => $segments[$segment] ?? $segment,
+                explode('.', $key),
+            ));
+            $mapped[$mappedKey] = $messages;
+        }
+
+        return $mapped;
     }
 }

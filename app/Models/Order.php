@@ -114,4 +114,9 @@ class Order extends Model
     {
         return $this->hasMany(PaymentAttempt::class);
     }
+
+    public function returnReceipts(): HasMany
+    {
+        return $this->hasMany(ReturnReceipt::class);
+    }
 }

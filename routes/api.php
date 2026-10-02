@@ -95,6 +95,14 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::get('orders', [AdminOrderController::class, 'index']);
         Route::get('orders/{public_id}', [AdminOrderController::class, 'show'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/returns', [AdminOrderController::class, 'storeReturn'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::get('orders/{public_id}/returns', [AdminOrderController::class, 'returns'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::get('orders/{public_id}/returns/{return_receipt}', [AdminOrderController::class, 'showReturn'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
+        Route::post('orders/{public_id}/returns/{return_receipt}/corrections', [AdminOrderController::class, 'correctReturn'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
         Route::post('orders/{public_id}/confirm', [AdminOrderController::class, 'confirm'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::post('orders/{public_id}/prepare', [AdminOrderController::class, 'prepare'])
