@@ -75,6 +75,43 @@ class AdminProductApiTest extends TestCase
         $this->assertDatabaseHas('category_product', ['product_id' => $product->id, 'category_id' => $second->id, 'is_primary' => true]);
     }
 
+    public function test_create_and_admin_read_support_bilingual_features_and_specifications(): void
+    {
+        $response = $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
+            'name_ar' => 'منتج ثنائي اللغة',
+            'name_en' => 'Bilingual Product',
+            'features' => [
+                'ar' => ['ميزة عربية'],
+                'en' => ['English feature'],
+            ],
+            'specifications' => [
+                'ar' => ['اللون' => 'أحمر'],
+                'en' => ['Color' => 'Red'],
+            ],
+        ])->assertCreated();
+
+        $response->assertJsonPath('data.features.ar', ['ميزة عربية'])
+            ->assertJsonPath('data.features.en', ['English feature'])
+            ->assertJsonPath('data.specifications.ar', ['اللون' => 'أحمر'])
+            ->assertJsonPath('data.specifications.en', ['Color' => 'Red']);
+    }
+
+    public function test_patch_replaces_the_complete_json_field_and_omitted_fields_are_preserved(): void
+    {
+        $product = $this->product('bilingual-patch', [
+            'features' => ['ar' => ['قديم'], 'en' => ['Old']],
+            'specifications' => ['ar' => ['اللون' => 'أحمر'], 'en' => ['Color' => 'Red']],
+        ]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'features' => ['en' => ['New']],
+        ])->assertOk();
+
+        $fresh = $product->fresh();
+        $this->assertSame(['en' => ['New']], $fresh->features);
+        $this->assertSame(['ar' => ['اللون' => 'أحمر'], 'en' => ['Color' => 'Red']], $fresh->specifications);
+    }
+
     public function test_create_and_update_store_normalized_external_video_url_without_media_rows(): void
     {
         $response = $this->withToken($this->adminToken)->postJson('/api/v1/admin/products', [
