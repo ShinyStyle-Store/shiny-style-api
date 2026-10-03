@@ -11,11 +11,9 @@ use App\Exceptions\PaymentAttemptException;
 use App\Exceptions\PaymobConfigurationException;
 use App\Exceptions\PaymobRequestException;
 use App\Models\Order;
-use App\Models\OrderItem;
 use App\Models\PaymentAttempt;
 use App\Support\ExactMoney;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use InvalidArgumentException;
 use OverflowException;
 use Throwable;
@@ -26,8 +24,7 @@ final class PaymobCardIntentionService
         private readonly PaymobClient $client,
         private readonly PaymobIntegrationResolver $integrations,
         private readonly PaymentReturnTokenService $returnTokens,
-    ) {
-    }
+    ) {}
 
     public function initiate(PaymentAttempt $paymentAttempt): PaymobIntentionResult
     {
@@ -56,7 +53,7 @@ final class PaymobCardIntentionService
                 if ($order->payment_status === PaymentStatus::Paid) {
                     throw new PaymentAttemptException('order_already_paid', 'The order has already been paid.');
                 }
-                if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered], true)) {
+                if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)) {
                     throw new PaymentAttemptException('order_not_payable', 'The order is not payable.');
                 }
                 if ($order->payment_expires_at === null || $order->payment_expires_at->isPast()) {
@@ -182,7 +179,7 @@ final class PaymobCardIntentionService
             }
             throw new PaymentAttemptException('payment_attempt_not_retryable', 'The payment attempt cannot be initiated.');
         }
-        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered], true)) {
+        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)) {
             throw new PaymentAttemptException('order_not_payable', 'The order is not payable.');
         }
         if ($order->payment_status === PaymentStatus::Paid) {
@@ -217,7 +214,7 @@ final class PaymobCardIntentionService
 
     private function assertStillPersistable(PaymentAttempt $attempt, Order $order): void
     {
-        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered], true)
+        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)
             || $order->payment_status === PaymentStatus::Paid
             || $order->payment_expires_at === null
             || $order->payment_expires_at->isPast()
@@ -271,6 +268,7 @@ final class PaymobCardIntentionService
         }
 
         $billing = $this->billing($order);
+
         return new PaymobIntentionSnapshot(
             (int) $attempt->getKey(),
             $integrationId,
@@ -368,6 +366,7 @@ final class PaymobCardIntentionService
         if ($orderId !== null && (! is_string($orderId) && ! is_int($orderId))) {
             throw new PaymentAttemptException('malformed_provider_response', 'The payment provider order is invalid.');
         }
+
         return ['intention_id' => (string) $id, 'client_secret' => $secret, 'order_id' => $orderId === null ? null : (string) $orderId];
     }
 
@@ -376,6 +375,7 @@ final class PaymobCardIntentionService
         if ($attempt->provider_client_secret === null || $attempt->provider_intention_id === null || $attempt->expires_at === null) {
             throw new PaymentAttemptException('payment_attempt_result_incomplete', 'The payment result is incomplete.');
         }
+
         return new PaymobIntentionResult(
             (int) $attempt->getKey(),
             $attempt->status,
@@ -399,6 +399,7 @@ final class PaymobCardIntentionService
         if (! is_string($key) || trim($key) === '') {
             throw new PaymobConfigurationException('missing_public_key', 'Paymob public key is not configured.');
         }
+
         return trim($key);
     }
 
@@ -409,6 +410,7 @@ final class PaymobCardIntentionService
         if (! is_string($url) || trim($url) === '' || $parts === false || ($parts['scheme'] ?? null) !== 'https' || ! is_string($parts['host'] ?? null) || isset($parts['user'], $parts['pass'], $parts['query'], $parts['fragment'])) {
             throw new PaymobConfigurationException("invalid_{$key}", "Paymob {$key} is invalid.");
         }
+
         return rtrim(trim($url), '/');
     }
 

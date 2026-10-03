@@ -2,12 +2,15 @@
 
 namespace App\Services;
 
+use App\Enums\OrderReturnStatus;
 use App\Enums\OrderStatus;
-use App\Enums\PaymentMethod;
 use App\Enums\ReturnReason;
 use App\Exceptions\PhysicalReturnConflictException;
+use App\Http\Resources\AdminReturnCorrectionResource;
+use App\Http\Resources\AdminReturnReceiptResource;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\OrderReturn;
 use App\Models\ReturnCorrection;
 use App\Models\ReturnReceipt;
 use App\Models\ReturnReceiptItem;
@@ -38,42 +41,121 @@ class PhysicalReturnService
                 $this->assertFingerprint($existing->request_fingerprint, $fingerprint);
 
                 return [
-                    'receipt' => $this->originalReceipt($existing),
+                    'receipt' => $existing,
+                    'payload' => $existing->creation_response_snapshot
+                        ?? $this->legacyCreatePayload($existing),
                     'replayed' => true,
                 ];
             }
 
-            $this->assertReceiptOrder($lockedOrder);
+            $decision = $lockedOrder->orderReturn()->lockForUpdate()->first();
+            $workflowReceipt = null;
+            if ($decision !== null) {
+                if ($decision->status !== OrderReturnStatus::WaitingForReturn) {
+                    throw new PhysicalReturnConflictException(
+                        'return_receipt_already_exists',
+                        'The return decision already has an effective physical receipt.',
+                    );
+                }
+
+                $workflowReceipt = ReturnReceipt::query()
+                    ->where('order_return_id', $decision->getKey())
+                    ->whereNull('reversed_at')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($workflowReceipt !== null) {
+                    throw new PhysicalReturnConflictException(
+                        'return_receipt_already_exists',
+                        'The return decision already has an effective physical receipt.',
+                    );
+                }
+            }
+
+            if ($decision === null) {
+                throw new PhysicalReturnConflictException(
+                    'return_decision_receipt_required',
+                    'A decision-linked full-order receipt is required for this order.',
+                );
+            }
+
+            $this->assertReceiptOrder($lockedOrder, $decision);
             $receivedAt = $this->parseReceiptDate($data['received_at'] ?? null);
             $requestReceivedAt = $this->parseRequestDate($data['request_received_at'] ?? null, $receivedAt);
             $this->assertBeforeShipment($lockedOrder, $receivedAt);
 
             $inputItems = collect($data['items']);
-            $orderItems = OrderItem::query()
+            $inputItemIds = $inputItems->pluck('order_item_id')->map(fn ($id): int => (int) $id)->all();
+            $allOrderItems = OrderItem::query()
                 ->where('order_id', $lockedOrder->getKey())
-                ->whereIn('id', $inputItems->pluck('order_item_id')->map(fn ($id): int => (int) $id))
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get()
                 ->keyBy('id');
 
-            if ($orderItems->count() !== $inputItems->count()) {
+            $orderItemsById = $allOrderItems->mapWithKeys(
+                fn (OrderItem $item): array => [(int) $item->getKey() => $item],
+            );
+            $resolvedInputItems = [];
+            foreach ($inputItemIds as $index => $inputItemId) {
+                $orderItem = $orderItemsById->get($inputItemId);
+                if (! $orderItem instanceof OrderItem) {
+                    if ($decision !== null) {
+                        throw new PhysicalReturnConflictException(
+                            'return_full_order_items_required',
+                            'A full-order receipt must include every original order item exactly once.',
+                        );
+                    }
+
+                    throw ValidationException::withMessages([
+                        "items.{$index}.order_item_id" => 'The order item must belong to the target order.',
+                    ]);
+                }
+                $resolvedInputItems[$inputItemId] = $orderItem;
+            }
+
+            if ($decision !== null) {
+                if (count($inputItemIds) !== count(array_unique($inputItemIds))
+                    || count($orderItemsById) !== count($inputItemIds)
+                    || $orderItemsById->keys()->map(fn ($id): int => (int) $id)->sort()->values()->all()
+                        !== collect($inputItemIds)->unique()->sort()->values()->all()) {
+                    throw new PhysicalReturnConflictException(
+                        'return_full_order_items_required',
+                        'A full-order receipt must include every original order item exactly once.',
+                    );
+                }
+            }
+
+            if (count($resolvedInputItems) !== $inputItems->count()) {
+                if ($decision !== null) {
+                    throw new PhysicalReturnConflictException(
+                        'return_full_order_items_required',
+                        'A full-order receipt must include every original order item exactly once.',
+                    );
+                }
+
                 throw ValidationException::withMessages(['items' => 'Every order item must belong to the target order.']);
             }
 
-            $orderItemIds = $orderItems->keys()->map(fn ($id): int => (int) $id)->all();
+            $orderItemIds = array_keys($resolvedInputItems);
             $existingItems = $this->lockExistingItems($lockedOrder, $orderItemIds);
             $returnedByOrderItem = $this->returnedQuantities($existingItems);
-            $targets = $this->lockTargets($orderItems, $inputItems, false);
+            $targets = $this->lockTargets(new EloquentCollection(array_values($resolvedInputItems)), $inputItems, false);
             $stockDeltas = [];
             $resolvedItems = [];
 
             foreach ($inputItems as $input) {
-                $orderItem = $orderItems->get((int) $input['order_item_id']);
+                $orderItem = $resolvedInputItems[(int) $input['order_item_id']];
                 $received = (int) $input['received_quantity'];
                 $restockable = (int) $input['restockable_quantity'];
                 $this->assertQuantityRange($restockable, $received, 'items');
-                $this->assertCumulativeLimit($returnedByOrderItem, $orderItem, $received);
+                if ($decision !== null) {
+                    if ($received !== (int) $orderItem->quantity) {
+                        throw ValidationException::withMessages(['items' => 'Every full-order receipt quantity must equal the original order quantity.']);
+                    }
+                } else {
+                    $this->assertCumulativeLimit($returnedByOrderItem, $orderItem, $received);
+                }
 
                 $reason = $this->resolveReason($input['reason'] ?? null, $data['default_reason'] ?? null);
                 $note = array_key_exists('note', $input) ? $input['note'] : ($data['note'] ?? null);
@@ -96,6 +178,7 @@ class PhysicalReturnService
             $this->applyStockDeltas($targets, $stockDeltas);
             $receipt = ReturnReceipt::query()->create([
                 'order_id' => $lockedOrder->getKey(),
+                'order_return_id' => $decision?->getKey(),
                 'request_received_at' => $requestReceivedAt,
                 'received_at' => $receivedAt,
                 'default_reason' => $data['default_reason'] ?? null,
@@ -123,7 +206,21 @@ class PhysicalReturnService
                 ]);
             }
 
-            return ['receipt' => $this->loadReceipt($receipt), 'replayed' => false];
+            if ($decision !== null) {
+                $decision->forceFill([
+                    'status' => OrderReturnStatus::Received,
+                    'version' => $this->nextInteger((int) $decision->version, 'return_decision_overflow'),
+                ])->saveQuietly();
+            }
+
+            $receipt = $this->loadReceipt($receipt);
+            $payload = (new AdminReturnReceiptResource($receipt))
+                ->asOriginalOperation()
+                ->resolve(request());
+            $receipt->timestamps = false;
+            $receipt->forceFill(['creation_response_snapshot' => $payload])->saveQuietly();
+
+            return ['receipt' => $receipt, 'payload' => $payload, 'replayed' => false];
         });
     }
 
@@ -134,6 +231,9 @@ class PhysicalReturnService
 
         return DB::transaction(function () use ($receipt, $data, $actorId, $idempotencyKey, $fingerprint): array {
             $order = Order::query()->whereKey($receipt->order_id)->lockForUpdate()->firstOrFail();
+            $decision = $receipt->order_return_id === null
+                ? null
+                : OrderReturn::query()->whereKey($receipt->order_return_id)->where('order_id', $order->getKey())->lockForUpdate()->firstOrFail();
             $lockedReceipt = ReturnReceipt::query()->whereKey($receipt->getKey())->where('order_id', $order->getKey())->lockForUpdate()->firstOrFail();
             $existing = ReturnCorrection::query()
                 ->where('return_receipt_id', $lockedReceipt->getKey())
@@ -146,9 +246,18 @@ class PhysicalReturnService
 
                 return [
                     'correction' => $existing,
-                    'receipt' => $this->loadReceipt($lockedReceipt),
+                    'receipt' => $lockedReceipt,
+                    'payload' => $existing->response_snapshot
+                        ?? $this->legacyCorrectionPayload($existing),
                     'replayed' => true,
                 ];
+            }
+
+            if ($lockedReceipt->reversed_at !== null) {
+                throw new PhysicalReturnConflictException(
+                    'return_receipt_reversed',
+                    'A reversed return receipt cannot be corrected.',
+                );
             }
 
             if ((int) $data['expected_revision'] !== (int) $lockedReceipt->revision) {
@@ -167,9 +276,28 @@ class PhysicalReturnService
                 throw ValidationException::withMessages(['items' => 'Every correction item must belong to the target receipt.']);
             }
 
-            $allItems = $this->lockExistingItems($order, $receiptItems->pluck('order_item_id')->map(fn ($id): int => (int) $id)->all(), true);
-            $orderItems = OrderItem::query()->where('order_id', $order->getKey())->whereIn('id', $allItems->pluck('order_item_id'))->lockForUpdate()->get()->keyBy('id');
-            if ($orderItems->count() !== $allItems->pluck('order_item_id')->unique()->count()) {
+            $receiptItemsById = $receiptItems->mapWithKeys(
+                fn (ReturnReceiptItem $item): array => [(int) $item->getKey() => $item],
+            );
+            $resolvedReceiptItems = [];
+            foreach ($data['items'] as $index => $input) {
+                $item = $receiptItemsById->get((int) $input['return_receipt_item_id']);
+                if (! $item instanceof ReturnReceiptItem) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.return_receipt_item_id" => 'The correction item must belong to the target receipt.',
+                    ]);
+                }
+                $resolvedReceiptItems[(int) $input['return_receipt_item_id']] = $item;
+            }
+
+            $receiptOrderItemIds = $receiptItems->pluck('order_item_id')->map(fn ($id): int => (int) $id)->unique()->values();
+            $orderItems = OrderItem::query()
+                ->where('order_id', $order->getKey())
+                ->whereIn('id', $receiptOrderItemIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+            if ($orderItems->count() !== $receiptOrderItemIds->count()) {
                 throw new PhysicalReturnConflictException('return_order_item_mismatch', 'A return item no longer belongs to the target order.');
             }
             $proposed = [];
@@ -178,10 +306,15 @@ class PhysicalReturnService
             $history = [];
 
             foreach ($data['items'] as $input) {
-                $item = $receiptItems->get((int) $input['return_receipt_item_id']);
+                $item = $resolvedReceiptItems[(int) $input['return_receipt_item_id']];
                 $received = (int) $input['received_quantity'];
                 $restockable = (int) $input['restockable_quantity'];
                 $this->assertQuantityRange($restockable, $received, 'items');
+                if ($decision !== null && $received !== (int) $item->original_quantity) {
+                    throw ValidationException::withMessages([
+                        'items' => 'A full-order receipt cannot be corrected to a partial received quantity.',
+                    ]);
+                }
                 $reason = array_key_exists('reason', $input) && $input['reason'] !== null
                     ? ReturnReason::from($input['reason'])
                     : $item->effective_reason;
@@ -246,11 +379,149 @@ class PhysicalReturnService
 
             $lockedReceipt->forceFill(['revision' => $newRevision])->saveQuietly();
 
-            return [
-                'correction' => $correction->load('items'),
-                'receipt' => $this->loadReceipt($lockedReceipt),
-                'replayed' => false,
+            $correction = $correction->load('items');
+            $receipt = $this->loadReceipt($lockedReceipt);
+            $payload = [
+                'operation' => (new AdminReturnCorrectionResource($correction))->resolve(request()),
+                'receipt' => (new AdminReturnReceiptResource($receipt))
+                    ->withReturnSummary($this->summary($order))
+                    ->resolve(request()),
             ];
+            $correction->timestamps = false;
+            $correction->forceFill(['response_snapshot' => $payload])->saveQuietly();
+
+            return ['correction' => $correction, 'receipt' => $receipt, 'payload' => $payload, 'replayed' => false];
+        });
+    }
+
+    /** @return array{receipt: ReturnReceipt, operation: array<string, mixed>, replayed: bool} */
+    public function reverse(ReturnReceipt $receipt, array $data, int $actorId, string $idempotencyKey): array
+    {
+        $fingerprint = $this->fingerprint('reversal', $receipt->getKey(), $data);
+
+        return DB::transaction(function () use ($receipt, $data, $actorId, $idempotencyKey, $fingerprint): array {
+            $order = Order::query()->whereKey($receipt->order_id)->lockForUpdate()->firstOrFail();
+            $decision = OrderReturn::query()
+                ->whereKey($receipt->order_return_id)
+                ->where('order_id', $order->getKey())
+                ->lockForUpdate()
+                ->first();
+
+            if ($decision === null) {
+                throw new PhysicalReturnConflictException(
+                    'return_receipt_reversal_not_allowed',
+                    'Only a receipt linked to the order return decision can be reversed.',
+                );
+            }
+
+            $existing = ReturnReceipt::query()
+                ->where('reversal_idempotency_key', $idempotencyKey)
+                ->where('order_id', $order->getKey())
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing !== null) {
+                $this->assertFingerprint($existing->reversal_request_fingerprint, $fingerprint);
+
+                return [
+                    'receipt' => $existing,
+                    'operation' => $this->reversalOperation($existing, $data['expected_revision']),
+                    'payload' => $existing->reversal_response_snapshot
+                        ?? $this->legacyReversalPayload($existing, $data['expected_revision']),
+                    'replayed' => true,
+                ];
+            }
+
+            if ($decision->status !== OrderReturnStatus::Received) {
+                throw new PhysicalReturnConflictException(
+                    'return_receipt_reversal_not_allowed',
+                    'Only a received decision can have its current receipt reversed.',
+                );
+            }
+
+            $lockedReceipt = ReturnReceipt::query()
+                ->whereKey($receipt->getKey())
+                ->where('order_id', $order->getKey())
+                ->where('order_return_id', $decision->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedReceipt->reversed_at !== null) {
+                throw new PhysicalReturnConflictException(
+                    'return_receipt_already_reversed',
+                    'The return receipt has already been reversed.',
+                );
+            }
+
+            $effective = ReturnReceipt::query()
+                ->where('order_return_id', $decision->getKey())
+                ->whereNull('reversed_at')
+                ->lockForUpdate()
+                ->first();
+            if ($effective === null || $effective->getKey() !== $lockedReceipt->getKey()) {
+                throw new PhysicalReturnConflictException(
+                    'return_receipt_reversal_not_current',
+                    'Only the current effective receipt can be reversed.',
+                );
+            }
+
+            if ((int) $data['expected_revision'] !== (int) $lockedReceipt->revision) {
+                throw new PhysicalReturnConflictException(
+                    'return_revision_conflict',
+                    'The return receipt has changed. Refresh it and retry the reversal.',
+                );
+            }
+
+            $receiptItems = ReturnReceiptItem::query()
+                ->where('return_receipt_id', $lockedReceipt->getKey())
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            $targets = $this->lockCorrectionTargets($receiptItems);
+            $stockDeltas = [];
+            foreach ($receiptItems as $item) {
+                $restockable = (int) $item->effective_restockable_quantity;
+                if ($restockable === 0) {
+                    continue;
+                }
+                if ($item->sellable_item_id === null || ! isset($targets[(int) $item->sellable_item_id])) {
+                    throw new PhysicalReturnConflictException(
+                        'return_inventory_target_missing',
+                        'The historical inventory target is required to reverse this receipt.',
+                    );
+                }
+                $id = (int) $item->sellable_item_id;
+                $stockDeltas[$id] = $this->addIntegers($stockDeltas[$id] ?? 0, -$restockable);
+            }
+
+            $this->applyStockDeltas($targets, $stockDeltas);
+
+            $newRevision = $this->nextInteger((int) $lockedReceipt->revision, 'return_revision_overflow');
+            $lockedReceipt->forceFill([
+                'revision' => $newRevision,
+                'reversed_at' => now(),
+                'reversed_by_user_id' => $actorId,
+                'reversal_reason' => $data['reversal_reason'],
+                'reversal_idempotency_key' => $idempotencyKey,
+                'reversal_request_fingerprint' => $fingerprint,
+            ])->saveQuietly();
+
+            $decision->forceFill([
+                'status' => OrderReturnStatus::WaitingForReturn,
+                'version' => $this->nextInteger((int) $decision->version, 'return_decision_overflow'),
+            ])->saveQuietly();
+
+            $receipt = $this->loadReceipt($lockedReceipt);
+            $payload = [
+                'operation' => $this->reversalOperation($lockedReceipt, $data['expected_revision']),
+                'receipt' => (new AdminReturnReceiptResource($receipt))
+                    ->withReturnSummary($this->summary($order))
+                    ->resolve(request()),
+            ];
+            $lockedReceipt->timestamps = false;
+            $lockedReceipt->forceFill(['reversal_response_snapshot' => $payload])->saveQuietly();
+
+            return ['receipt' => $receipt, 'operation' => $payload['operation'], 'payload' => $payload, 'replayed' => false];
         });
     }
 
@@ -260,7 +531,7 @@ class PhysicalReturnService
         $returned = ReturnReceiptItem::query()
             ->select('order_item_id')
             ->selectRaw('SUM(effective_received_quantity) AS returned_quantity')
-            ->whereHas('receipt', fn ($query) => $query->where('order_id', $order->getKey()))
+            ->whereHas('receipt', fn ($query) => $query->where('order_id', $order->getKey())->whereNull('reversed_at'))
             ->groupBy('order_item_id')
             ->pluck('returned_quantity', 'order_item_id');
 
@@ -281,13 +552,18 @@ class PhysicalReturnService
     {
         return $receipt->load([
             'items.orderItem',
+            'orderReturn',
             ...($withCorrections ? ['corrections.items'] : []),
         ]);
     }
 
-    private function assertReceiptOrder(Order $order): void
+    private function assertReceiptOrder(Order $order, ?OrderReturn $decision = null): void
     {
-        if (! in_array($order->status, [OrderStatus::Shipped, OrderStatus::Delivered], true)) {
+        $workflowRefusal = $decision !== null
+            && $decision->kind->value === 'delivery_refusal'
+            && $order->status === OrderStatus::DeliveryRefused;
+
+        if (! $workflowRefusal && ! in_array($order->status, [OrderStatus::Shipped, OrderStatus::Delivered], true)) {
             throw new PhysicalReturnConflictException('return_order_status_not_allowed', 'Returns can only be recorded for shipped or delivered orders.');
         }
     }
@@ -298,6 +574,7 @@ class PhysicalReturnService
         if ($date->isFuture()) {
             throw ValidationException::withMessages(['received_at' => 'The physical receipt date cannot be in the future.']);
         }
+
         return $date;
     }
 
@@ -310,6 +587,7 @@ class PhysicalReturnService
         if ($date->greaterThan($receivedAt)) {
             throw ValidationException::withMessages(['request_received_at' => 'The request date cannot be later than the physical receipt date.']);
         }
+
         return $date;
     }
 
@@ -340,6 +618,7 @@ class PhysicalReturnService
         if ($value === null) {
             throw ValidationException::withMessages(['reason' => 'A return reason is required.']);
         }
+
         return ReturnReason::from($value);
     }
 
@@ -355,7 +634,9 @@ class PhysicalReturnService
     {
         return ReturnReceiptItem::query()
             ->whereIn('order_item_id', $orderItemIds)
-            ->whereHas('receipt', fn ($query) => $query->where('order_id', $order->getKey()))
+            ->whereHas('receipt', fn ($query) => $query
+                ->where('order_id', $order->getKey())
+                ->whereNull('reversed_at'))
             ->orderBy('id')
             ->lockForUpdate()
             ->get();
@@ -370,6 +651,7 @@ class PhysicalReturnService
                 (int) $item->effective_received_quantity,
             );
         }
+
         return $result;
     }
 
@@ -377,6 +659,7 @@ class PhysicalReturnService
     private function lockTargets(EloquentCollection $orderItems, SupportCollection $inputItems, bool $includeZero): array
     {
         $ids = $orderItems->pluck('sellable_item_id')->filter()->map(fn ($id): int => (int) $id)->unique()->sort()->values()->all();
+
         return $this->lockTargetIds($ids);
     }
 
@@ -384,6 +667,7 @@ class PhysicalReturnService
     private function lockCorrectionTargets(EloquentCollection $items): array
     {
         $ids = $items->pluck('sellable_item_id')->filter()->map(fn ($id): int => (int) $id)->unique()->sort()->values()->all();
+
         return $this->lockTargetIds($ids);
     }
 
@@ -393,6 +677,7 @@ class PhysicalReturnService
         if ($ids === []) {
             return [];
         }
+
         return SellableItem::withTrashed()->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get()->keyBy('id')->all();
     }
 
@@ -431,6 +716,27 @@ class PhysicalReturnService
         return $left + $right;
     }
 
+    private function nextInteger(int $value, string $errorCode): int
+    {
+        if ($value >= self::MAX_INTEGER) {
+            throw new PhysicalReturnConflictException($errorCode, 'The return revision cannot be increased safely.');
+        }
+
+        return $value + 1;
+    }
+
+    /** @return array<string, mixed> */
+    private function reversalOperation(ReturnReceipt $receipt, int $expectedRevision): array
+    {
+        return [
+            'return_receipt_id' => $receipt->getKey(),
+            'expected_version' => $expectedRevision,
+            'new_version' => (int) $receipt->revision,
+            'reversal_reason' => $receipt->reversal_reason,
+            'idempotency_key' => $receipt->reversal_idempotency_key,
+        ];
+    }
+
     private function assertProposedTotals(Order $order, EloquentCollection $selected, array $proposed): void
     {
         $all = $this->lockExistingItems($order, $selected->pluck('order_item_id')->map(fn ($id): int => (int) $id)->all(), true);
@@ -461,9 +767,48 @@ class PhysicalReturnService
         throw ValidationException::withMessages(['items' => 'The correction does not change the current receipt state.']);
     }
 
-    private function originalReceipt(ReturnReceipt $receipt): ReturnReceipt
+    /** @return array<string, mixed> */
+    private function legacyCreatePayload(ReturnReceipt $receipt): array
     {
-        return $receipt->load(['items.orderItem'])->setAttribute('original_operation', true);
+        $historical = ReturnReceipt::query()->whereKey($receipt->getKey())
+            ->with('items.orderItem')->firstOrFail();
+        $historical->unsetRelation('orderReturn');
+
+        return (new AdminReturnReceiptResource($historical))
+            ->asOriginalOperation()
+            ->withUpdatedAt(null)
+            ->resolve(request());
+    }
+
+    /** @return array<string, mixed> */
+    private function legacyCorrectionPayload(ReturnCorrection $correction): array
+    {
+        // A correction stores its own immutable operation, but older rows do not
+        // contain the complete receipt state at that point in history.
+        return [
+            'operation' => (new AdminReturnCorrectionResource($correction->load('items')))->resolve(request()),
+            'receipt' => null,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function legacyReversalPayload(ReturnReceipt $receipt, int $expectedRevision): array
+    {
+        $historical = ReturnReceipt::query()->whereKey($receipt->getKey())
+            ->with(['items.orderItem', 'corrections.items'])->firstOrFail();
+        $resource = (new AdminReturnReceiptResource($historical))->withHistoricalContext(
+            OrderReturnStatus::WaitingForReturn->value,
+            true,
+            $historical->reversed_at,
+            $historical->reversal_reason,
+            null,
+            null,
+        );
+
+        return [
+            'operation' => $this->reversalOperation($historical, $expectedRevision),
+            'receipt' => $resource->resolve(request()),
+        ];
     }
 
     private function assertFingerprint(string $stored, string $current): void
@@ -476,6 +821,7 @@ class PhysicalReturnService
     private function fingerprint(string $operation, int $scopeId, array $data): string
     {
         $canonical = $this->canonicalize(['operation' => $operation, 'scope_id' => $scopeId, 'data' => $data]);
+
         return hash('sha256', json_encode($canonical, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION));
     }
 
@@ -488,12 +834,14 @@ class PhysicalReturnService
             usort($value, fn ($a, $b) => is_array($a) && is_array($b)
                 ? (($a['order_item_id'] ?? $a['return_receipt_item_id'] ?? 0) <=> ($b['order_item_id'] ?? $b['return_receipt_item_id'] ?? 0))
                 : 0);
+
             return array_map(fn ($item) => $this->canonicalize($item), $value);
         }
         ksort($value);
         foreach ($value as $key => $item) {
             $value[$key] = $this->canonicalize($item);
         }
+
         return $value;
     }
 }

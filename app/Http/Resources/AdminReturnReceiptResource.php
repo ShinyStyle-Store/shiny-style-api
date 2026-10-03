@@ -4,12 +4,65 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Carbon;
 
 class AdminReturnReceiptResource extends JsonResource
 {
+    private bool $originalOperation = false;
+
+    /** @var array<string, mixed> */
+    private array $historicalContext = [];
+
+    private ?string $returnSummary = null;
+
+    private bool $returnSummaryIsSet = false;
+
+    public function asOriginalOperation(): self
+    {
+        $this->originalOperation = true;
+
+        return $this;
+    }
+
+    public function withHistoricalContext(
+        string $workflowStatus,
+        bool $reversed,
+        ?Carbon $reversedAt,
+        ?string $reversalReason,
+        ?string $returnSummary,
+        ?Carbon $updatedAt,
+    ): self {
+        $this->historicalContext = [
+            'workflow_status' => $workflowStatus,
+            'reversed' => $reversed,
+            'reversed_at' => $reversedAt,
+            'reversal_reason' => $reversalReason,
+            'return_summary' => $returnSummary,
+            'updated_at' => $updatedAt,
+        ];
+
+        return $this;
+    }
+
+    public function withUpdatedAt(?Carbon $updatedAt): self
+    {
+        $this->historicalContext['updated_at'] = $updatedAt;
+
+        return $this;
+    }
+
+    public function withReturnSummary(string $returnSummary): self
+    {
+        $this->returnSummary = $returnSummary;
+        $this->returnSummaryIsSet = true;
+
+        return $this;
+    }
+
     public function toArray(Request $request): array
     {
-        $originalOperation = (bool) ($this->original_operation ?? false);
+        $originalOperation = $this->originalOperation;
+        $historicalProjection = array_key_exists('workflow_status', $this->historicalContext);
 
         return [
             'id' => $this->getKey(),
@@ -21,7 +74,21 @@ class AdminReturnReceiptResource extends JsonResource
             'version' => $originalOperation ? 0 : (int) $this->revision,
             'recorded_by_user_id' => $this->recorded_by_user_id,
             'idempotency_key' => $this->idempotency_key,
-            'return_summary' => $originalOperation ? $this->summary(true) : ($this->order_summary ?? $this->summary()),
+            'order_return_id' => $this->order_return_id,
+            'workflow_linked' => $this->order_return_id !== null,
+            'workflow_status' => $historicalProjection
+                ? $this->historicalContext['workflow_status']
+                : $this->whenLoaded('orderReturn', fn () => $this->orderReturn?->status?->value),
+            'reversed' => $historicalProjection ? $this->historicalContext['reversed'] : $this->reversed_at !== null,
+            'reversed_at' => $historicalProjection
+                ? $this->historicalContext['reversed_at']?->toISOString()
+                : $this->reversed_at?->toISOString(),
+            'reversal_reason' => $historicalProjection ? $this->historicalContext['reversal_reason'] : $this->reversal_reason,
+            'return_summary' => $historicalProjection
+                ? $this->historicalContext['return_summary']
+                : ($this->returnSummaryIsSet
+                    ? $this->returnSummary
+                    : ($originalOperation ? $this->summary(true) : $this->summary())),
             'items' => $this->whenLoaded('items', fn () => $this->items->map(fn ($item): array => [
                 'id' => $item->getKey(),
                 'order_item_id' => $item->order_item_id,
@@ -38,7 +105,9 @@ class AdminReturnReceiptResource extends JsonResource
             ])->values()->all()),
             'corrections' => $originalOperation ? [] : $this->whenLoaded('corrections', fn () => AdminReturnCorrectionResource::collection($this->corrections)),
             'created_at' => $this->created_at?->toISOString(),
-            'updated_at' => $this->updated_at?->toISOString(),
+            'updated_at' => array_key_exists('updated_at', $this->historicalContext)
+                ? $this->historicalContext['updated_at']?->toISOString()
+                : $this->updated_at?->toISOString(),
         ];
     }
 

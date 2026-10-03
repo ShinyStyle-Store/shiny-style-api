@@ -10,8 +10,8 @@ use App\Models\AdminMembership;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
-use App\Models\ShippingArea;
 use App\Models\SellableItem;
+use App\Models\ShippingArea;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
@@ -244,13 +244,16 @@ class AdminOrderReadTest extends TestCase
     {
         $order = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
         $items = OrderItem::factory()->count(2)->create(['order_id' => $order->id, 'quantity' => 1]);
-        $otherOrder = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
-        $otherItem = OrderItem::factory()->create(['order_id' => $otherOrder->id, 'quantity' => 1]);
         $token = $this->adminToken();
 
         $detail = $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
         $detail->assertJsonPath('data.items.0.id', $items[0]->id)
             ->assertJsonPath('data.items.1.id', $items[1]->id);
+
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/refuse-delivery', [
+                'reason' => 'refused_delivery',
+            ])->assertCreated();
 
         $this->app['auth']->forgetGuards();
         $return = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
@@ -263,14 +266,58 @@ class AdminOrderReadTest extends TestCase
             ])->assertCreated();
         $return->assertJsonPath('data.items.0.order_item_id', $items[0]->id)
             ->assertJsonPath('data.items.1.order_item_id', $items[1]->id);
+    }
 
-        $this->app['auth']->forgetGuards();
+    public function test_foreign_return_item_is_rejected_without_mutation(): void
+    {
+        $product = Product::create([
+            'slug' => 'admin-order-read-foreign-return-product',
+            'name_ar' => 'Ù…Ù†ØªØ¬ Ø§Ù„Ø¥Ø±Ø¬Ø§Ø¹ Ø§Ù„Ø£Ø¬Ù†Ø¨ÙŠ',
+            'name_en' => 'Foreign Return Product',
+        ]);
+        $sellable = SellableItem::create([
+            'product_id' => $product->id,
+            'sku' => 'ADMIN-READ-FOREIGN-RETURN',
+            'price' => '10.00',
+            'stock_quantity' => 5,
+            'reserved_quantity' => 1,
+        ]);
+        $order = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
+        $item = OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'quantity' => 1,
+            'sellable_item_id' => $sellable->id,
+        ]);
+        $foreignOrder = Order::factory()->shipped()->create(['shipped_at' => now()->subHour()]);
+        $foreignItem = OrderItem::factory()->create([
+            'order_id' => $foreignOrder->id,
+            'quantity' => 1,
+            'sellable_item_id' => $sellable->id,
+        ]);
+        $token = $this->adminToken();
+        $stockBefore = $sellable->stock_quantity;
+        $reservedBefore = $sellable->reserved_quantity;
+
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/refuse-delivery', [
+                'reason' => 'refused_delivery',
+            ])->assertCreated()->assertJsonPath('data.status', 'waiting_for_return');
+
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
             ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', [
                 'default_reason' => 'changed_mind',
-                'items' => [['order_item_id' => $otherItem->id, 'received_quantity' => 1, 'restock_quantity' => 0]],
-            ])->assertUnprocessable();
-        $this->assertDatabaseCount('return_receipts', 1);
+                'items' => [['order_item_id' => $foreignItem->id, 'received_quantity' => 1, 'restock_quantity' => 0]],
+            ])->assertStatus(409)->assertJsonPath('code', 'return_full_order_items_required');
+
+        $this->assertDatabaseCount('return_receipts', 0);
+        $this->assertDatabaseCount('return_receipt_items', 0);
+        $this->assertDatabaseHas('order_returns', [
+            'order_id' => $order->id,
+            'status' => 'waiting_for_return',
+        ]);
+        $this->assertSame(OrderStatus::DeliveryRefused, $order->fresh()->status);
+        $this->assertSame($stockBefore, $sellable->fresh()->stock_quantity);
+        $this->assertSame($reservedBefore, $sellable->fresh()->reserved_quantity);
     }
 
     public function test_detail_exposes_catalog_ids_for_each_item_without_using_catalog_visibility(): void

@@ -13,9 +13,7 @@ use Illuminate\Support\Facades\DB;
 
 final class PaymobTransactionWebhookService
 {
-    public function __construct(private readonly PaymobIntegrationResolver $integrations)
-    {
-    }
+    public function __construct(private readonly PaymobIntegrationResolver $integrations) {}
 
     public function process(PaymobTransaction $transaction): PaymobWebhookResult
     {
@@ -51,21 +49,24 @@ final class PaymobTransactionWebhookService
 
             if ($transactionOwner !== null && $transactionOwner->getKey() !== $attempt->getKey()) {
                 $this->review($attempt, 'duplicate_transaction_conflict', $transaction->transactionId);
-                return new PaymobWebhookResult();
+
+                return new PaymobWebhookResult;
             }
 
             if ($transactionOwner?->getKey() === $attempt->getKey()) {
-                return new PaymobWebhookResult();
+                return new PaymobWebhookResult;
             }
 
             if (! $this->identityMatches($attempt, $transaction, $cardIntegrationId)) {
                 $this->review($attempt, 'callback_identity_mismatch', $transaction->transactionId);
-                return new PaymobWebhookResult();
+
+                return new PaymobWebhookResult;
             }
 
             if ($transaction->refunded || $transaction->voided) {
                 $this->review($attempt, 'provider_refund_or_void', $transaction->transactionId);
-                return new PaymobWebhookResult();
+
+                return new PaymobWebhookResult;
             }
 
             if ($transaction->pending) {
@@ -79,7 +80,8 @@ final class PaymobTransactionWebhookService
                         'provider_transaction_id' => (string) $transaction->transactionId,
                     ])->save();
                 }
-                return new PaymobWebhookResult();
+
+                return new PaymobWebhookResult;
             }
 
             if ($transaction->success && ! $transaction->errorOccurred) {
@@ -87,13 +89,15 @@ final class PaymobTransactionWebhookService
                     if ($attempt->status !== PaymentAttemptStatus::Paid) {
                         $this->review($attempt, 'already_paid_order_conflict', $transaction->transactionId);
                     }
-                    return new PaymobWebhookResult();
+
+                    return new PaymobWebhookResult;
                 }
 
                 if ($this->orderIsLateOrClosed($order)
                     || in_array($attempt->status, [PaymentAttemptStatus::Failed, PaymentAttemptStatus::Expired], true)) {
                     $this->review($attempt, 'late_payment_callback', $transaction->transactionId);
-                    return new PaymobWebhookResult();
+
+                    return new PaymobWebhookResult;
                 }
 
                 $attempt->forceFill([
@@ -105,11 +109,11 @@ final class PaymobTransactionWebhookService
                 ])->save();
                 $order->forceFill(['payment_status' => PaymentStatus::Paid])->save();
 
-                return new PaymobWebhookResult();
+                return new PaymobWebhookResult;
             }
 
             if (in_array($attempt->status, [PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true)) {
-                return new PaymobWebhookResult();
+                return new PaymobWebhookResult;
             }
 
             if ($attempt->status !== PaymentAttemptStatus::Expired) {
@@ -124,7 +128,7 @@ final class PaymobTransactionWebhookService
                 }
             }
 
-            return new PaymobWebhookResult();
+            return new PaymobWebhookResult;
         });
     }
 
@@ -141,7 +145,7 @@ final class PaymobTransactionWebhookService
 
     private function orderIsLateOrClosed(Order $order): bool
     {
-        return in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered], true)
+        return in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)
             || $order->payment_expires_at === null
             || $order->payment_expires_at->isPast();
     }

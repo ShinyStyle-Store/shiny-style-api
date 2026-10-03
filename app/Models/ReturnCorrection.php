@@ -21,6 +21,7 @@ class ReturnCorrection extends Model
         return [
             'expected_revision' => 'integer',
             'applied_revision' => 'integer',
+            'response_snapshot' => 'array',
         ];
     }
 
