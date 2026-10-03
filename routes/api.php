@@ -4,28 +4,28 @@ use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminMediaController;
-use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminOfferController;
-use App\Http\Controllers\Api\AdminProfileController;
+use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductOptionController;
+use App\Http\Controllers\Api\AdminProductReviewImageController;
+use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\AdminShippingAreaController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
+use App\Http\Controllers\Api\ContentPageController;
 use App\Http\Controllers\Api\HomeProductController;
 use App\Http\Controllers\Api\OrderController;
-use App\Http\Controllers\Api\PaymobWebhookController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\PaymentReturnController;
+use App\Http\Controllers\Api\PaymobWebhookController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductSectionController;
-use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Controllers\Api\StoreContactController;
 use App\Http\Controllers\Api\StoreSocialLinkController;
-use App\Http\Controllers\Api\ContentPageController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
 
@@ -97,11 +97,17 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::post('orders/{public_id}/returns', [AdminOrderController::class, 'storeReturn'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/refuse-delivery', [AdminOrderController::class, 'refuseDelivery'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/approve-return', [AdminOrderController::class, 'approveReturn'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::get('orders/{public_id}/returns', [AdminOrderController::class, 'returns'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::get('orders/{public_id}/returns/{return_receipt}', [AdminOrderController::class, 'showReturn'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
         Route::post('orders/{public_id}/returns/{return_receipt}/corrections', [AdminOrderController::class, 'correctReturn'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
+        Route::post('orders/{public_id}/returns/{return_receipt}/reverse', [AdminOrderController::class, 'reverseReturn'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
         Route::post('orders/{public_id}/confirm', [AdminOrderController::class, 'confirm'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');

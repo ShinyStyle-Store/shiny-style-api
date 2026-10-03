@@ -9,5 +9,6 @@ enum OrderStatus: string
     case Preparing = 'preparing';
     case Shipped = 'shipped';
     case Delivered = 'delivered';
+    case DeliveryRefused = 'delivery_refused';
     case Cancelled = 'cancelled';
 }

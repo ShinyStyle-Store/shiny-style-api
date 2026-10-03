@@ -27,6 +27,7 @@ class OrderLifecycleService
             OrderStatus::Preparing->value => [OrderStatus::Shipped, OrderStatus::Cancelled],
             OrderStatus::Shipped->value => [OrderStatus::Delivered],
             OrderStatus::Delivered->value => [],
+            OrderStatus::DeliveryRefused->value => [],
             OrderStatus::Cancelled->value => [],
         ];
     }
@@ -202,6 +203,7 @@ class OrderLifecycleService
             OrderStatus::Delivered => $order->delivered_at = now(),
             OrderStatus::Cancelled => $this->applyCancellation($order, $reason, $note),
             OrderStatus::PendingConfirmation => null,
+            OrderStatus::DeliveryRefused => null,
         };
     }
 
@@ -248,21 +250,13 @@ class OrderLifecycleService
             ->pluck('returned_quantity', 'order_item_id');
 
         $hasPhysicalReturn = false;
-        $fullPhysicalReturn = true;
         foreach ($items as $item) {
             $quantity = (int) ($returned[$item->getKey()] ?? 0);
             $hasPhysicalReturn = $hasPhysicalReturn || $quantity > 0;
-            if ($quantity < (int) $item->quantity) {
-                $fullPhysicalReturn = false;
-            }
         }
 
-        if ($fullPhysicalReturn && $hasPhysicalReturn) {
-            throw new InvalidOrderLifecycleException('A fully returned order cannot be delivered.');
-        }
-
-        if ($order->payment_method === PaymentMethod::CashOnDelivery && $hasPhysicalReturn) {
-            throw new InvalidOrderLifecycleException('COD delivery is temporarily unavailable after a physical return.');
+        if ($hasPhysicalReturn) {
+            throw new InvalidOrderLifecycleException('An order with an effective physical return cannot be delivered.');
         }
     }
 
@@ -306,6 +300,7 @@ class OrderLifecycleService
             OrderStatus::Shipped => $order->shipped_at,
             OrderStatus::Delivered => $order->delivered_at,
             OrderStatus::PendingConfirmation => true,
+            OrderStatus::DeliveryRefused => null,
             OrderStatus::Cancelled => null,
         };
 

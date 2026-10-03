@@ -20,10 +20,10 @@ class AdminReturnCorrectionResource extends JsonResource
             'items' => $this->whenLoaded('items', fn () => $this->items->map(fn ($item): array => [
                 'return_receipt_item_id' => $item->return_receipt_item_id,
                 'previous_received_quantity' => (int) $item->previous_received_quantity,
-                'previous_restockable_quantity' => (int) $item->previous_restockable_quantity,
+                'previous_restock_quantity' => (int) $item->previous_restockable_quantity,
                 'previous_reason' => $item->previous_reason->value,
                 'new_received_quantity' => (int) $item->new_received_quantity,
-                'new_restockable_quantity' => (int) $item->new_restockable_quantity,
+                'new_restock_quantity' => (int) $item->new_restockable_quantity,
                 'new_reason' => $item->new_reason->value,
                 'new_note' => $item->new_note,
             ])->values()->all()),

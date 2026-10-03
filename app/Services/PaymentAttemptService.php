@@ -159,7 +159,7 @@ class PaymentAttemptService
             throw new PaymentAttemptException('order_already_paid', 'The order has already been paid.');
         }
 
-        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered], true)) {
+        if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)) {
             throw new PaymentAttemptException('order_not_payable', 'The order is not payable.');
         }
 

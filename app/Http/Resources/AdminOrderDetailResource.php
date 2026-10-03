@@ -53,6 +53,9 @@ class AdminOrderDetailResource extends JsonResource
                 'line_total' => (string) $item->line_total,
             ])->values()->all(),
             'return_summary' => $this->return_summary ?? 'none',
+            'return_workflow' => $this->whenLoaded('orderReturn', fn () => $this->orderReturn === null
+                ? null
+                : (new AdminOrderReturnResource($this->orderReturn))->resolve($request)),
             'subtotal' => (string) $this->subtotal,
             'total' => (string) $this->total,
             'order_note' => $this->customer_note,

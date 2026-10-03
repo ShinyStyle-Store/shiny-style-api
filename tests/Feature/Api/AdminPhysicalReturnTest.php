@@ -10,11 +10,15 @@ use App\Models\AdminMembership;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\ReturnReceipt;
+use App\Models\ReturnReceiptItem;
 use App\Models\SellableItem;
 use App\Models\User;
 use App\Services\PhysicalReturnService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 
 class AdminPhysicalReturnTest extends TestCase
@@ -25,6 +29,7 @@ class AdminPhysicalReturnTest extends TestCase
     {
         [$order, $item, $sellable] = $this->shippedOrder(quantity: 3, stock: 7, reserved: 1);
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
         $key = (string) Str::uuid();
         $payload = [
             'items_received_at' => now()->subMinute()->toISOString(),
@@ -45,9 +50,10 @@ class AdminPhysicalReturnTest extends TestCase
         $this->assertSame(9, $sellable->fresh()->stock_quantity);
         $this->assertSame(1, $sellable->fresh()->reserved_quantity);
 
-        $this->withToken($token)->withHeader('Idempotency-Key', $key)
+        $replay = $this->withToken($token)->withHeader('Idempotency-Key', $key)
             ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', $payload)
             ->assertOk()->assertJsonPath('data.items.0.current_restock_quantity', 2);
+        $this->assertSame($first->json('data'), $replay->json('data'));
         $this->assertDatabaseCount('return_receipts', 1);
         $this->assertSame(9, $sellable->fresh()->stock_quantity);
     }
@@ -78,14 +84,7 @@ class AdminPhysicalReturnTest extends TestCase
     {
         [$order, $item, $sellable] = $this->shippedOrder(quantity: 2, stock: 8);
         $token = $this->adminToken();
-        $key = (string) Str::uuid();
-        $created = $this->withToken($token)->withHeader('Idempotency-Key', $key)->postJson(
-            '/api/v1/admin/orders/'.$order->public_id.'/returns',
-            [
-                'default_reason' => 'changed_mind',
-                'items' => [['order_item_id' => $item->id, 'received_quantity' => 2, 'restock_quantity' => 2]],
-            ],
-        )->assertCreated();
+        $created = $this->createReturnResponse($token, $order, $item, 2, 2);
         $receiptId = $created->json('data.id');
 
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
@@ -100,8 +99,17 @@ class AdminPhysicalReturnTest extends TestCase
                 ]],
             ],
         )->assertOk()->assertJsonPath('data.operation.new_version', 1)
+            ->assertJsonPath('data.operation.items.0.previous_restock_quantity', 2)
+            ->assertJsonPath('data.operation.items.0.new_restock_quantity', 0)
+            ->assertJsonMissingPath('data.operation.items.0.previous_restockable_quantity')
+            ->assertJsonMissingPath('data.operation.items.0.new_restockable_quantity')
             ->assertJsonPath('data.receipt.return_summary', 'none');
-        $this->assertArrayNotHasKey('expected_revision', $this->withToken($token)->getJson("/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}")->json('data.corrections.0'));
+        $detail = $this->withToken($token)->getJson("/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}")->assertOk();
+        $this->assertArrayNotHasKey('expected_revision', $detail->json('data.corrections.0'));
+        $detail->assertJsonPath('data.corrections.0.items.0.previous_restock_quantity', 2)
+            ->assertJsonPath('data.corrections.0.items.0.new_restock_quantity', 0)
+            ->assertJsonMissingPath('data.corrections.0.items.0.previous_restockable_quantity')
+            ->assertJsonMissingPath('data.corrections.0.items.0.new_restockable_quantity');
 
         $this->assertSame(8, $sellable->fresh()->stock_quantity);
         $this->assertSame('none', $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)
@@ -113,6 +121,7 @@ class AdminPhysicalReturnTest extends TestCase
         [$order, $first, $sellable] = $this->shippedOrder(quantity: 1, stock: 5);
         $second = OrderItem::factory()->create(['order_id' => $order->id, 'quantity' => 1, 'sellable_item_id' => $sellable->id]);
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
         $created = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
             [
@@ -127,12 +136,12 @@ class AdminPhysicalReturnTest extends TestCase
         $receiptItemId = $created->json('data.items.0.id');
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections",
-            ['expected_version' => 0, 'correction_reason' => 'Corrected.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 0, 'restock_quantity' => 0]]],
+            ['expected_version' => 0, 'correction_reason' => 'Corrected.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 1, 'restock_quantity' => 0]]],
         )->assertOk();
 
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections",
-            ['expected_version' => 0, 'correction_reason' => 'Stale.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 0, 'restock_quantity' => 0]]],
+            ['expected_version' => 0, 'correction_reason' => 'Stale.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 1, 'restock_quantity' => 0]]],
         )->assertStatus(409)->assertJsonPath('code', 'return_revision_conflict');
         $this->assertSame(5, $sellable->fresh()->stock_quantity);
     }
@@ -144,6 +153,7 @@ class AdminPhysicalReturnTest extends TestCase
         AdminMembership::factory()->create(['user_id' => $admin->id, 'status' => AdminMembershipStatus::Active]);
         $token = $admin->createToken('admin', ['admin-access'])->plainTextToken;
         $key = (string) Str::uuid();
+        $this->createDeliveryRefusal($token, $order);
 
         app(PhysicalReturnService::class)->create($order, [
             'default_reason' => 'changed_mind',
@@ -190,7 +200,7 @@ class AdminPhysicalReturnTest extends TestCase
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
             ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 2, 'restock_quantity' => 0]]],
-        )->assertUnprocessable();
+        )->assertStatus(409)->assertJsonPath('code', 'return_decision_receipt_required');
         $this->assertDatabaseCount('return_receipts', 1);
     }
 
@@ -198,8 +208,9 @@ class AdminPhysicalReturnTest extends TestCase
     {
         [$order, $item, $sellable] = $this->shippedOrder(quantity: 2, stock: 5);
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
         $key = (string) Str::uuid();
-        $base = ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 1, 'restock_quantity' => 1]]];
+        $base = ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 2, 'restock_quantity' => 1]]];
 
         $this->withToken($token)->withHeader('Idempotency-Key', $key)
             ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', $base)->assertCreated();
@@ -243,9 +254,13 @@ class AdminPhysicalReturnTest extends TestCase
         $firstKey = (string) Str::uuid();
         $firstPayload = ['expected_version' => 0, 'correction_reason' => 'First correction.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 2, 'restock_quantity' => 1]]];
 
-        $this->withToken($token)->withHeader('Idempotency-Key', $firstKey)->postJson(
+        $firstCorrection = $this->withToken($token)->withHeader('Idempotency-Key', $firstKey)->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections", $firstPayload,
-        )->assertOk()->assertJsonPath('data.operation.new_version', 1);
+        )->assertOk()->assertJsonPath('data.operation.new_version', 1)
+            ->assertJsonPath('data.operation.items.0.previous_restock_quantity', 2)
+            ->assertJsonPath('data.operation.items.0.new_restock_quantity', 1)
+            ->assertJsonMissingPath('data.operation.items.0.previous_restockable_quantity')
+            ->assertJsonMissingPath('data.operation.items.0.new_restockable_quantity');
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections",
             ['expected_version' => 1, 'correction_reason' => 'Second correction.', 'items' => [['return_receipt_item_id' => $receiptItemId, 'received_quantity' => 2, 'restock_quantity' => 0]]],
@@ -254,9 +269,43 @@ class AdminPhysicalReturnTest extends TestCase
         $replay = $this->withToken($token)->withHeader('Idempotency-Key', $firstKey)->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections", $firstPayload,
         )->assertOk();
-        $replay->assertJsonPath('data.operation.new_version', 1)
-            ->assertJsonPath('data.receipt.version', 2);
+        $this->assertSame($firstCorrection->json('data'), $replay->json('data'));
+        $current = $this->withToken($token)->getJson("/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}")->assertOk();
+        $current->assertJsonPath('data.version', 2)
+            ->assertJsonPath('data.items.0.current_received_quantity', 2)
+            ->assertJsonPath('data.items.0.current_restock_quantity', 0);
         $this->assertDatabaseCount('return_corrections', 2);
+        $this->assertSame(5, $sellable->fresh()->stock_quantity);
+    }
+
+    public function test_failed_snapshot_persistence_rolls_back_the_receipt_operation(): void
+    {
+        [$order, $item, $sellable] = $this->shippedOrder(quantity: 1, stock: 5);
+        $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
+        $shouldFail = true;
+
+        DB::listen(function ($query) use (&$shouldFail): void {
+            if ($shouldFail && str_contains($query->sql, 'creation_response_snapshot')) {
+                throw new RuntimeException('Snapshot persistence failed.');
+            }
+        });
+
+        $this->withoutExceptionHandling();
+        try {
+            $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
+                '/api/v1/admin/orders/'.$order->public_id.'/returns',
+                ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 1, 'restock_quantity' => 1]]],
+            );
+            $this->fail('The snapshot persistence failure was not raised.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Snapshot persistence failed.', $exception->getMessage());
+        } finally {
+            $shouldFail = false;
+        }
+
+        $this->assertDatabaseCount('return_receipts', 0);
+        $this->assertDatabaseCount('return_receipt_items', 0);
         $this->assertSame(5, $sellable->fresh()->stock_quantity);
     }
 
@@ -285,6 +334,7 @@ class AdminPhysicalReturnTest extends TestCase
         [$order, $first, $sellable] = $this->shippedOrder(quantity: 1, stock: 5);
         $second = OrderItem::factory()->create(['order_id' => $order->id, 'quantity' => 1, 'sellable_item_id' => null]);
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
 
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
@@ -318,11 +368,12 @@ class AdminPhysicalReturnTest extends TestCase
         [$otherOrder, $otherItem, $otherSellable] = $this->shippedOrder(quantity: 1, stock: 5);
 
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
         $this->app['auth']->forgetGuards();
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
             ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $otherItem->id, 'received_quantity' => 1, 'restock_quantity' => 0]]],
-        )->assertUnprocessable();
+        )->assertStatus(409)->assertJsonPath('code', 'return_full_order_items_required');
         $this->assertDatabaseCount('return_receipts', 0);
         $this->assertDatabaseCount('return_receipt_items', 0);
         $this->assertSame(5, $otherSellable->fresh()->stock_quantity);
@@ -333,6 +384,7 @@ class AdminPhysicalReturnTest extends TestCase
         [$order, $item] = $this->shippedOrder(quantity: 1, stock: 5);
         $token = $this->adminToken();
         $key = (string) Str::uuid();
+        $this->createDeliveryRefusal($token, $order);
         $created = $this->withToken($token)->withHeader('Idempotency-Key', $key)->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
             ['default_reason' => 'changed_mind', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 1, 'restock_quantity' => 1]]],
@@ -340,7 +392,7 @@ class AdminPhysicalReturnTest extends TestCase
         $receiptId = $created->json('data.id');
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             "/api/v1/admin/orders/{$order->public_id}/returns/{$receiptId}/corrections",
-            ['expected_version' => 0, 'correction_reason' => 'Corrected.', 'items' => [['return_receipt_item_id' => $created->json('data.items.0.id'), 'received_quantity' => 0, 'restock_quantity' => 0]]],
+            ['expected_version' => 0, 'correction_reason' => 'Corrected.', 'items' => [['return_receipt_item_id' => $created->json('data.items.0.id'), 'received_quantity' => 1, 'restock_quantity' => 0]]],
         )->assertOk();
 
         $replay = $this->withToken($token)->withHeader('Idempotency-Key', $key)->postJson(
@@ -359,10 +411,11 @@ class AdminPhysicalReturnTest extends TestCase
     {
         [$order, $item] = $this->shippedOrder(quantity: 2, stock: 5);
         $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
         $future = now()->addMinute()->toISOString();
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
             '/api/v1/admin/orders/'.$order->public_id.'/returns',
-            ['items_received_at' => $future, 'default_reason' => 'other', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 1, 'restock_quantity' => 0]]],
+            ['items_received_at' => $future, 'default_reason' => 'other', 'items' => [['order_item_id' => $item->id, 'received_quantity' => 2, 'restock_quantity' => 0]]],
         )->assertUnprocessable();
 
         $created = $this->createReturnResponse($token, $order, $item, 1, 0);
@@ -378,10 +431,18 @@ class AdminPhysicalReturnTest extends TestCase
     public function test_soft_deleted_target_can_be_restocked_without_reactivation(): void
     {
         [$order, $item, $sellable] = $this->shippedOrder(quantity: 1, stock: 5);
+        $token = $this->adminToken();
+        $this->createDeliveryRefusal($token, $order);
+        $reservedBefore = $sellable->reserved_quantity;
         $sellable->delete();
-        $this->createReturn($this->adminToken(), $order, $item, 1, 1);
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/returns', [
+                'default_reason' => 'changed_mind',
+                'items' => [['order_item_id' => $item->id, 'received_quantity' => 1, 'restock_quantity' => 1]],
+            ])->assertCreated();
         $this->assertNotNull($sellable->fresh()->deleted_at);
         $this->assertSame(6, $sellable->fresh()->stock_quantity);
+        $this->assertSame($reservedBefore, $sellable->fresh()->reserved_quantity);
     }
 
     public function test_summary_transitions_across_receipts_and_corrections(): void
@@ -423,12 +484,47 @@ class AdminPhysicalReturnTest extends TestCase
         $this->createReturnResponse($token, $order, $item, $received, $restockable);
     }
 
+    private function createDeliveryRefusal(string $token, Order $order): void
+    {
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson('/api/v1/admin/orders/'.$order->public_id.'/refuse-delivery', [
+                'reason' => 'refused_delivery',
+            ])->assertCreated();
+    }
+
     private function createReturnResponse(string $token, Order $order, OrderItem $item, int $received, int $restockable)
     {
-        return $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson(
-            '/api/v1/admin/orders/'.$order->public_id.'/returns',
-            ['default_reason' => 'refused_delivery', 'items' => [['order_item_id' => $item->id, 'received_quantity' => $received, 'restock_quantity' => $restockable]]],
-        )->assertCreated();
+        // This helper intentionally creates a historical legacy receipt. New
+        // receipts must use the decision-linked full-order endpoint; tests
+        // exercising old corrections/summary behavior need pre-existing data.
+        $receipt = ReturnReceipt::query()->create([
+            'order_id' => $order->id,
+            'received_at' => now()->subMinute(),
+            'default_reason' => 'refused_delivery',
+            'revision' => 0,
+            'recorded_by_user_id' => User::factory()->create()->id,
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => str_repeat('a', 64),
+        ]);
+        ReturnReceiptItem::query()->create([
+            'return_receipt_id' => $receipt->id,
+            'order_item_id' => $item->id,
+            'sellable_item_id' => $item->sellable_item_id,
+            'original_quantity' => $item->quantity,
+            'initial_received_quantity' => $received,
+            'initial_restockable_quantity' => $restockable,
+            'initial_reason' => 'refused_delivery',
+            'effective_received_quantity' => $received,
+            'effective_restockable_quantity' => $restockable,
+            'effective_reason' => 'refused_delivery',
+        ]);
+        if ($restockable > 0) {
+            SellableItem::query()->whereKey($item->sellable_item_id)->increment('stock_quantity', $restockable);
+        }
+
+        return $this->withToken($token)->getJson(
+            '/api/v1/admin/orders/'.$order->public_id.'/returns/'.$receipt->id,
+        )->assertOk();
     }
 
     private function correctReceipt(string $token, Order $order, int $receiptId, int $receiptItemId, int $revision, int $received, int $restockable): void
@@ -472,6 +568,7 @@ class AdminPhysicalReturnTest extends TestCase
     {
         $admin = User::factory()->create(['is_active' => true]);
         AdminMembership::factory()->create(['user_id' => $admin->id, 'status' => AdminMembershipStatus::Active]);
+
         return $admin->createToken('admin', ['admin-access'])->plainTextToken;
     }
 }

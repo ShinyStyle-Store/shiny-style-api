@@ -4,23 +4,28 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\CancellationReason;
 use App\Enums\ContactStatus;
+use App\Enums\OrderReturnKind;
 use App\Enums\OrderStatus;
 use App\Exceptions\InvalidOrderLifecycleException;
+use App\Exceptions\OrderReturnConflictException;
+use App\Exceptions\PhysicalReturnConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AdminOrderCancellationRequest;
 use App\Http\Requests\AdminOrderContactStatusRequest;
 use App\Http\Requests\AdminOrderEmptyActionRequest;
 use App\Http\Requests\AdminOrderIndexRequest;
+use App\Http\Requests\AdminOrderReturnDecisionRequest;
 use App\Http\Requests\AdminReturnCorrectionRequest;
 use App\Http\Requests\AdminReturnReceiptIndexRequest;
 use App\Http\Requests\AdminReturnReceiptRequest;
+use App\Http\Requests\AdminReturnReversalRequest;
 use App\Http\Resources\AdminOrderDetailResource;
 use App\Http\Resources\AdminOrderListResource;
-use App\Http\Resources\AdminReturnCorrectionResource;
+use App\Http\Resources\AdminOrderReturnResource;
 use App\Http\Resources\AdminReturnReceiptResource;
-use App\Exceptions\PhysicalReturnConflictException;
 use App\Models\Order;
 use App\Services\OrderLifecycleService;
+use App\Services\OrderReturnDecisionService;
 use App\Services\PhysicalReturnService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
@@ -81,7 +86,7 @@ class AdminOrderController extends Controller
     {
         $order = Order::query()
             ->where('public_id', $public_id)
-            ->with('items')
+            ->with(['items', 'orderReturn'])
             ->firstOrFail();
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
 
@@ -92,7 +97,7 @@ class AdminOrderController extends Controller
     {
         $order = Order::query()->where('public_id', $public_id)->firstOrFail();
         $receipts = $order->returnReceipts()
-            ->with('items.orderItem')
+            ->with(['items.orderItem', 'orderReturn'])
             ->orderByDesc('received_at')->orderByDesc('id')
             ->paginate($request->validated('per_page', 20))
             ->withQueryString();
@@ -106,7 +111,7 @@ class AdminOrderController extends Controller
     {
         $order = Order::query()->where('public_id', $public_id)->firstOrFail();
         $receipt = $order->returnReceipts()->whereKey($return_receipt)->with([
-            'items.orderItem', 'corrections.items',
+            'items.orderItem', 'corrections.items', 'orderReturn',
         ])->firstOrFail();
         $receipt->setAttribute('order_summary', app(PhysicalReturnService::class)->summary($order));
 
@@ -128,9 +133,9 @@ class AdminOrderController extends Controller
             throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
         }
 
-        $result['receipt']->setAttribute('order_summary', $returns->summary($order));
-        $response = new AdminReturnReceiptResource($result['receipt']);
-        return $result['replayed'] ? $response : $response->response()->setStatusCode(201);
+        $response = response()->json(['data' => $result['payload']]);
+
+        return $result['replayed'] ? $response : $response->setStatusCode(201);
     }
 
     public function correctReturn(
@@ -150,12 +155,51 @@ class AdminOrderController extends Controller
             throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
         }
 
-        $result['receipt']->setAttribute('order_summary', $returns->summary($order));
-        $payload = [
-            'operation' => (new AdminReturnCorrectionResource($result['correction']))->resolve($request),
-            'receipt' => (new AdminReturnReceiptResource($result['receipt']))->resolve($request),
-        ];
-        return response()->json(['data' => $payload]);
+        return response()->json(['data' => $result['payload']]);
+    }
+
+    public function reverseReturn(
+        AdminReturnReversalRequest $request,
+        string $public_id,
+        int $return_receipt,
+        PhysicalReturnService $returns,
+    ): JsonResponse {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+        $receipt = $order->returnReceipts()->whereKey($return_receipt)->firstOrFail();
+
+        try {
+            $result = $returns->reverse(
+                $receipt,
+                [
+                    'expected_revision' => $request->validated('expected_version'),
+                    'reversal_reason' => $request->validated('reversal_reason'),
+                ],
+                (int) $request->user()->getKey(),
+                $request->idempotencyKey(),
+            );
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
+        } catch (ValidationException $exception) {
+            throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
+        }
+
+        return response()->json(['data' => $result['payload']], $result['replayed'] ? 200 : 201);
+    }
+
+    public function refuseDelivery(
+        AdminOrderReturnDecisionRequest $request,
+        string $public_id,
+        OrderReturnDecisionService $decisions,
+    ): JsonResponse|AdminOrderReturnResource {
+        return $this->createReturnDecision($request, $public_id, OrderReturnKind::DeliveryRefusal, $decisions);
+    }
+
+    public function approveReturn(
+        AdminOrderReturnDecisionRequest $request,
+        string $public_id,
+        OrderReturnDecisionService $decisions,
+    ): JsonResponse|AdminOrderReturnResource {
+        return $this->createReturnDecision($request, $public_id, OrderReturnKind::ReturnAfterDelivery, $decisions);
     }
 
     public function confirm(AdminOrderEmptyActionRequest $request, string $public_id, OrderLifecycleService $lifecycle): JsonResponse|AdminOrderDetailResource
@@ -255,11 +299,39 @@ class AdminOrderController extends Controller
     {
         $order = Order::query()
             ->where('public_id', $publicId)
-            ->with('items')
+            ->with(['items', 'orderReturn'])
             ->firstOrFail();
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
+    }
+
+    private function createReturnDecision(
+        AdminOrderReturnDecisionRequest $request,
+        string $publicId,
+        OrderReturnKind $kind,
+        OrderReturnDecisionService $decisions,
+    ): JsonResponse|AdminOrderReturnResource {
+        $order = Order::query()->where('public_id', $publicId)->firstOrFail();
+
+        try {
+            $result = $decisions->create(
+                $order,
+                $kind,
+                $request->validated(),
+                (int) $request->user()->getKey(),
+                $request->idempotencyKey(),
+            );
+        } catch (OrderReturnConflictException $exception) {
+            return response()->json([
+                'code' => $exception->errorCode,
+                'message' => $exception->getMessage(),
+            ], 409);
+        }
+
+        $response = response()->json(['data' => $result['payload']]);
+
+        return $result['replayed'] ? $response : $response->setStatusCode(201);
     }
 
     private function applySearch(Builder $query, string $search): void
