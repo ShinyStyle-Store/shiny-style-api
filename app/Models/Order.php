@@ -125,4 +125,9 @@ class Order extends Model
     {
         return $this->hasOne(OrderReturn::class);
     }
+
+    public function refundRecords(): HasMany
+    {
+        return $this->hasMany(RefundRecord::class);
+    }
 }

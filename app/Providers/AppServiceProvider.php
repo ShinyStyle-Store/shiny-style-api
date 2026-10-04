@@ -7,6 +7,7 @@ use App\Models\Banner;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductReviewImage;
+use App\Models\RefundRecord;
 use App\Models\SellableItem;
 use Cloudinary\Cloudinary;
 use GuzzleHttp\Client;
@@ -81,6 +82,7 @@ class AppServiceProvider extends ServiceProvider
             'product_review_image' => ProductReviewImage::class,
             'sellable_item' => SellableItem::class,
             'banner' => Banner::class,
+            'refund_record' => RefundRecord::class,
         ]);
 
         RateLimiter::for('guest-orders', function (Request $request): Limit {

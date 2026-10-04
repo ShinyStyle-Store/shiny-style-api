@@ -7,6 +7,7 @@ use App\Exceptions\MediaOperationException;
 use App\Models\Category;
 use App\Models\MediaAsset;
 use App\Models\Product;
+use App\Models\RefundRecord;
 use App\Models\User;
 use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -197,6 +198,31 @@ class MediaServiceTest extends TestCase
 
         $this->assertDatabaseCount('media_assets', 0);
         $this->assertSame([], Storage::disk('media-test')->allFiles());
+    }
+
+    public function test_non_soft_deletable_refund_owner_can_receive_evidence_media(): void
+    {
+        $this->fakeMediaDisk();
+        $record = RefundRecord::factory()->create();
+        $asset = $this->asset();
+
+        $attachment = app(MediaService::class)->attach($asset, $record, MediaRole::REFUND_EVIDENCE_IMAGE);
+
+        $this->assertSame($record->getMorphClass(), $attachment->mediable_type);
+        $this->assertSame(MediaRole::REFUND_EVIDENCE_IMAGE, $attachment->role);
+    }
+
+    public function test_soft_deleted_media_owner_is_rejected(): void
+    {
+        $this->fakeMediaDisk();
+        $category = $this->category('deleted-category');
+        $category->delete();
+        $asset = $this->asset();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The media entity type is not supported.');
+
+        app(MediaService::class)->attach($asset, $category, MediaRole::CATEGORY_COVER);
     }
 
     public function test_jpeg_png_and_webp_are_validated_from_content_and_metadata_is_recorded(): void
