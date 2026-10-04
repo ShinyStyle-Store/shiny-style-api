@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductOptionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\AdminProfileController;
+use App\Http\Controllers\Api\AdminRefundRecordController;
 use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\AdminShippingAreaController;
 use App\Http\Controllers\Api\BannerController;
@@ -95,6 +96,14 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::get('orders', [AdminOrderController::class, 'index']);
         Route::get('orders/{public_id}', [AdminOrderController::class, 'show'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::post('orders/{public_id}/refund-records', [AdminRefundRecordController::class, 'store'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::get('orders/{public_id}/refund-records', [AdminRefundRecordController::class, 'index'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
+        Route::get('orders/{public_id}/refund-records/{refund_record}', [AdminRefundRecordController::class, 'show'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('refund_record');
+        Route::patch('orders/{public_id}/refund-records/{refund_record}', [AdminRefundRecordController::class, 'correct'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('refund_record');
         Route::post('orders/{public_id}/returns', [AdminOrderController::class, 'storeReturn'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::post('orders/{public_id}/refuse-delivery', [AdminOrderController::class, 'refuseDelivery'])

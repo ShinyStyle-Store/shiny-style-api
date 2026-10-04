@@ -27,6 +27,7 @@ use App\Models\Order;
 use App\Services\OrderLifecycleService;
 use App\Services\OrderReturnDecisionService;
 use App\Services\PhysicalReturnService;
+use App\Services\RefundRecordService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -89,6 +90,7 @@ class AdminOrderController extends Controller
             ->with(['items', 'orderReturn'])
             ->firstOrFail();
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
+        $order->setAttribute('refund_summary', app(RefundRecordService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
     }
@@ -302,6 +304,7 @@ class AdminOrderController extends Controller
             ->with(['items', 'orderReturn'])
             ->firstOrFail();
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
+        $order->setAttribute('refund_summary', app(RefundRecordService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
     }

@@ -56,6 +56,7 @@ class AdminOrderDetailResource extends JsonResource
             'return_workflow' => $this->whenLoaded('orderReturn', fn () => $this->orderReturn === null
                 ? null
                 : (new AdminOrderReturnResource($this->orderReturn))->resolve($request)),
+            'refund_recording' => $this->refund_summary ?? null,
             'subtotal' => (string) $this->subtotal,
             'total' => (string) $this->total,
             'order_note' => $this->customer_note,

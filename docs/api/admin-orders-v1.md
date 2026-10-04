@@ -12,7 +12,7 @@ mutating requests.
 ## Phase 1: return decisions
 
 This phase records a decision only. It does not complete a physical receipt and
-does not perform refunds, COD settlement, exchanges, policy-deadline checks, or
+does not execute provider refunds, COD settlement, exchanges, policy-deadline checks, or
 any inventory/reservation/payment mutation.
 
 ### Delivery refusal
@@ -83,6 +83,69 @@ admin notes or actor information.
 Existing successful legacy receipt replays, legacy reads, legacy corrections,
 and their idempotency behavior remain supported. Decision-linked receipts use
 the full-order rules in the Phase 2 section below.
+
+## Manual refund records
+
+Manual refund records document a transfer already completed by the store owner
+outside the website. They do not call Paymob or initiate a transfer.
+
+```http
+POST /api/v1/admin/orders/{public_id}/refund-records
+Content-Type: multipart/form-data
+Idempotency-Key: <uuid>
+```
+
+The multipart fields are `amount`, `currency`, `transfer_method`,
+`transferred_at`, `transaction_reference` (optional), `note` (optional), and
+mandatory image field `evidence`. A successful response means both the refund
+record and evidence attachment were persisted; the record response includes
+`version: 0`. A replay with the same key and
+equivalent fields and evidence digest returns the original record without a
+second upload; a changed payload or evidence returns `409` with
+`idempotency_key_conflict`.
+
+Refund records are allowed when an order has an `order_returns` decision or
+legacy `return_receipts` history, including `waiting_for_return` and `received`
+decisions. The API does not use `return_summary` or warehouse arrival as the
+sole eligibility test.
+
+For paid COD orders, the determined amount source is
+`cod_full_collection_policy` and equals the original order total. For card
+orders, it is the single authoritative successful payment attempt amount.
+Failed, expired, ambiguous, or review-required payment attempts are blocked.
+The owner chooses the amount; shipping is neither automatically added nor
+deducted. The response and admin order detail expose `paid_amount`,
+`refunded_amount`, `remaining_balance`, `source`, `eligible`, and `blocker`.
+`remaining_balance` is an arithmetic difference only; it is not money owed and
+does not make another refund eligible after confirmation. A successful create
+is the order's one final refund confirmation, even when the owner records less
+than the paid amount. The summary additionally exposes `confirmed`,
+`confirmed_at`, `confirmed_by_user_id`, `record_id`, and `record_public_id`.
+
+After confirmation, a different idempotency key returns `409` with
+`refund_recording_already_confirmed` and does not upload evidence. An exact
+replay of the original key, fields, and evidence digest returns the original
+record with `200`, including after confirmation and after later corrections.
+Changing any field or the evidence bytes with that key returns
+`idempotency_key_conflict`.
+
+Refund-record history is available through:
+
+```http
+GET /api/v1/admin/orders/{public_id}/refund-records
+GET /api/v1/admin/orders/{public_id}/refund-records/{refund_record_id}
+```
+
+Corrections use a multipart `PATCH` with the replacement values, mandatory
+replacement `evidence`, `expected_version`, and `reason`. Corrections preserve
+the original values and evidence relationship; they correct recorded data and
+do not reverse or claim to undo the external bank transfer. They preserve the
+order's confirmed state and never reopen final refund recording. Frontends must
+retry an uncertain request with the identical fields, identical evidence file,
+and identical operation key. Successful corrections increment `version` and
+return `expected_version` and `new_version` in the correction audit item. A
+correction does not authorize a second transfer
+or change payment, order, return, or inventory state.
 
 ## Phase 2: full physical receipt
 
@@ -363,6 +426,9 @@ conflicts use the existing `code`/`message` JSON shape with `409`, including:
 ```text
 return_revision_conflict (expected_version conflict)
 idempotency_key_conflict
+refund_recording_already_confirmed
+refund_amount_exceeds_balance
+paid_amount_unavailable / paid_amount_ambiguous / paid_amount_requires_review
 return_inventory_target_missing
 return_inventory_reserved_conflict
 return_inventory_overflow

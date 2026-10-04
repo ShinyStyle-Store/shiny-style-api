@@ -179,7 +179,7 @@ class MediaService
         if (! in_array($entity::class, Relation::morphMap(), true)) {
             throw new \InvalidArgumentException('The media entity type is not supported.');
         }
-        if (! $entity->exists || $entity->trashed()) {
+        if (! $entity->exists || (method_exists($entity, 'trashed') && $entity->trashed())) {
             throw new \InvalidArgumentException('The media entity type is not supported.');
         }
         if (! MediaRole::supports($entity::class, $role)) {
