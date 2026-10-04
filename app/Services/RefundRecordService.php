@@ -6,6 +6,7 @@ use App\Enums\MediaRole;
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
+use App\Enums\OrderStatus;
 use App\Exceptions\RefundRecordConflictException;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
@@ -269,9 +270,22 @@ final class RefundRecordService
 
     private function assertReturnHistory(Order $order): void
     {
-        if (! $order->orderReturn()->exists() && ! $order->returnReceipts()->exists()) {
-            throw new RefundRecordConflictException('return_not_recorded', 'The order has no recorded return history.');
+        if ($order->orderReturn()->exists() || $order->returnReceipts()->exists()) {
+            return;
         }
+
+        if ($order->status === OrderStatus::Cancelled) {
+            if ($order->shipped_at === null) {
+                return;
+            }
+
+            throw new RefundRecordConflictException(
+                'cancelled_after_shipment_not_eligible',
+                'A cancelled order that has shipment history requires recorded return history before a refund can be recorded.',
+            );
+        }
+
+        throw new RefundRecordConflictException('return_not_recorded', 'The order has no recorded return history.');
     }
 
     private function recordedAmount(Order $order, ?int $except = null): string

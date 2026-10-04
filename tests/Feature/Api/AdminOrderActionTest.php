@@ -316,6 +316,25 @@ class AdminOrderActionTest extends TestCase
         }
     }
 
+    public function test_paid_pre_shipment_cancellation_releases_reservation_without_increasing_stock(): void
+    {
+        [$order, $sellable] = $this->orderWithReservation(stock: 10, reserved: 3, quantity: 3);
+        $order->update(['payment_status' => PaymentStatus::Paid]);
+
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($order, 'cancel'), [
+            'reason' => CancellationReason::CustomerCancelled->value,
+        ])->assertOk()->assertJsonPath('data.status', OrderStatus::Cancelled->value);
+
+        $this->assertInventory($sellable, stock: 10, reserved: 0);
+        $this->assertDatabaseCount('order_returns', 0);
+
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($order, 'cancel'), [
+            'reason' => CancellationReason::CustomerCancelled->value,
+        ])->assertOk();
+
+        $this->assertInventory($sellable, stock: 10, reserved: 0);
+    }
+
     public function test_contact_updates_preserve_clear_and_timestamp_notes_without_lifecycle_or_inventory_changes(): void
     {
         Carbon::setTestNow('2026-09-19 13:00:00');
