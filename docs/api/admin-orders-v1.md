@@ -106,8 +106,12 @@ second upload; a changed payload or evidence returns `409` with
 
 Refund records are allowed when an order has an `order_returns` decision or
 legacy `return_receipts` history, including `waiting_for_return` and `received`
-decisions. The API does not use `return_summary` or warehouse arrival as the
-sole eligibility test.
+decisions. A paid order cancelled before shipment is also eligible without a
+return decision or physical receipt. This cancellation path requires
+`status=cancelled` and no authoritative `shipped_at` history; an active
+pre-shipment order or an order with shipment history does not qualify through
+the cancellation path. The API does not use `return_summary` or warehouse
+arrival as the sole eligibility test.
 
 For paid COD orders, the determined amount source is
 `cod_full_collection_policy` and equals the original order total. For card
@@ -429,6 +433,7 @@ idempotency_key_conflict
 refund_recording_already_confirmed
 refund_amount_exceeds_balance
 paid_amount_unavailable / paid_amount_ambiguous / paid_amount_requires_review
+cancelled_after_shipment_not_eligible
 return_inventory_target_missing
 return_inventory_reserved_conflict
 return_inventory_overflow

@@ -297,6 +297,77 @@ class AdminRefundRecordTest extends TestCase
             ->assertConflict()->assertJsonPath('code', 'return_not_recorded');
     }
 
+    public function test_paid_cancelled_before_shipment_is_eligible_without_return_history(): void
+    {
+        Storage::fake('refund-test');
+        config(['media.disk' => 'refund-test']);
+        $order = Order::factory()->cancelled()->create([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+            'shipped_at' => null,
+        ]);
+        $token = $this->adminToken();
+
+        $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)
+            ->assertOk()
+            ->assertJsonPath('data.refund_recording.eligible', true)
+            ->assertJsonPath('data.refund_recording.blocker', null);
+
+        $this->record($token, $order, '25.00', (string) Str::uuid(), '2026-10-04T10:00:00Z')
+            ->assertCreated();
+
+        $this->record($token, $order, '26.00', (string) Str::uuid(), '2026-10-04T10:00:00Z')
+            ->assertConflict()->assertJsonPath('code', 'refund_recording_already_confirmed');
+    }
+
+    public function test_cancelled_order_with_shipment_history_does_not_use_cancellation_eligibility(): void
+    {
+        Storage::fake('refund-test');
+        config(['media.disk' => 'refund-test']);
+        $order = Order::factory()->cancelled()->create([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+            'shipped_at' => now()->subDay(),
+        ]);
+
+        $this->record($this->adminToken(), $order, '25.00', (string) Str::uuid())
+            ->assertConflict()->assertJsonPath('code', 'cancelled_after_shipment_not_eligible');
+    }
+
+    public function test_unpaid_cancelled_cod_order_is_not_eligible(): void
+    {
+        Storage::fake('refund-test');
+        config(['media.disk' => 'refund-test']);
+        $order = Order::factory()->cancelled()->create([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Unpaid,
+            'shipped_at' => null,
+        ]);
+
+        $token = $this->adminToken();
+        $this->withToken($token)->getJson('/api/v1/admin/orders/'.$order->public_id)
+            ->assertOk()
+            ->assertJsonPath('data.refund_recording.eligible', false)
+            ->assertJsonPath('data.refund_recording.blocker', 'paid_amount_unavailable');
+
+        $this->record($token, $order, '25.00', (string) Str::uuid())
+            ->assertConflict()->assertJsonPath('code', 'paid_amount_unavailable');
+    }
+
+    public function test_active_pre_shipment_order_does_not_use_cancellation_eligibility(): void
+    {
+        $order = Order::factory()->create([
+            'status' => OrderStatus::Preparing,
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+        ]);
+
+        $this->withToken($this->adminToken())->getJson('/api/v1/admin/orders/'.$order->public_id)
+            ->assertOk()
+            ->assertJsonPath('data.refund_recording.eligible', false)
+            ->assertJsonPath('data.refund_recording.blocker', 'return_not_recorded');
+    }
+
     public function test_unauthenticated_refund_history_is_not_available(): void
     {
         $order = $this->orderWithReturn(['payment_status' => PaymentStatus::Paid]);
