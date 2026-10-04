@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminCategoryController;
+use App\Http\Controllers\Api\AdminDashboardController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOfferController;
 use App\Http\Controllers\Api\AdminOrderController;
@@ -69,6 +70,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('dashboard/overview', [AdminDashboardController::class, 'overview']);
         Route::get('store/contact', [StoreContactController::class, 'adminShow']);
         Route::put('store/contact', [StoreContactController::class, 'update']);
         Route::get('store/social-links', [StoreSocialLinkController::class, 'index']);
