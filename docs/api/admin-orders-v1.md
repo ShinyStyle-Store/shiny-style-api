@@ -9,6 +9,112 @@ All endpoints below use the existing admin route group:
 They require `auth:sanctum`, `admin.access`, and a UUID `Idempotency-Key` on
 mutating requests.
 
+## Admin dashboard overview
+
+```http
+GET /api/v1/admin/dashboard/overview
+```
+
+Optional query parameter:
+
+```text
+chart_days=7|30
+```
+
+`chart_days` defaults to `7` and controls only the daily order chart. Other
+dashboard metrics always keep their existing definitions and periods.
+
+This endpoint is read-only and uses the existing admin authentication
+middleware. It reports the current calendar month through the request-time
+instant using `Africa/Cairo` boundaries. Database timestamp comparisons are
+converted to UTC.
+
+```json
+{
+  "data": {
+    "period": {
+      "timezone": "Africa/Cairo",
+      "start": "2026-10-01T00:00:00+03:00",
+      "end": "2026-10-04T14:30:00+03:00"
+    },
+    "currency": "EGP",
+    "metrics": {
+      "orders_created_this_month": 42,
+      "delivered_orders": 18,
+      "delivered_order_value": "24500.00",
+      "average_delivered_order_value": "1361.11",
+      "active_products": 120,
+      "unavailable_active_products": 14
+    },
+    "orders_chart": {
+      "days": 7,
+      "timezone": "Africa/Cairo",
+      "start_date": "2026-09-28",
+      "end_date": "2026-10-04",
+      "points": [
+        { "date": "2026-09-28", "orders": 0 },
+        { "date": "2026-09-29", "orders": 0 },
+        { "date": "2026-09-30", "orders": 3 },
+        { "date": "2026-10-01", "orders": 8 },
+        { "date": "2026-10-02", "orders": 12 },
+        { "date": "2026-10-03", "orders": 11 },
+        { "date": "2026-10-04", "orders": 8 }
+      ]
+    },
+    "currency_totals": [
+      {
+        "currency": "EGP",
+        "delivered_orders": 18,
+        "delivered_order_value": "24500.00",
+        "average_delivered_order_value": "1361.11"
+      }
+    ],
+    "top_selling_products": [
+      {
+        "product_id": 12,
+        "historical_order_item_id": null,
+        "name": "Product name",
+        "net_units_sold": 17,
+        "image": null
+      }
+    ]
+  }
+}
+```
+
+`orders_created_this_month` counts every order by `created_at`, regardless of
+status. `delivered_orders` and `delivered_order_value` use only orders with
+`status=delivered` and `delivered_at` in the period. The value is the original
+order `total`, including shipping; it is not profit, net revenue, or reduced by
+refunds. The average uses that same cohort and is rounded half-up to two
+decimal places.
+
+`orders_chart` counts every order by `created_at`, regardless of status, for
+the preceding `chart_days - 1` Cairo calendar days plus today. Today's point
+ends at the request-time instant. The response always contains exactly 7 or 30
+ascending date points, with zero-filled dates where no orders were created.
+The daily buckets use Cairo calendar midnights converted to UTC, including
+daylight-saving transitions.
+
+Catalog counts are current-state values, independent of the period. Active
+products exclude soft-deleted products. An active product is unavailable when
+it has no active, non-deleted variant with `stock_quantity > reserved_quantity`.
+
+With one delivered currency, the singular `currency`, value, and average fields
+are populated. With multiple delivered currencies, singular currency and
+monetary fields are `null`; `currency_totals` keeps each currency separate.
+With no delivered orders, `currency` is `EGP`, monetary values are `"0.00"`,
+and `currency_totals` is empty.
+
+Top products use delivered-order items from the same cohort. Net units are
+ordered quantity minus the sum of `effective_received_quantity` from all
+non-reversed return receipts, including legacy receipts. Returns are applied
+as of now even when recorded after the reporting period. Variants aggregate by
+stable `product_id`; rows whose product ID is null remain separate by
+`historical_order_item_id` and are never merged by name. Soft-deleted products
+are returned with their available identity and media. Hard-deleted products
+can only use their order-item name snapshots and have no current product image.
+
 ## Phase 1: return decisions
 
 This phase records a decision only. It does not complete a physical receipt and
