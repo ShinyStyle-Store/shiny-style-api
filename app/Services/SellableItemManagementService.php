@@ -39,8 +39,8 @@ class SellableItemManagementService
     public function update(SellableItem $item, array $data): SellableItem
     {
         return DB::transaction(function () use ($item, $data): SellableItem {
-            $locked = SellableItem::query()->whereKey($item->getKey())->lockForUpdate()->firstOrFail();
-            $lockedProduct = Product::query()->whereKey($locked->product_id)->lockForUpdate()->firstOrFail();
+            $lockedProduct = Product::query()->whereKey($item->product_id)->lockForUpdate()->firstOrFail();
+            $locked = SellableItem::query()->whereKey($item->getKey())->where('product_id', $lockedProduct->getKey())->lockForUpdate()->firstOrFail();
             $hasValues = array_key_exists('option_value_ids', $data);
             $valueIds = $hasValues
                 ? array_map('intval', $data['option_value_ids'])
@@ -69,10 +69,11 @@ class SellableItemManagementService
         });
     }
 
-    public function archive(SellableItem $item): ?string
+    public function archive(Product $product, SellableItem $item): ?string
     {
-        return DB::transaction(function () use ($item): ?string {
-            $locked = SellableItem::query()->whereKey($item->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $item): ?string {
+            $lockedProduct = Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+            $locked = SellableItem::query()->whereKey($item->getKey())->where('product_id', $lockedProduct->getKey())->lockForUpdate()->firstOrFail();
             if ((int) $locked->reserved_quantity > 0) {
                 return 'variant_has_reservations';
             }
@@ -82,18 +83,21 @@ class SellableItemManagementService
         });
     }
 
-    public function restore(int $itemId, int $productId): SellableItem|string
+    public function restore(Product $product, int $itemId): SellableItem|string
     {
-        return DB::transaction(function () use ($itemId, $productId): SellableItem|string {
-            $item = SellableItem::withTrashed()->whereKey($itemId)->where('product_id', $productId)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $itemId): SellableItem|string {
+            $lockedProduct = Product::withTrashed()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+            $item = SellableItem::withTrashed()->whereKey($itemId)->where('product_id', $lockedProduct->getKey())->lockForUpdate()->firstOrFail();
+            if ($lockedProduct->trashed()) {
+                return 'product_archived';
+            }
             if (! $item->trashed()) {
                 return 'variant_not_archived';
             }
-            $product = Product::query()->whereKey($productId)->lockForUpdate()->firstOrFail();
             $valueIds = $item->optionValues()->pluck('product_option_values.id')->map(fn ($id): int => (int) $id)->all();
-            $this->assertCombination($product, $valueIds, $item->getKey());
+            $this->assertCombination($lockedProduct, $valueIds, $item->getKey());
             $this->assertStock((int) $item->stock_quantity, (int) $item->reserved_quantity);
-            if ($item->is_default && $product->sellableItems()->where('is_default', true)->exists()) {
+            if ($item->is_default && $lockedProduct->sellableItems()->where('is_default', true)->exists()) {
                 return 'variant_default_conflict';
             }
             $item->status = 'inactive';

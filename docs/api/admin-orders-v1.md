@@ -551,3 +551,37 @@ return_order_status_not_allowed
 There is no historical backfill or cutoff date. Do not record a return that was
 already manually restocked as a new restocking operation. From activation,
 this feature is the supported way to record physical return restocking.
+
+## Product and variant archive management
+
+The admin product list keeps its existing default of excluding archived
+products and accepts `archive_state=unarchived|archived|all`:
+
+```text
+GET /api/v1/admin/products?archive_state=archived
+GET /api/v1/admin/products?archive_state=all
+```
+
+The legacy `include_archived=true` remains supported when
+`archive_state` is omitted. Unsupported values, or sending both parameters,
+return `422`. The variant list uses the same filter:
+
+```text
+GET /api/v1/admin/products/{product}/sellable-items?archive_state=all
+```
+
+Archived product and variant detail GET requests remain available to admins,
+including archived product options and media listing requests. Mutation
+endpoints continue to use normal model binding, so archived records remain
+read-only until restored. Resources expose `archiveState` and `archivedAt`.
+
+Restoring a product leaves it `inactive` with `publishedAt=null`; restoring a
+variant leaves it `inactive`. Restoring a variant under an archived product
+returns HTTP `409` with code `product_archived`; missing resources and
+wrong-parent variants return `404`.
+
+Product archive and order creation coordinate on the product row lock. An
+order transaction that acquired and validated that lock before archive may
+finish; a transaction that acquires it after archive completes rejects the
+product. A quote does not reserve purchase permission. Product locks precede
+sellable-item locks and use deterministic ID order for multi-product orders.

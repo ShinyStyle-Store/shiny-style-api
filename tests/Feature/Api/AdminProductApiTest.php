@@ -575,6 +575,59 @@ class AdminProductApiTest extends TestCase
             ->assertJsonPath('data.0.id', $product->id);
     }
 
+    public function test_admin_product_archive_state_filters_and_legacy_include_archived_are_supported(): void
+    {
+        $active = $this->product('archive-filter-active');
+        $archived = $this->product('archive-filter-archived');
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products')
+            ->assertOk()->assertJsonMissing(['id' => $archived->id]);
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?archive_state=archived')
+            ->assertOk()->assertJsonPath('data.0.id', $archived->id)
+            ->assertJsonPath('data.0.archiveState', 'archived');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?archive_state=all')
+            ->assertOk()->assertJsonCount(2, 'data');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?include_archived=true')
+            ->assertOk()->assertJsonCount(2, 'data');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?include_archived=false')
+            ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $active->id);
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?include_archived=1')
+            ->assertOk()->assertJsonCount(2, 'data');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?include_archived=0')
+            ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $active->id);
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?include_archived=maybe')
+            ->assertUnprocessable()->assertJsonValidationErrors('include_archived');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?archive_state=invalid')
+            ->assertUnprocessable()->assertJsonValidationErrors('archive_state');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?archive_state=all&include_archived=true')
+            ->assertUnprocessable()->assertJsonValidationErrors('archive_state');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products?archive_state=all&include_archived=false')
+            ->assertUnprocessable()->assertJsonValidationErrors('archive_state');
+
+    }
+
+    public function test_archived_product_detail_and_review_reads_remain_available_but_writes_do_not(): void
+    {
+        $product = $this->product('archived-detail');
+        ProductOption::create([
+            'product_id' => $product->id, 'code' => 'color', 'name_ar' => 'Ø§Ù„Ù„ÙˆÙ†', 'name_en' => 'Color',
+        ]);
+        $product->delete();
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id)
+            ->assertOk()->assertJsonPath('data.archiveState', 'archived');
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/products/'.$product->id.'/options')
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/products/'.$product->id.'/options', [
+            'code' => 'size', 'name_ar' => 'Ø§Ù„Ù…Ù‚Ø§Ø³', 'name_en' => 'Size',
+        ])->assertConflict()
+            ->assertJsonPath('code', 'product_archived')
+            ->assertJsonPath('message', 'Options cannot be added to an archived product. Restore the product before adding options.');
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, ['name_en' => 'Nope'])
+            ->assertNotFound();
+    }
+
     public function test_admin_index_includes_the_same_operational_summary_as_product_detail(): void
     {
         $product = $this->product('index-summary');

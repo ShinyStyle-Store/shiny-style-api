@@ -20,8 +20,9 @@ use Illuminate\Validation\ValidationException;
 
 class AdminProductOptionController extends Controller
 {
-    public function index(Product $product)
+    public function index(int $product)
     {
+        $product = $this->findProductForRead($product);
         $options = $product->options()
             ->with(['values' => fn (HasMany $value) => $value->ordered()])
             ->withCount(['values', 'values as used_by_variants_count' => fn (Builder $value) => $value->whereHas('sellableItems')])
@@ -33,9 +34,17 @@ class AdminProductOptionController extends Controller
 
     public function store(
         AdminProductOptionRequest $request,
-        Product $product,
+        int $product,
         ProductOptionManagementService $options,
     ): JsonResponse|AdminProductOptionResource {
+        $product = Product::withTrashed()->findOrFail($product);
+        if ($product->trashed()) {
+            return response()->json([
+                'code' => 'product_archived',
+                'message' => 'Options cannot be added to an archived product. Restore the product before adding options.',
+            ], 409);
+        }
+
         try {
             $option = $options->createOption($product, $request->validated());
         } catch (QueryException $exception) {
@@ -46,8 +55,9 @@ class AdminProductOptionController extends Controller
         return (new AdminProductOptionResource($this->loadOption($option)))->response()->setStatusCode(201);
     }
 
-    public function show(Product $product, int $option): AdminProductOptionResource
+    public function show(int $product, int $option): AdminProductOptionResource
     {
+        $product = $this->findProductForRead($product);
         return new AdminProductOptionResource($this->loadOption($this->findOption($product, $option)));
     }
 
@@ -105,8 +115,9 @@ class AdminProductOptionController extends Controller
         return new AdminProductOptionResource($this->loadOption($result));
     }
 
-    public function values(Product $product, int $option)
+    public function values(int $product, int $option)
     {
+        $product = $this->findProductForRead($product);
         $model = $this->findOption($product, $option);
         $values = $model->values()->withCount('sellableItems')->ordered()->get();
 
@@ -131,8 +142,9 @@ class AdminProductOptionController extends Controller
             ->response()->setStatusCode(201);
     }
 
-    public function showValue(Product $product, int $option, int $value): AdminProductOptionValueResource
+    public function showValue(int $product, int $option, int $value): AdminProductOptionValueResource
     {
+        $product = $this->findProductForRead($product);
         return new AdminProductOptionValueResource(
             $this->findValue($product, $option, $value)->loadCount('sellableItems'),
         );
@@ -199,6 +211,11 @@ class AdminProductOptionController extends Controller
     private function findOption(Product $product, int $option): ProductOption
     {
         return $product->options()->whereKey($option)->firstOrFail();
+    }
+
+    private function findProductForRead(int $product): Product
+    {
+        return Product::withTrashed()->findOrFail($product);
     }
 
     private function findValue(Product $product, int $option, int $value): ProductOptionValue

@@ -7,6 +7,7 @@ use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Product;
 use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use App\Support\ExactMoney;
@@ -19,7 +20,10 @@ use Throwable;
 
 class GuestOrderService
 {
-    public function __construct(private readonly OfferPricingService $pricing) {}
+    public function __construct(
+        private readonly OfferPricingService $pricing,
+        private readonly CategoryHierarchyService $hierarchy,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $data
@@ -95,10 +99,45 @@ class GuestOrderService
             ->values();
         $ids = $requestedItems->pluck('sellable_item_id')->map(fn ($id): int => (int) $id)->all();
 
+        $catalogItems = SellableItem::withTrashed()
+            ->whereIn('id', $ids)
+            ->orderBy('id')
+            ->get(['id', 'product_id'])
+            ->keyBy(fn (SellableItem $item): int => $item->getKey());
+
+        $missingCatalogItem = collect($ids)->first(fn (int $id): bool => ! $catalogItems->has($id));
+        if ($missingCatalogItem !== null) {
+            throw ValidationException::withMessages([
+                'items' => ['One or more requested items are unavailable.'],
+            ]);
+        }
+
+        $productIds = $catalogItems->pluck('product_id')->map(fn ($id): int => (int) $id)->unique()->sort()->values()->all();
+        $lockedProducts = Product::withTrashed()
+            ->whereIn('id', $productIds)
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get()
+            ->keyBy(fn (Product $product): int => $product->getKey());
+
+        if ($lockedProducts->count() !== count($productIds)) {
+            throw ValidationException::withMessages([
+                'items' => ['One or more requested items are unavailable.'],
+            ]);
+        }
+
+        $visibleCategoryIds = $this->hierarchy->effectiveVisibleIds();
+        $eligibleProductIds = Product::query()
+            ->whereIn('id', $productIds)
+            ->visible($visibleCategoryIds)
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
         $sellableItems = SellableItem::query()
             ->whereIn('id', $ids)
             ->active()
-            ->whereHas('product', fn ($query) => $query->visible())
+            ->whereIn('product_id', $eligibleProductIds)
             ->with(['product', 'optionValues.option'])
             ->orderBy('id')
             ->lockForUpdate()
