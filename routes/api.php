@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOfferController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminProductController;
+use App\Http\Controllers\Api\AdminProductConversionController;
 use App\Http\Controllers\Api\AdminProductOptionController;
 use App\Http\Controllers\Api\AdminProductReviewImageController;
 use App\Http\Controllers\Api\AdminProfileController;
@@ -154,6 +155,10 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::patch('products/{product}', [AdminProductController::class, 'update'])->whereNumber('product');
         Route::post('products/{product}/archive', [AdminProductController::class, 'archive'])->whereNumber('product');
         Route::post('products/{product}/restore', [AdminProductController::class, 'restore'])->whereNumber('product');
+        Route::get('products/{product}/conversion-context/{source}', [AdminProductConversionController::class, 'context'])
+            ->whereNumber('product')->whereNumber('source');
+        Route::post('products/{product}/convert-simple-item/{source}', [AdminProductConversionController::class, 'convert'])
+            ->whereNumber('product')->whereNumber('source');
 
         Route::get('products/{product}/review-images/archived', [AdminProductReviewImageController::class, 'archived'])->whereNumber('product');
         Route::patch('products/{product}/review-images/reorder', [AdminProductReviewImageController::class, 'reorder'])->whereNumber('product');

@@ -36,6 +36,8 @@ class AdminSellableItemResource extends JsonResource
             'updatedAt' => $this->updated_at?->toISOString(),
             'archivedAt' => $this->deleted_at?->toISOString(),
             'archiveState' => $this->deleted_at === null ? 'unarchived' : 'archived',
+            'isSuperseded' => $this->superseded_at !== null,
+            'supersededAt' => $this->superseded_at?->toISOString(),
         ];
     }
 }

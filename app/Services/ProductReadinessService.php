@@ -19,7 +19,7 @@ final class ProductReadinessService
     public function assertReady(Product $product): void
     {
         $options = $product->options()->ordered()->get();
-        $items = $product->sellableItems()->where('status', 'active')->orderBy('id')->get();
+        $items = $product->sellableItems()->where('status', 'active')->whereNull('superseded_at')->orderBy('id')->get();
 
         if ($items->isEmpty()) {
             $this->invalid('sellable_items', 'A publishable product must have at least one active sellable item.');

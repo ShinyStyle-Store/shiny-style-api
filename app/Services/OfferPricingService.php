@@ -32,7 +32,7 @@ final class OfferPricingService
      * Calculate variants in one batch. Offers and products are loaded in bulk,
      * so the method does not issue a query per variant.
      *
-     * @param EloquentCollection<int, SellableItem> $items
+     * @param  EloquentCollection<int, SellableItem>  $items
      * @return Collection<int, array<string, mixed>>
      */
     public function calculateMany(EloquentCollection $items, ?CarbonImmutable $at = null): Collection
@@ -43,7 +43,7 @@ final class OfferPricingService
 
         $products = $productIds->isEmpty()
             ? collect()
-            : \App\Models\Product::withTrashed()
+            : Product::withTrashed()
                 ->whereIn('id', $productIds)
                 ->get(['id', 'status', 'published_at', 'deleted_at'])
                 ->keyBy('id');
@@ -53,6 +53,7 @@ final class OfferPricingService
 
             return $item->status === 'active'
                 && $item->deleted_at === null
+                && $item->superseded_at === null
                 && $product !== null
                 && $product->deleted_at === null
                 && $product->status === 'active'
@@ -119,7 +120,7 @@ final class OfferPricingService
      * Attach batch pricing to products whose sellableItems relation is already loaded.
      * Callers must still apply their own category visibility query before loading products.
      *
-     * @param Collection<int, Product> $products
+     * @param  Collection<int, Product>  $products
      * @return Collection<int, Product>
      */
     public function attachToProducts(Collection $products, ?CarbonImmutable $at = null): Collection
@@ -169,7 +170,7 @@ final class OfferPricingService
     {
         try {
             return ExactMoney::toMinorUnitInteger((string) $item->price);
-        } catch (InvalidArgumentException | \OverflowException $exception) {
+        } catch (InvalidArgumentException|\OverflowException $exception) {
             throw new InvalidArgumentException('The sellable item price is invalid.', 0, $exception);
         }
     }
@@ -178,7 +179,7 @@ final class OfferPricingService
     {
         try {
             $basisPoints = ExactMoney::toMinorUnitInteger($percentage);
-        } catch (InvalidArgumentException | \OverflowException $exception) {
+        } catch (InvalidArgumentException|\OverflowException $exception) {
             throw new InvalidArgumentException('The offer percentage is invalid.', 0, $exception);
         }
 

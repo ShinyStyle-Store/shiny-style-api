@@ -56,6 +56,7 @@ final class AdminDashboardService
             ->active()
             ->whereDoesntHave('sellableItems', function ($query): void {
                 $query->where('status', 'active')
+                    ->whereNull('superseded_at')
                     ->whereColumn('stock_quantity', '>', 'reserved_quantity');
             })
             ->count();

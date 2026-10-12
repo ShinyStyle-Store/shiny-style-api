@@ -2,8 +2,8 @@
 
 namespace App\Services;
 
-use App\Models\SellableItem;
 use App\Models\Product;
+use App\Models\SellableItem;
 use Illuminate\Database\Eloquent\Builder;
 
 final class AdminProductSummaryQuery
@@ -42,7 +42,7 @@ final class AdminProductSummaryQuery
 
     private function activeVariants(bool $correlated = true): Builder
     {
-        $query = SellableItem::query()->where('status', 'active');
+        $query = SellableItem::query()->where('status', 'active')->whereNull('superseded_at');
 
         if ($correlated) {
             $query->whereColumn('sellable_items.product_id', 'products.id');

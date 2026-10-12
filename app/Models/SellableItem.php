@@ -39,6 +39,7 @@ class SellableItem extends Model
             'reserved_quantity' => 'integer',
             'is_default' => 'boolean',
             'sort_order' => 'integer',
+            'superseded_at' => 'immutable_datetime',
         ];
     }
 

@@ -38,6 +38,7 @@ class CheckoutQuoteService
 
         $sellableItems = SellableItem::query()
             ->active()
+            ->whereNull('superseded_at')
             ->whereIn('id', $ids)
             ->whereHas('product', fn ($query) => $query->visible())
             ->with([

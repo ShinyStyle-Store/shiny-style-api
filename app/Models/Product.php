@@ -121,7 +121,8 @@ class Product extends Model
     {
         return $sellableItems
             ->filter(fn (SellableItem $sellableItem): bool => $sellableItem->status === 'active'
-                && $sellableItem->deleted_at === null)
+                && $sellableItem->deleted_at === null
+                && $sellableItem->superseded_at === null)
             ->sortBy('id')
             ->values();
     }
@@ -171,7 +172,7 @@ class Product extends Model
             ->active()
             ->published()
             ->whereHas('sellableItems', function (Builder $query): void {
-                $query->active();
+                $query->active()->whereNull('superseded_at');
             })
             ->whereHas('categories', function (Builder $query) use ($visibleCategoryIds): void {
                 $query->whereIn('categories.id', $visibleCategoryIds);
