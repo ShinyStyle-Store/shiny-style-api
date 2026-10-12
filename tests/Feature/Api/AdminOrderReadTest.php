@@ -4,16 +4,26 @@ namespace Tests\Feature\Api;
 
 use App\Enums\AdminMembershipStatus;
 use App\Enums\ContactStatus;
+use App\Enums\MediaRole;
 use App\Enums\OrderStatus;
+use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Models\AdminMembership;
+use App\Models\MediaAsset;
+use App\Models\MediaAttachment;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\RefundRecord;
 use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use App\Models\User;
+use App\Services\MediaService;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -70,6 +80,8 @@ class AdminOrderReadTest extends TestCase
             ->assertJsonValidationErrors(['date_from', 'date_to']);
         $this->withToken($token)->getJson('/api/v1/admin/orders?shipping_area_id=99999')->assertUnprocessable()
             ->assertJsonValidationErrors('shipping_area_id');
+        $this->withToken($token)->getJson('/api/v1/admin/orders?return_status=partial&refund_status=confirmed')->assertUnprocessable()
+            ->assertJsonValidationErrors(['return_status', 'refund_status']);
     }
 
     public function test_list_paginates_deterministically_applies_filters_and_keeps_query_string(): void
@@ -400,6 +412,349 @@ class AdminOrderReadTest extends TestCase
             ->assertJsonPath('data.items.0.sellable_item_id', null)
             ->assertJsonPath('data.items.0.sku', 'HISTORICAL-SKU')
             ->assertJsonPath('data.items.0.product_name', 'Historical Product Name');
+    }
+
+    public function test_list_return_summaries_and_filters_follow_workflow_and_effective_quantities(): void
+    {
+        $waiting = Order::factory()->create();
+        OrderItem::factory()->create(['order_id' => $waiting->id, 'quantity' => 2]);
+        $this->createOrderReturn($waiting, 'waiting_for_return');
+
+        $partial = Order::factory()->create();
+        $partialItem = OrderItem::factory()->create(['order_id' => $partial->id, 'quantity' => 2]);
+        $this->createLegacyReceipt($partial, $partialItem, 1);
+
+        $full = Order::factory()->create();
+        $fullItem = OrderItem::factory()->create(['order_id' => $full->id, 'quantity' => 1]);
+        $this->createLegacyReceipt($full, $fullItem, 1);
+
+        $correctedToZero = Order::factory()->create();
+        $correctedItem = OrderItem::factory()->create(['order_id' => $correctedToZero->id, 'quantity' => 1]);
+        $this->createLegacyReceipt($correctedToZero, $correctedItem, 0);
+
+        $reversed = Order::factory()->create();
+        $reversedItem = OrderItem::factory()->create(['order_id' => $reversed->id, 'quantity' => 1]);
+        $this->createLegacyReceipt($reversed, $reversedItem, 1, now());
+
+        $token = $this->adminToken();
+        $rows = collect($this->withToken($token)->getJson('/api/v1/admin/orders?per_page=100')->assertOk()->json('data'))
+            ->keyBy('public_id');
+
+        $this->assertSame('none', $rows[$waiting->public_id]['return_summary']);
+        $this->assertSame('waiting_for_return', $rows[$waiting->public_id]['return_workflow_status']);
+        $this->assertSame('partial', $rows[$partial->public_id]['return_summary']);
+        $this->assertSame('full', $rows[$full->public_id]['return_summary']);
+        $this->assertSame('none', $rows[$correctedToZero->public_id]['return_summary']);
+        $this->assertSame('none', $rows[$reversed->public_id]['return_summary']);
+        $this->withToken($token)->getJson('/api/v1/admin/orders/'.$waiting->public_id)->assertOk()
+            ->assertJsonPath('data.return_summary', $rows[$waiting->public_id]['return_summary'])
+            ->assertJsonPath('data.return_workflow.status', $rows[$waiting->public_id]['return_workflow_status']);
+
+        $this->withToken($token)->getJson('/api/v1/admin/orders?return_status=received&per_page=100')->assertOk()
+            ->assertJsonCount(2, 'data');
+        $this->withToken($token)->getJson('/api/v1/admin/orders?return_status=awaiting_return&per_page=100')->assertOk()
+            ->assertJsonPath('data.0.public_id', $waiting->public_id);
+        $this->withToken($token)->getJson('/api/v1/admin/orders?return_status=none&per_page=100')->assertOk()
+            ->assertJsonCount(2, 'data');
+    }
+
+    public function test_list_refund_summaries_match_detail_for_review_recorded_and_unknown_amounts(): void
+    {
+        $paidCancellation = Order::factory()->cancelled()->create([
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+            'shipped_at' => null,
+        ]);
+
+        $unpaidRefusal = Order::factory()->create([
+            'status' => OrderStatus::DeliveryRefused,
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Unpaid,
+        ]);
+        $this->createOrderReturn($unpaidRefusal, 'waiting_for_return');
+
+        $recorded = Order::factory()->create([
+            'status' => OrderStatus::Delivered,
+            'payment_method' => PaymentMethod::CashOnDelivery,
+            'payment_status' => PaymentStatus::Paid,
+        ]);
+        $this->createOrderReturn($recorded, 'received');
+        RefundRecord::factory()->create(['order_id' => $recorded->id, 'amount' => '25.00']);
+
+        $unknown = Order::factory()->create([
+            'status' => OrderStatus::Delivered,
+            'payment_method' => PaymentMethod::Card,
+            'payment_status' => PaymentStatus::Paid,
+        ]);
+        $this->createOrderReturn($unknown, 'received');
+
+        $token = $this->adminToken();
+        $rows = collect($this->withToken($token)->getJson('/api/v1/admin/orders?per_page=100')->assertOk()->json('data'))
+            ->keyBy('public_id');
+
+        $this->assertTrue($rows[$paidCancellation->public_id]['refund_recording']['eligible']);
+        $this->assertSame('cod_full_collection_policy', $rows[$paidCancellation->public_id]['refund_recording']['source']);
+        $this->assertFalse($rows[$unpaidRefusal->public_id]['refund_recording']['eligible']);
+        $this->assertSame('paid_amount_unavailable', $rows[$unpaidRefusal->public_id]['refund_recording']['blocker']);
+        $this->assertTrue($rows[$recorded->public_id]['refund_recording']['confirmed']);
+        $this->assertSame('25.00', $rows[$recorded->public_id]['refund_recording']['refunded_amount']);
+        $this->assertSame('145.00', $rows[$recorded->public_id]['refund_recording']['remaining_balance']);
+        $this->assertFalse($rows[$recorded->public_id]['refund_recording']['eligible']);
+        $this->assertSame('undetermined', $rows[$unknown->public_id]['refund_recording']['source']);
+        $this->assertFalse($rows[$unknown->public_id]['refund_recording']['eligible']);
+
+        $this->withToken($token)->getJson('/api/v1/admin/orders/'.$recorded->public_id)->assertOk()
+            ->assertJsonPath('data.refund_recording', $rows[$recorded->public_id]['refund_recording']);
+        $this->withToken($token)->getJson('/api/v1/admin/orders?refund_status=review&per_page=100')->assertOk()
+            ->assertJsonPath('data.0.public_id', $paidCancellation->public_id);
+        $this->withToken($token)->getJson('/api/v1/admin/orders?refund_status=recorded&per_page=100')->assertOk()
+            ->assertJsonPath('data.0.public_id', $recorded->public_id);
+        $this->withToken($token)->getJson('/api/v1/admin/orders?refund_status=none&per_page=100')->assertJsonCount(2, 'data');
+    }
+
+    public function test_list_combined_filters_apply_before_pagination_and_keep_filter_links(): void
+    {
+        $orders = [];
+        foreach (range(1, 3) as $index) {
+            $order = Order::factory()->create([
+                'status' => OrderStatus::DeliveryRefused,
+                'payment_status' => PaymentStatus::Unpaid,
+                'created_at' => "2026-09-0{$index} 10:00:00",
+            ]);
+            $this->createOrderReturn($order, 'waiting_for_return');
+            $orders[] = $order;
+        }
+
+        $excluded = Order::factory()->create([
+            'status' => OrderStatus::DeliveryRefused,
+            'payment_status' => PaymentStatus::Unpaid,
+            'created_at' => '2026-09-04 10:00:00',
+        ]);
+        $this->createOrderReturn($excluded, 'waiting_for_return');
+        RefundRecord::factory()->create(['order_id' => $excluded->id, 'amount' => '10.00']);
+
+        $response = $this->withToken($this->adminToken())->getJson(
+            '/api/v1/admin/orders?status=delivery_refused&payment_status=unpaid&return_status=awaiting_return&refund_status=none&sort=oldest&per_page=1&page=2',
+        );
+
+        $response->assertOk()
+            ->assertJsonPath('data.0.public_id', $orders[1]->public_id)
+            ->assertJsonPath('meta.total', 3)
+            ->assertJsonPath('meta.current_page', 2)
+            ->assertJsonPath('meta.per_page', 1);
+        foreach (['status=delivery_refused', 'payment_status=unpaid', 'return_status=awaiting_return', 'refund_status=none'] as $filter) {
+            $this->assertStringContainsString($filter, $response->json('links.next'));
+        }
+    }
+
+    public function test_list_summary_query_count_does_not_grow_with_a_full_page(): void
+    {
+        foreach (range(1, 20) as $index) {
+            $order = Order::factory()->create();
+            OrderItem::factory()->create(['order_id' => $order->id]);
+        }
+
+        $token = $this->adminToken();
+        $queryCounts = [1 => 0, 20 => 0];
+        $pageSize = 1;
+        DB::listen(function (QueryExecuted $query) use (&$pageSize, &$queryCounts): void {
+            if (str_contains($query->sql, 'order_items')
+                || str_contains($query->sql, 'return_receipts')
+                || str_contains($query->sql, 'order_returns')
+                || str_contains($query->sql, 'refund_records')
+                || str_contains($query->sql, 'payment_attempts')) {
+                $queryCounts[$pageSize]++;
+            }
+        });
+
+        $this->withToken($token)->getJson('/api/v1/admin/orders?per_page=1')->assertOk();
+        $pageSize = 20;
+        $this->withToken($token)->getJson('/api/v1/admin/orders?per_page=20')->assertOk();
+
+        $this->assertSame($queryCounts[1], $queryCounts[20]);
+    }
+
+    public function test_detail_prefers_variant_image_and_eager_loads_media_for_multiple_items(): void
+    {
+        $order = Order::factory()->create();
+        $items = [];
+
+        foreach (range(1, 3) as $index) {
+            $product = Product::query()->create([
+                'slug' => 'admin-order-image-'.$index,
+                'name_ar' => 'منتج',
+                'name_en' => 'Product '.$index,
+            ]);
+            $sellable = SellableItem::query()->create([
+                'product_id' => $product->id,
+                'sku' => 'ADMIN-ORDER-IMAGE-'.$index,
+                'price' => '10.00',
+            ]);
+            $item = OrderItem::factory()->create([
+                'order_id' => $order->id,
+                'product_id' => $product->id,
+                'sellable_item_id' => $sellable->id,
+            ]);
+            $this->attachOrderImage($product, MediaRole::PRODUCT_IMAGE, 'product-'.$index.'.jpg');
+            $this->attachOrderImage($sellable, MediaRole::VARIANT_IMAGE, 'variant-'.$index.'.jpg');
+            $items[] = $item;
+        }
+
+        $mediaQueries = 0;
+        DB::listen(function (QueryExecuted $query) use (&$mediaQueries): void {
+            if (str_contains($query->sql, 'media_attachments') || str_contains($query->sql, 'media_assets')) {
+                $mediaQueries++;
+            }
+        });
+
+        $response = $this->withToken($this->adminToken())->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
+
+        foreach ($items as $index => $item) {
+            $response->assertJsonPath(
+                "data.items.{$index}.image_url",
+                Storage::disk('public')->url('variant-'.($index + 1).'.jpg'),
+            );
+        }
+        $this->assertLessThanOrEqual(4, $mediaQueries);
+    }
+
+    public function test_detail_falls_back_to_product_image_and_returns_null_without_images(): void
+    {
+        $order = Order::factory()->create();
+        [$product, $sellable] = $this->orderCatalogItem('ADMIN-ORDER-PRODUCT-FALLBACK');
+        $productOnly = OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'sellable_item_id' => $sellable->id,
+        ]);
+
+        $noImage = OrderItem::factory()->create(['order_id' => $order->id]);
+        $this->attachOrderImage($product, MediaRole::PRODUCT_IMAGE, 'fallback-product.jpg');
+
+        $response = $this->withToken($this->adminToken())->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk();
+
+        $response->assertJsonPath('data.items.0.id', $productOnly->id)
+            ->assertJsonPath('data.items.0.image_url', Storage::disk('public')->url('fallback-product.jpg'))
+            ->assertJsonPath('data.items.1.id', $noImage->id)
+            ->assertJsonPath('data.items.1.image_url', null);
+    }
+
+    public function test_detail_resolves_images_for_soft_deleted_catalog_references(): void
+    {
+        $order = Order::factory()->create();
+        [$product, $sellable] = $this->orderCatalogItem('ADMIN-ORDER-ARCHIVED');
+        OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'sellable_item_id' => $sellable->id,
+        ]);
+        $this->attachOrderImage($sellable, MediaRole::VARIANT_IMAGE, 'archived-variant.jpg');
+        $sellable->delete();
+        $product->delete();
+
+        $this->withToken($this->adminToken())->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk()
+            ->assertJsonPath('data.items.0.image_url', Storage::disk('public')->url('archived-variant.jpg'));
+    }
+
+    public function test_detail_returns_null_when_catalog_and_media_references_are_permanently_missing(): void
+    {
+        $order = Order::factory()->create();
+        [$product, $sellable] = $this->orderCatalogItem('ADMIN-ORDER-MISSING');
+        OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'sellable_item_id' => $sellable->id,
+        ]);
+        $productImage = $this->attachOrderImage($product, MediaRole::PRODUCT_IMAGE, 'deleted-product.jpg');
+        $variantImage = $this->attachOrderImage($sellable, MediaRole::VARIANT_IMAGE, 'deleted-variant.jpg');
+        $variantImage->mediaAsset->forceDelete();
+        $productImage->mediaAsset->forceDelete();
+        $sellable->forceDelete();
+        $product->forceDelete();
+
+        $this->withToken($this->adminToken())->getJson('/api/v1/admin/orders/'.$order->public_id)->assertOk()
+            ->assertJsonPath('data.items.0.product_id', null)
+            ->assertJsonPath('data.items.0.sellable_item_id', null)
+            ->assertJsonPath('data.items.0.image_url', null);
+    }
+
+    /** @return array{Product, SellableItem} */
+    private function orderCatalogItem(string $sku): array
+    {
+        $product = Product::query()->create([
+            'slug' => strtolower($sku),
+            'name_ar' => 'منتج',
+            'name_en' => 'Product',
+        ]);
+        $sellable = SellableItem::query()->create([
+            'product_id' => $product->id,
+            'sku' => $sku,
+            'price' => '10.00',
+        ]);
+
+        return [$product, $sellable];
+    }
+
+    private function createOrderReturn(Order $order, string $status): void
+    {
+        DB::table('order_returns')->insert([
+            'order_id' => $order->id,
+            'kind' => 'return_after_delivery',
+            'status' => $status,
+            'reason' => 'changed_mind',
+            'recorded_at' => now(),
+            'version' => 0,
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => str_repeat('a', 64),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function createLegacyReceipt(Order $order, OrderItem $item, int $effectiveQuantity, ?Carbon $reversedAt = null): void
+    {
+        $initialQuantity = max(1, $effectiveQuantity);
+        $receiptId = DB::table('return_receipts')->insertGetId([
+            'order_id' => $order->id,
+            'order_return_id' => null,
+            'received_at' => now(),
+            'revision' => 0,
+            'reversed_at' => $reversedAt,
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => str_repeat('b', 64),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('return_receipt_items')->insert([
+            'return_receipt_id' => $receiptId,
+            'order_item_id' => $item->id,
+            'original_quantity' => $item->quantity,
+            'initial_received_quantity' => $initialQuantity,
+            'initial_restockable_quantity' => 0,
+            'initial_reason' => 'changed_mind',
+            'effective_received_quantity' => $effectiveQuantity,
+            'effective_restockable_quantity' => 0,
+            'effective_reason' => 'changed_mind',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function attachOrderImage(Product|SellableItem $owner, string $role, string $path): MediaAttachment
+    {
+        $asset = MediaAsset::query()->create([
+            'disk' => 'public',
+            'path' => $path,
+            'media_type' => 'image',
+            'mime_type' => 'image/jpeg',
+            'extension' => 'jpg',
+            'size_bytes' => 10,
+            'width' => 10,
+            'height' => 10,
+        ]);
+
+        return app(MediaService::class)->attach($asset, $owner, $role, ['is_primary' => true]);
     }
 
     private function adminToken(): string

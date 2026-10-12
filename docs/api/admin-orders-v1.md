@@ -115,6 +115,67 @@ stable `product_id`; rows whose product ID is null remain separate by
 are returned with their available identity and media. Hard-deleted products
 can only use their order-item name snapshots and have no current product image.
 
+## Admin order list summaries and filters
+
+`GET /api/v1/admin/orders` retains its existing order and payment statuses and
+adds these fields to every order row:
+
+```json
+{
+  "return_summary": "none",
+  "return_workflow_status": "waiting_for_return",
+  "refund_recording": {
+    "paid_amount": "0.00",
+    "refunded_amount": "0.00",
+    "remaining_balance": "0.00",
+    "currency": "EGP",
+    "source": "undetermined",
+    "eligible": false,
+    "blocker": "paid_amount_unavailable",
+    "confirmed": false,
+    "confirmed_at": null,
+    "confirmed_by_user_id": null,
+    "record_id": null,
+    "record_public_id": null
+  }
+}
+```
+
+`return_summary` is the same effective `none|partial|full` summary as order
+details. It sums current received quantities after corrections and excludes
+reversed receipts. `return_workflow_status` is `waiting_for_return`, `received`,
+or `null` when there is no return decision. A `waiting_for_return` workflow
+takes precedence for the return badge even when `return_summary` is `none`.
+Otherwise, `partial` and `full` indicate received items; `none` means there is
+no extra return badge.
+
+`refund_recording` has the same fields and meaning as the order detail summary.
+`confirmed=true` means a manual refund record exists; display its
+`refunded_amount` and `currency`. It does not prove that the complete collected
+amount was refunded. Compare `paid_amount` with `refunded_amount` only when
+`source` is authoritative. In particular, `source=undetermined` means the
+summary's `paid_amount="0.00"` is a placeholder and must not be treated as a
+known collected amount. When there is no confirmed record, `eligible=true` is
+only a refund review cue, not an approved amount or debt. Otherwise there is no
+extra refund badge. An unpaid COD delivery refusal is ineligible.
+
+Optional server-side filters are:
+
+```text
+return_status=awaiting_return|received|none
+refund_status=review|recorded|none
+```
+
+`return_status=received` includes partial and full effective receipts unless a
+workflow is currently `waiting_for_return`. `return_status=none` means no
+waiting workflow and no positive effective received quantity.
+`refund_status=recorded` means a manual record is confirmed;
+`refund_status=review` means there is no record and the detail summary has
+`eligible=true`; `refund_status=none` means neither condition applies, including
+when the paid amount is undetermined. Both filters combine with the existing
+list filters and are applied before sorting and pagination, so pagination
+totals and links describe the filtered result.
+
 ## Phase 1: return decisions
 
 This phase records a decision only. It does not complete a physical receipt and
@@ -441,7 +502,8 @@ The authenticated admin order detail response includes each original
       "id": 41,
       "product_id": 12,
       "sellable_item_id": 87,
-      "sku": "SKU-1"
+      "sku": "SKU-1",
+      "image_url": "https://example.test/storage/catalog/variant.jpg"
     }
   ]
 }
@@ -453,6 +515,13 @@ referenced catalog rows are no longer available. Historical snapshots remain
 available independently of these identifiers. Send `id` as
 `items.*.order_item_id` when creating a physical return; do not send
 `product_id` or `sellable_item_id` for that purpose.
+
+`image_url` is a nullable URL for the current primary image of the purchased
+sellable item, falling back to the current primary product image. It is resolved
+from current catalog media when the order is read; it is not an image snapshot
+saved when the order was placed. It is `null` when neither image is available,
+including when the referenced catalog records or media have been permanently
+removed.
 
 ## Corrections
 

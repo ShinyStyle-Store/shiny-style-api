@@ -34,6 +34,9 @@ class AdminOrderListResource extends JsonResource
             'total' => (string) $this->total,
             'last_contacted_at' => $this->last_contacted_at?->toISOString(),
             'created_at' => $this->created_at?->toISOString(),
+            'return_summary' => $this->return_summary,
+            'return_workflow_status' => $this->return_workflow_status,
+            'refund_recording' => $this->refund_recording,
         ];
     }
 

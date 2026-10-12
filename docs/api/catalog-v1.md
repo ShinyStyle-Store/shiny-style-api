@@ -97,6 +97,7 @@ numbers):
   "id": "1",
   "slug": "soft-sofa-throw-blanket",
   "name": "Soft Sofa Throw Blanket",
+  "displayVariantId": "1",
   "category": {
     "slug": "home-textiles",
     "name": "Home Textiles"
@@ -111,6 +112,10 @@ numbers):
 
 The `category` and `image` values may be `null`; `originalPrice` may also be
 `null`.
+
+`displayVariantId` identifies the SellableItem used for the card's displayed
+price, image, and availability. It is a string ID or `null` when no valid
+active, unarchived variant exists.
 
 The listing response is Laravel pagination JSON with `data`, `links`, and
 `meta`. `meta` contains the pagination values, including `current_page`,
@@ -136,6 +141,7 @@ Example:
       "id": "1",
       "slug": "soft-sofa-throw-blanket",
       "name": "Soft Sofa Throw Blanket",
+      "displayVariantId": "1",
       "category": {
         "slug": "home-textiles",
         "name": "Home Textiles"
@@ -163,6 +169,7 @@ The detail response uses the listing fields and adds:
   "id": "1",
   "slug": "soft-sofa-throw-blanket",
   "name": "Soft Sofa Throw Blanket",
+  "displayVariantId": "1",
   "category": {
     "slug": "home-textiles",
     "name": "Home Textiles"
@@ -206,16 +213,25 @@ values are arrays or objects as shown; `description`, `videoUrl`, and nullable
 localized fields can be `null`. The actual collections may contain multiple
 entries.
 
+The display variant is selected using this exact order:
+
+1. The active, unarchived default variant with `availableQuantity() > 0`.
+2. Otherwise, the first active, unarchived variant with
+   `availableQuantity() > 0`, ordered by ascending ID.
+3. If all active, unarchived variants are unavailable, the active,
+   unarchived default variant.
+4. Otherwise, the first active, unarchived variant ordered by ascending ID.
+
+`availableQuantity()` is `stock_quantity - reserved_quantity`. The displayed
+price, display image, `inStock`, and offer presentation all use the selected
+display variant. The image uses that variant's primary image when available,
+and falls back to the Product's primary image.
+
 Inactive and soft-deleted variants are hidden. Active variants with no
 available-to-sell inventory remain present and have `inStock: false`.
 Availability is calculated as `stock_quantity - reserved_quantity`; reservations
-therefore reduce availability immediately. Product `inStock` is true when any
-active public variant has available-to-sell inventory. The display variant is
-selected in this order:
-
-1. Active default variant.
-2. First active variant with available-to-sell inventory by ascending ID.
-3. First active variant by ascending ID.
+therefore reduce availability immediately. Product `inStock` reflects the
+selected display variant's available-to-sell inventory.
 
 The checkout quote checks current availability but does not reserve stock.
 Order creation performs the final availability check and creates the

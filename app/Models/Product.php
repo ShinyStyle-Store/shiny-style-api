@@ -129,11 +129,16 @@ class Product extends Model
     public function displaySellableItem(Collection $sellableItems): ?SellableItem
     {
         $publicSellableItems = $this->publicSellableItems($sellableItems);
+        $availableDefault = $publicSellableItems->first(
+            fn (SellableItem $sellableItem): bool => $sellableItem->is_default
+                && $sellableItem->availableQuantity() > 0,
+        );
 
-        return $publicSellableItems->firstWhere('is_default', true)
+        return $availableDefault
             ?? $publicSellableItems->first(
                 fn (SellableItem $sellableItem): bool => $sellableItem->availableQuantity() > 0,
             )
+            ?? $publicSellableItems->firstWhere('is_default', true)
             ?? $publicSellableItems->first();
     }
 

@@ -4,18 +4,22 @@ namespace Tests\Feature\Api;
 
 use App\Enums\AdminMembershipStatus;
 use App\Enums\CancellationReason;
+use App\Enums\MediaRole;
 use App\Enums\OrderStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Models\AdminMembership;
 use App\Models\Category;
+use App\Models\MediaAsset;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\SellableItem;
+use App\Services\MediaService;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class AdminOrderActionTest extends TestCase
@@ -333,6 +337,40 @@ class AdminOrderActionTest extends TestCase
         ])->assertOk();
 
         $this->assertInventory($sellable, stock: 10, reserved: 0);
+    }
+
+    public function test_order_action_response_includes_current_variant_image_url(): void
+    {
+        $product = Product::query()->create([
+            'slug' => 'admin-order-action-image',
+            'name_ar' => 'منتج',
+            'name_en' => 'Product',
+        ]);
+        $sellable = SellableItem::query()->create([
+            'product_id' => $product->id,
+            'sku' => 'ADMIN-ORDER-ACTION-IMAGE',
+            'price' => '10.00',
+        ]);
+        $order = Order::factory()->create();
+        OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'product_id' => $product->id,
+            'sellable_item_id' => $sellable->id,
+        ]);
+        $asset = MediaAsset::query()->create([
+            'disk' => 'public',
+            'path' => 'order-action-variant.jpg',
+            'media_type' => 'image',
+            'mime_type' => 'image/jpeg',
+            'extension' => 'jpg',
+            'size_bytes' => 10,
+            'width' => 10,
+            'height' => 10,
+        ]);
+        app(MediaService::class)->attach($asset, $sellable, MediaRole::VARIANT_IMAGE, ['is_primary' => true]);
+
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($order, 'confirm'), [])->assertOk()
+            ->assertJsonPath('data.items.0.image_url', Storage::disk('public')->url('order-action-variant.jpg'));
     }
 
     public function test_contact_updates_preserve_clear_and_timestamp_notes_without_lifecycle_or_inventory_changes(): void

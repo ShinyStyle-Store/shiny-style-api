@@ -3,19 +3,24 @@
 namespace App\Services;
 
 use App\Enums\MediaRole;
+use App\Enums\OrderStatus;
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
-use App\Enums\OrderStatus;
 use App\Exceptions\RefundRecordConflictException;
 use App\Models\Order;
+use App\Models\OrderReturn;
 use App\Models\PaymentAttempt;
 use App\Models\RefundRecord;
 use App\Models\RefundRecordCorrection;
+use App\Models\ReturnReceipt;
 use App\Models\User;
 use App\Support\ExactMoney;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -129,37 +134,124 @@ final class RefundRecordService
     /** @return array<string, mixed> */
     public function summary(Order $order): array
     {
-        $record = $order->refundRecords()->latest('id')->first();
+        return $this->summaries(new EloquentCollection([$order]))[$order->getKey()];
+    }
 
-        try {
-            $paid = $this->paidAmount($order);
-        } catch (RefundRecordConflictException $exception) {
-            return [
-                'paid_amount' => '0.00', 'refunded_amount' => (string) $this->recordedAmount($order),
-                'remaining_balance' => '0.00', 'currency' => strtoupper((string) $order->currency),
-                'source' => 'undetermined', 'eligible' => false, 'blocker' => $exception->errorCode,
-                'confirmed' => $record !== null,
-                'confirmed_at' => $record?->created_at?->toISOString(),
-                'confirmed_by_user_id' => $record?->recorded_by_user_id === null ? null : (int) $record->recorded_by_user_id,
-                'record_id' => $record?->getKey(),
-                'record_public_id' => $record?->public_id,
-            ];
+    /** @return array<int, array<string, mixed>> */
+    public function summaries(EloquentCollection $orders): array
+    {
+        $orderIds = $orders->modelKeys();
+        if ($orderIds === []) {
+            return [];
         }
 
-        $refunded = $this->recordedAmount($order);
-        $remaining = $this->compare($paid['amount'], $refunded) < 0 ? '0' : $this->subtract($paid['amount'], $refunded);
+        $recordsByOrder = RefundRecord::query()
+            ->whereIn('order_id', $orderIds)
+            ->orderBy('id')
+            ->get(['id', 'order_id', 'amount', 'created_at', 'recorded_by_user_id', 'public_id'])
+            ->groupBy('order_id');
+        $attemptsByOrder = PaymentAttempt::query()
+            ->whereIn('order_id', $orderIds)
+            ->get(['id', 'order_id', 'status', 'amount_minor', 'currency'])
+            ->groupBy('order_id');
+        $ordersWithDecisions = OrderReturn::query()->whereIn('order_id', $orderIds)->pluck('order_id')->flip();
+        $ordersWithReceipts = ReturnReceipt::query()->whereIn('order_id', $orderIds)->distinct()->pluck('order_id')->flip();
 
-        try {
-            $this->assertReturnHistory($order);
-        } catch (RefundRecordConflictException $exception) {
-            return $this->summaryPayload($paid, $refunded, $remaining, false, $exception->errorCode, $record);
+        $summaries = [];
+        foreach ($orders as $order) {
+            $orderId = (int) $order->getKey();
+            $records = $recordsByOrder->get($orderId, collect());
+            $attempts = $attemptsByOrder->get($orderId, new EloquentCollection);
+            $record = $records->last();
+            $recorded = $this->recordedAmountFrom($records);
+
+            try {
+                $paid = $this->paidAmountFromAttempts($order, $attempts);
+            } catch (RefundRecordConflictException $exception) {
+                $summaries[$orderId] = [
+                    'paid_amount' => '0.00', 'refunded_amount' => (string) $recorded,
+                    'remaining_balance' => '0.00', 'currency' => strtoupper((string) $order->currency),
+                    'source' => 'undetermined', 'eligible' => false, 'blocker' => $exception->errorCode,
+                    'confirmed' => $record !== null,
+                    'confirmed_at' => $record?->created_at?->toISOString(),
+                    'confirmed_by_user_id' => $record?->recorded_by_user_id === null ? null : (int) $record->recorded_by_user_id,
+                    'record_id' => $record?->getKey(),
+                    'record_public_id' => $record?->public_id,
+                ];
+
+                continue;
+            }
+
+            $remaining = $this->compare($paid['amount'], $recorded) < 0 ? '0' : $this->subtract($paid['amount'], $recorded);
+            $hasReturnHistory = $ordersWithDecisions->has($orderId) || $ordersWithReceipts->has($orderId);
+            $historyError = $this->returnHistoryError($order, $hasReturnHistory);
+
+            if ($historyError !== null) {
+                $summaries[$orderId] = $this->summaryPayload($paid, $recorded, $remaining, false, $historyError->errorCode, $record);
+            } elseif ($record !== null) {
+                $summaries[$orderId] = $this->summaryPayload($paid, $recorded, $remaining, false, 'refund_recording_already_confirmed', $record);
+            } else {
+                $eligible = $this->compare($remaining, '0') > 0;
+                $summaries[$orderId] = $this->summaryPayload(
+                    $paid,
+                    $recorded,
+                    $remaining,
+                    $eligible,
+                    $eligible ? null : 'refund_balance_exhausted',
+                    null,
+                );
+            }
         }
 
-        if ($record !== null) {
-            return $this->summaryPayload($paid, $refunded, $remaining, false, 'refund_recording_already_confirmed', $record);
+        return $summaries;
+    }
+
+    public function applySummaryFilter(Builder $query, string $status): void
+    {
+        if ($status === 'recorded') {
+            $query->whereHas('refundRecords');
+
+            return;
         }
 
-        return $this->summaryPayload($paid, $refunded, $remaining, $this->compare($remaining, '0') > 0, $this->compare($remaining, '0') > 0 ? null : 'refund_balance_exhausted', null);
+        $eligibleOrderIds = Order::query()
+            ->select('orders.id')
+            ->whereDoesntHave('refundRecords')
+            ->where(function (Builder $knownPaid): void {
+                $knownPaid
+                    ->where(function (Builder $cod): void {
+                        $cod->where('payment_method', PaymentMethod::CashOnDelivery->value)
+                            ->where('payment_status', PaymentStatus::Paid->value)
+                            ->where('status', '<>', OrderStatus::DeliveryRefused->value)
+                            ->where('total', '>', 0);
+                    })
+                    ->orWhere(function (Builder $online): void {
+                        $online->where('payment_method', '<>', PaymentMethod::CashOnDelivery->value)
+                            ->whereHas('paymentAttempts', fn (Builder $attempt): Builder => $attempt
+                                ->where('status', PaymentAttemptStatus::Paid->value), '=', 1)
+                            ->whereHas('paymentAttempts', fn (Builder $attempt): Builder => $attempt
+                                ->where('status', PaymentAttemptStatus::Paid->value)
+                                ->where('amount_minor', '>', 0))
+                            ->whereDoesntHave('paymentAttempts', fn (Builder $attempt): Builder => $attempt
+                                ->where('status', PaymentAttemptStatus::RequiresReview->value));
+                    });
+            })
+            ->where(function (Builder $history): void {
+                $history->whereHas('orderReturn')
+                    ->orWhereHas('returnReceipts')
+                    ->orWhere(function (Builder $cancelled): void {
+                        $cancelled->where('status', OrderStatus::Cancelled->value)->whereNull('shipped_at');
+                    });
+            })
+            ->select('orders.id');
+
+        if ($status === 'review') {
+            $query->whereIn('orders.id', $eligibleOrderIds);
+
+            return;
+        }
+
+        $query->whereDoesntHave('refundRecords')->whereNotIn('orders.id', $eligibleOrderIds);
     }
 
     /** @return array{record: RefundRecord, correction: RefundRecordCorrection, replayed: bool} */
@@ -255,7 +347,25 @@ final class RefundRecordService
             return ['amount' => ExactMoney::toMinorUnits((string) $order->total), 'currency' => strtoupper((string) $order->currency), 'source' => 'cod_full_collection_policy'];
         }
 
-        $attempts = PaymentAttempt::query()->where('order_id', $order->getKey())->get();
+        return $this->paidAmountFromAttempts(
+            $order,
+            PaymentAttempt::query()->where('order_id', $order->getKey())->get(),
+        );
+    }
+
+    /** @param Collection<int, PaymentAttempt> $attempts
+     * @return array{amount: string, currency: string, source: string}
+     */
+    private function paidAmountFromAttempts(Order $order, Collection $attempts): array
+    {
+        if ($order->payment_method === PaymentMethod::CashOnDelivery) {
+            if ($order->payment_status !== PaymentStatus::Paid || $order->status->value === 'delivery_refused') {
+                throw new RefundRecordConflictException('paid_amount_unavailable', 'This COD order has no recorded paid amount under the full-collection policy.');
+            }
+
+            return ['amount' => ExactMoney::toMinorUnits((string) $order->total), 'currency' => strtoupper((string) $order->currency), 'source' => 'cod_full_collection_policy'];
+        }
+
         if ($attempts->contains(fn (PaymentAttempt $attempt): bool => $attempt->status === PaymentAttemptStatus::RequiresReview)) {
             throw new RefundRecordConflictException('paid_amount_requires_review', 'A payment attempt requires review before a refund can be recorded.');
         }
@@ -274,18 +384,30 @@ final class RefundRecordService
             return;
         }
 
+        $exception = $this->returnHistoryError($order, false);
+        if ($exception !== null) {
+            throw $exception;
+        }
+    }
+
+    private function returnHistoryError(Order $order, bool $hasHistory): ?RefundRecordConflictException
+    {
+        if ($hasHistory) {
+            return null;
+        }
+
         if ($order->status === OrderStatus::Cancelled) {
             if ($order->shipped_at === null) {
-                return;
+                return null;
             }
 
-            throw new RefundRecordConflictException(
+            return new RefundRecordConflictException(
                 'cancelled_after_shipment_not_eligible',
                 'A cancelled order that has shipment history requires recorded return history before a refund can be recorded.',
             );
         }
 
-        throw new RefundRecordConflictException('return_not_recorded', 'The order has no recorded return history.');
+        return new RefundRecordConflictException('return_not_recorded', 'The order has no recorded return history.');
     }
 
     private function recordedAmount(Order $order, ?int $except = null): string
@@ -297,6 +419,17 @@ final class RefundRecordService
 
         $total = '0';
         foreach ($query->get(['amount']) as $record) {
+            $total = ExactMoney::add($total, ExactMoney::toMinorUnits((string) $record->amount));
+        }
+
+        return $total;
+    }
+
+    /** @param Collection<int, RefundRecord> $records */
+    private function recordedAmountFrom(Collection $records): string
+    {
+        $total = '0';
+        foreach ($records as $record) {
             $total = ExactMoney::add($total, ExactMoney::toMinorUnits((string) $record->amount));
         }
 

@@ -123,7 +123,7 @@ final class HomeProductSectionService
         $visibleCategoryIds ??= $this->hierarchy->effectiveVisibleIds();
         $relations = [
             'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->orderBy('id'),
+            'sellableItems' => fn ($query) => $query->active()->orderBy('id')->with(['variantImages.mediaAsset']),
             'productImages.mediaAsset',
         ];
 

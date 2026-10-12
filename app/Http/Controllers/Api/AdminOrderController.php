@@ -30,6 +30,7 @@ use App\Services\PhysicalReturnService;
 use App\Services\RefundRecordService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -38,8 +39,11 @@ use Illuminate\Validation\ValidationException;
 
 class AdminOrderController extends Controller
 {
-    public function index(AdminOrderIndexRequest $request)
-    {
+    public function index(
+        AdminOrderIndexRequest $request,
+        PhysicalReturnService $returns,
+        RefundRecordService $refunds,
+    ) {
         $filters = $request->validated();
         $query = Order::query()
             ->select([
@@ -55,6 +59,13 @@ class AdminOrderController extends Controller
             if (isset($filters[$field])) {
                 $query->where($field, $filters[$field]);
             }
+        }
+
+        if (isset($filters['return_status'])) {
+            $returns->applySummaryFilter($query, $filters['return_status']);
+        }
+        if (isset($filters['refund_status'])) {
+            $refunds->applySummaryFilter($query, $filters['refund_status']);
         }
 
         if (isset($filters['shipping_area_id'])) {
@@ -79,16 +90,21 @@ class AdminOrderController extends Controller
         }
 
         $orders = $query->paginate($filters['per_page'] ?? 20)->withQueryString();
+        $returnSummaries = $returns->summaries($orders->getCollection());
+        $refundSummaries = $refunds->summaries($orders->getCollection());
+        foreach ($orders->getCollection() as $order) {
+            $order->setAttribute('return_summary', $returnSummaries[$order->getKey()]['return_summary']);
+            $order->setAttribute('return_workflow_status', $returnSummaries[$order->getKey()]['return_workflow_status']);
+            $order->setAttribute('refund_recording', $refundSummaries[$order->getKey()]);
+        }
 
         return AdminOrderListResource::collection($orders);
     }
 
     public function show(Request $request, string $public_id): AdminOrderDetailResource
     {
-        $order = Order::query()
-            ->where('public_id', $public_id)
-            ->with(['items', 'orderReturn'])
-            ->firstOrFail();
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+        $this->loadOrderDetailRelations($order);
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
         $order->setAttribute('refund_summary', app(RefundRecordService::class)->summary($order));
 
@@ -299,14 +315,23 @@ class AdminOrderController extends Controller
 
     private function detailByPublicId(string $publicId): AdminOrderDetailResource
     {
-        $order = Order::query()
-            ->where('public_id', $publicId)
-            ->with(['items', 'orderReturn'])
-            ->firstOrFail();
+        $order = Order::query()->where('public_id', $publicId)->firstOrFail();
+        $this->loadOrderDetailRelations($order);
         $order->setAttribute('return_summary', app(PhysicalReturnService::class)->summary($order));
         $order->setAttribute('refund_summary', app(RefundRecordService::class)->summary($order));
 
         return new AdminOrderDetailResource($order);
+    }
+
+    private function loadOrderDetailRelations(Order $order): void
+    {
+        $order->load([
+            'items.product' => fn (BelongsTo $query) => $query->withTrashed(),
+            'items.product.primaryProductImage.mediaAsset',
+            'items.sellableItem' => fn (BelongsTo $query) => $query->withTrashed(),
+            'items.sellableItem.primaryVariantImage.mediaAsset',
+            'orderReturn',
+        ]);
     }
 
     private function createReturnDecision(
