@@ -53,6 +53,29 @@ class ProductOffersPresentationTest extends TestCase
             ->assertJsonPath('data.sellableItems.0.discountPercentage', 10);
     }
 
+    public function test_offer_price_uses_the_available_display_variant_when_default_is_unavailable(): void
+    {
+        $product = Product::query()->where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
+        $default = $product->sellableItems()->where('is_default', true)->firstOrFail();
+        $available = $product->sellableItems()->where('is_default', false)->firstOrFail();
+        $default->update(['stock_quantity' => 0, 'reserved_quantity' => 0]);
+        $available->update(['price' => '180.00', 'stock_quantity' => 5, 'reserved_quantity' => 0]);
+        $this->offer($product, '10.00');
+
+        $listing = collect($this->getJson('/api/v1/products?per_page=100')->assertOk()->json('data'))
+            ->firstWhere('slug', $product->slug);
+
+        $this->assertSame((string) $available->getKey(), $listing['displayVariantId']);
+        $this->assertSame(162, $listing['price']);
+        $this->assertSame(180, $listing['originalPrice']);
+        $this->assertTrue($listing['offerApplied']);
+
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.displayVariantId', (string) $available->getKey())
+            ->assertJsonPath('data.price', 162);
+    }
+
     public function test_non_offered_product_preserves_existing_comparison_price_contract(): void
     {
         $response = $this->getJson('/api/v1/products/espresso-coffee-machine')

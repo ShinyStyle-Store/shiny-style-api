@@ -2,6 +2,10 @@
 
 namespace App\Http\Resources;
 
+use App\Models\MediaAttachment;
+use App\Models\OrderItem;
+use App\Models\Product;
+use App\Models\SellableItem;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -38,6 +42,7 @@ class AdminOrderDetailResource extends JsonResource
                 'sellable_item_id' => $item->sellable_item_id === null ? null : (int) $item->sellable_item_id,
                 'sku' => $item->sku,
                 'product_name' => $this->localizedValue($item->product_name_ar, $item->product_name_en),
+                'image_url' => $this->imageUrl($item, $request),
                 'selected_options' => collect($item->options_snapshot)->map(fn (array $option): array => [
                     'name' => $this->localizedValue($option['option_name_ar'] ?? null, $option['option_name_en'] ?? null),
                     'value' => $this->localizedValue($option['value_ar'] ?? null, $option['value_en'] ?? null),
@@ -79,5 +84,32 @@ class AdminOrderDetailResource extends JsonResource
         return app()->getLocale() === 'en'
             ? (($english !== null && $english !== '') ? $english : ($arabic !== '' ? $arabic : null))
             : (($arabic !== null && $arabic !== '') ? $arabic : ($english !== '' ? $english : null));
+    }
+
+    private function imageUrl(OrderItem $item, Request $request): ?string
+    {
+        $sellableItem = $item->relationLoaded('sellableItem') ? $item->getRelation('sellableItem') : null;
+        $variantImage = $sellableItem instanceof SellableItem && $sellableItem->relationLoaded('primaryVariantImage')
+            ? $sellableItem->getRelation('primaryVariantImage')
+            : null;
+
+        if ($variantImage instanceof MediaAttachment
+            && $variantImage->relationLoaded('mediaAsset')
+            && $variantImage->getRelation('mediaAsset') !== null) {
+            return (new AdminPrimaryImageResource($variantImage))->resolve($request)['url'];
+        }
+
+        $product = $item->relationLoaded('product') ? $item->getRelation('product') : null;
+        $productImage = $product instanceof Product && $product->relationLoaded('primaryProductImage')
+            ? $product->getRelation('primaryProductImage')
+            : null;
+
+        if ($productImage instanceof MediaAttachment
+            && $productImage->relationLoaded('mediaAsset')
+            && $productImage->getRelation('mediaAsset') !== null) {
+            return (new AdminPrimaryImageResource($productImage))->resolve($request)['url'];
+        }
+
+        return null;
     }
 }

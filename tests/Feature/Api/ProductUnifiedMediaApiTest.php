@@ -31,7 +31,7 @@ class ProductUnifiedMediaApiTest extends TestCase
         $this->seed(ProductCatalogSeeder::class);
     }
 
-    public function test_listing_and_featured_use_only_the_product_primary_image_and_ignore_legacy_media(): void
+    public function test_listing_and_featured_use_the_display_variant_primary_image_with_product_fallback(): void
     {
         $product = Product::where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
         $variant = $product->sellableItems()->where('is_default', true)->firstOrFail();
@@ -48,7 +48,7 @@ class ProductUnifiedMediaApiTest extends TestCase
             'secure_url' => 'https://example.test/legacy.jpg',
         ]);
 
-        $expected = Storage::disk('product-media-test')->url($productPrimary->mediaAsset->path);
+        $expected = Storage::disk('product-media-test')->url($variantPrimary->mediaAsset->path);
         $listing = collect($this->getJson('/api/v1/products')->assertOk()->json('data'))
             ->firstWhere('slug', $product->slug);
         $featured = collect($this->getJson('/api/v1/products/sections/featured')->assertOk()->json('data'))
@@ -57,7 +57,7 @@ class ProductUnifiedMediaApiTest extends TestCase
         $this->assertSame($expected, $listing['image']);
         $this->assertSame($expected, $featured['image']);
         $this->assertNotSame(Storage::disk('product-media-test')->url($otherVariantPrimary->mediaAsset->path), $listing['image']);
-        $this->assertNotSame(Storage::disk('product-media-test')->url($variantPrimary->mediaAsset->path), $listing['image']);
+        $this->assertNotSame(Storage::disk('product-media-test')->url($productPrimary->mediaAsset->path), $listing['image']);
         $this->assertNotSame('https://example.test/legacy.jpg', $listing['image']);
         $this->assertNotSame(Storage::disk('product-media-test')->url($variantFallback->mediaAsset->path), $listing['image']);
     }

@@ -27,7 +27,9 @@ class AdminProductController extends Controller
         $filters = $request->validated();
         $query = Product::query();
 
-        if (($filters['include_archived'] ?? false) === true) {
+        if (($filters['archive_state'] ?? null) === 'archived') {
+            $query->onlyTrashed();
+        } elseif (($filters['archive_state'] ?? null) === 'all' || (($filters['include_archived'] ?? false) === true)) {
             $query->withTrashed();
         }
         if (isset($filters['status'])) {
@@ -99,9 +101,9 @@ class AdminProductController extends Controller
         return (new AdminProductResource($this->loadProduct($product)))->response()->setStatusCode(201);
     }
 
-    public function show(Product $product): AdminProductResource
+    public function show(int $product): AdminProductResource
     {
-        return new AdminProductResource($this->loadProduct($product));
+        return new AdminProductResource($this->loadProduct(Product::withTrashed()->findOrFail($product)));
     }
 
     public function update(AdminProductRequest $request, Product $product): AdminProductResource

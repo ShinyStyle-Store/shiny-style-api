@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\AdminSellableItemIndexRequest;
 use App\Http\Requests\AdminSellableItemRequest;
 use App\Http\Resources\AdminSellableItemResource;
 use App\Models\Product;
@@ -15,9 +16,17 @@ use Illuminate\Validation\ValidationException;
 
 class AdminSellableItemController extends Controller
 {
-    public function index(Product $product)
+    public function index(AdminSellableItemIndexRequest $request, int $product)
     {
-        $items = $product->sellableItems()
+        $filters = $request->validated();
+        $product = Product::withTrashed()->findOrFail($product);
+        $items = $product->sellableItems();
+        if (($filters['archive_state'] ?? null) === 'archived') {
+            $items->onlyTrashed();
+        } elseif (($filters['archive_state'] ?? null) === 'all') {
+            $items->withTrashed();
+        }
+        $items = $items
             ->with(['optionValues.option'])
             ->ordered()
             ->get();
@@ -40,9 +49,12 @@ class AdminSellableItemController extends Controller
         return (new AdminSellableItemResource($this->loadItem($item)))->response()->setStatusCode(201);
     }
 
-    public function show(Product $product, int $variant): AdminSellableItemResource
+    public function show(int $product, int $variant): AdminSellableItemResource
     {
-        return new AdminSellableItemResource($this->loadItem($this->findItem($product, $variant)));
+        $product = Product::withTrashed()->findOrFail($product);
+        $item = $product->sellableItems()->withTrashed()->whereKey($variant)->firstOrFail();
+
+        return new AdminSellableItemResource($this->loadItem($item));
     }
 
     public function update(
@@ -68,7 +80,7 @@ class AdminSellableItemController extends Controller
         SellableItemManagementService $items,
     ): JsonResponse|Response {
         $item = $this->findItem($product, $variant);
-        $conflict = $items->archive($item);
+        $conflict = $items->archive($product, $item);
         if ($conflict !== null) {
             return response()->json([
                 'code' => $conflict,
@@ -80,16 +92,19 @@ class AdminSellableItemController extends Controller
     }
 
     public function restore(
-        Product $product,
+        int $product,
         int $variant,
         SellableItemManagementService $items,
     ): JsonResponse|AdminSellableItemResource {
-        $result = $items->restore($variant, $product->getKey());
+        $product = Product::withTrashed()->findOrFail($product);
+        SellableItem::withTrashed()->whereKey($variant)->where('product_id', $product->getKey())->firstOrFail();
+        $result = $items->restore($product, $variant);
         if (is_string($result)) {
             return response()->json([
                 'code' => $result,
                 'message' => match ($result) {
                     'variant_not_archived' => 'The variant is not archived.',
+                    'product_archived' => 'The parent product must be restored before restoring this variant.',
                     'variant_default_conflict' => 'The variant cannot be restored while another default variant exists.',
                     default => 'The variant cannot be restored in its current state.',
                 },

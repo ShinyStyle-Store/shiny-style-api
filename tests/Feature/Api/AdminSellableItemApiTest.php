@@ -188,6 +188,38 @@ class AdminSellableItemApiTest extends TestCase
             ->assertOk()->assertJsonPath('data.status', 'inactive');
     }
 
+    public function test_variant_archive_filters_archived_parent_reads_and_restore_policy_are_enforced(): void
+    {
+        $product = $this->product('archive-filter-variants');
+        $active = $this->variant($product, ['sku' => 'ACTIVE-FILTER']);
+        $archived = $this->variant($product, ['sku' => 'ARCHIVED-FILTER']);
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}/sellable-items")
+            ->assertOk()->assertJsonCount(1, 'data');
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}/sellable-items?archive_state=archived")
+            ->assertOk()->assertJsonPath('data.0.id', $archived->id)
+            ->assertJsonPath('data.0.archiveState', 'archived');
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}/sellable-items?archive_state=all")
+            ->assertOk()->assertJsonCount(2, 'data');
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}/sellable-items?archive_state=invalid")
+            ->assertUnprocessable()->assertJsonValidationErrors('archive_state');
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}/sellable-items/{$archived->id}")
+            ->assertOk()->assertJsonPath('data.archiveState', 'archived');
+        $this->withToken($this->adminToken)->patchJson("/api/v1/admin/products/{$product->id}/sellable-items/{$archived->id}", ['price' => '11.00'])
+            ->assertNotFound();
+        $otherProduct = $this->product('archive-filter-other');
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$otherProduct->id}/sellable-items/{$archived->id}/restore")
+            ->assertNotFound();
+
+        $product->delete();
+        $response = $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$product->id}/sellable-items/{$archived->id}/restore")
+            ->assertConflict()->assertJsonPath('code', 'product_archived');
+        $this->assertSame('The parent product must be restored before restoring this variant.', $response->json('message'));
+        $this->assertSoftDeleted('sellable_items', ['id' => $archived->id]);
+        $this->assertDatabaseHas('sellable_items', ['id' => $active->id, 'reserved_quantity' => 0]);
+    }
+
     public function test_reserved_variant_cannot_be_archived_and_unknown_fields_are_rejected(): void
     {
         $product = $this->product('reserved');

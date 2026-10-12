@@ -17,8 +17,9 @@ use Illuminate\Http\Response;
 
 final class AdminMediaController extends Controller
 {
-    public function productIndex(Product $product, AdminMediaManagementService $media): AnonymousResourceCollection
+    public function productIndex(int $product, AdminMediaManagementService $media): AnonymousResourceCollection
     {
+        $product = Product::withTrashed()->findOrFail($product);
         return AdminMediaAttachmentResource::collection($media->listing($product));
     }
 
@@ -50,8 +51,9 @@ final class AdminMediaController extends Controller
         return response()->noContent();
     }
 
-    public function sellableItemIndex(SellableItem $sellableItem, AdminMediaManagementService $media): AnonymousResourceCollection
+    public function sellableItemIndex(int $sellableItem, AdminMediaManagementService $media): AnonymousResourceCollection
     {
+        $sellableItem = SellableItem::withTrashed()->findOrFail($sellableItem);
         return AdminMediaAttachmentResource::collection($media->listing($sellableItem));
     }
 

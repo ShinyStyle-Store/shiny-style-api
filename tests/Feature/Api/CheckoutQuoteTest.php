@@ -37,6 +37,28 @@ class CheckoutQuoteTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_order_creation_rechecks_product_after_a_quote_when_product_is_archived(): void
+    {
+        $area = $this->shippingArea(70);
+        $item = $this->sellableItem(['stock_quantity' => 4]);
+
+        $this->postJson('/api/v1/checkout/quote', [
+            'shipping_area_id' => $area->id,
+            'items' => [['sellable_item_id' => $item->id, 'quantity' => 1]],
+        ])->assertOk();
+
+        Product::withTrashed()->findOrFail($item->product_id)->delete();
+
+        $this->withHeader('Idempotency-Key', (string) \Illuminate\Support\Str::uuid())
+            ->postJson('/api/v1/orders', [
+                'customer' => ['name' => 'Customer', 'phone' => '01110007513'],
+                'shipping' => ['shipping_area_id' => $area->id, 'address' => 'Address'],
+                'items' => [['sellable_item_id' => $item->id, 'quantity' => 1]],
+                'payment_method' => 'cash_on_delivery',
+            ])->assertUnprocessable();
+        $this->assertSame(0, (int) $item->refresh()->reserved_quantity);
+    }
+
     public function test_english_quotes_support_multiple_items_and_preserve_input_order(): void
     {
         $area = $this->shippingArea(0);

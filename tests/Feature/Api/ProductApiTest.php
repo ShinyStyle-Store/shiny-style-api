@@ -491,7 +491,7 @@ class ProductApiTest extends TestCase
         $this->assertNotSame((string) $deletedVariant->getKey(), $response->json('data.sellableItems.0.id'));
     }
 
-    public function test_active_default_variant_supplies_display_fields_even_when_out_of_stock(): void
+    public function test_out_of_stock_default_uses_first_available_variant_for_display_fields(): void
     {
         $product = $this->createProductWithVariant(
             ['slug' => 'default-out-of-stock-product'],
@@ -508,10 +508,42 @@ class ProductApiTest extends TestCase
 
         $this->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
-            ->assertJsonPath('data.price', 125)
-            ->assertJsonPath('data.originalPrice', 150)
+            ->assertJsonPath('data.price', 200)
+            ->assertJsonPath('data.originalPrice', 225)
             ->assertJsonPath('data.inStock', true)
-            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->orderBy('id')->firstOrFail()->getKey());
+            ->assertJsonPath('data.displayVariantId', (string) $product->sellableItems()->where('is_default', false)->firstOrFail()->getKey())
+            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', false)->firstOrFail()->getKey());
+    }
+
+    public function test_available_default_wins_over_a_cheaper_available_variant_across_public_surfaces(): void
+    {
+        $product = $this->createProductWithVariant(
+            ['slug' => 'available-default-priority-product', 'is_featured' => true],
+            ['price' => 250, 'stock_quantity' => 5],
+        );
+        $cheaper = $this->addVariant($product, [
+            'sku' => 'CHEAPER-'.strtoupper(uniqid()),
+            'price' => 180,
+            'stock_quantity' => 5,
+            'is_default' => false,
+            'sort_order' => 2,
+        ]);
+        $default = $product->sellableItems()->where('is_default', true)->firstOrFail();
+
+        $detail = $this->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $detail->assertJsonPath('data.price', 250)
+            ->assertJsonPath('data.displayVariantId', (string) $default->getKey());
+
+        $listing = collect($this->getJson('/api/v1/products?per_page=100')->assertOk()->json('data'))
+            ->firstWhere('slug', $product->slug);
+        $this->assertSame(250, $listing['price']);
+        $this->assertSame((string) $default->getKey(), $listing['displayVariantId']);
+
+        $home = collect($this->getJson('/api/v1/home/products?limit=20')->assertOk()->json('data.featured'))
+            ->firstWhere('slug', $product->slug);
+        $this->assertSame(250, $home['price']);
+        $this->assertSame((string) $default->getKey(), $home['displayVariantId']);
+        $this->assertNotSame((string) $cheaper->getKey(), $listing['displayVariantId']);
     }
 
     public function test_inactive_default_falls_back_to_first_active_in_stock_variant_by_id(): void
@@ -616,6 +648,7 @@ class ProductApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.price', 325)
             ->assertJsonPath('data.defaultSellableItemId', (string) $firstVariant->getKey())
+            ->assertJsonPath('data.displayVariantId', (string) $firstVariant->getKey())
             ->assertJsonPath('data.inStock', false);
     }
 
@@ -793,7 +826,8 @@ class ProductApiTest extends TestCase
         $detail = $this->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.inStock', true)
-            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', true)->value('id'))
+            ->assertJsonPath('data.defaultSellableItemId', (string) $available->getKey())
+            ->assertJsonPath('data.displayVariantId', (string) $available->getKey())
             ->assertJsonPath('data.sellableItems.0.inStock', false)
             ->assertJsonPath('data.sellableItems.1.inStock', true);
 
@@ -819,7 +853,8 @@ class ProductApiTest extends TestCase
             ->assertJsonPath('data.inStock', false)
             ->assertJsonPath('data.sellableItems.0.inStock', false)
             ->assertJsonPath('data.sellableItems.1.inStock', false)
-            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', true)->value('id'));
+            ->assertJsonPath('data.defaultSellableItemId', (string) $product->sellableItems()->where('is_default', true)->value('id'))
+            ->assertJsonPath('data.displayVariantId', (string) $product->sellableItems()->where('is_default', true)->value('id'));
 
         $listing = $this->getJson('/api/v1/products?per_page=100')->assertOk();
         $listingIndex = collect($listing->json('data'))
@@ -854,7 +889,8 @@ class ProductApiTest extends TestCase
         $this->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.inStock', true)
-            ->assertJsonPath('data.defaultSellableItemId', (string) $fallback->getKey());
+            ->assertJsonPath('data.defaultSellableItemId', (string) $fallback->getKey())
+            ->assertJsonPath('data.displayVariantId', (string) $fallback->getKey());
 
         $inactive = $this->addVariant($product, [
             'sku' => 'INACTIVE-'.strtoupper(uniqid()),

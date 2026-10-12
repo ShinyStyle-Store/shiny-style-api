@@ -15,7 +15,7 @@ class ProductListResource extends JsonResource
         $sellableItems = $this->publicSellableItems();
         $sellableItem = $this->displaySellableItem($sellableItems);
         $category = $this->primaryCategory();
-        $image = $this->primaryImage($sellableItems);
+        $image = $this->primaryImage($sellableItem);
 
         return [
             'id' => (string) $this->getKey(),
@@ -25,11 +25,10 @@ class ProductListResource extends JsonResource
                 'slug' => $category->slug,
                 'name' => $this->localizedValue($category->name_ar, $category->name_en),
             ] : null,
+            'displayVariantId' => $sellableItem ? (string) $sellableItem->getKey() : null,
             ...$this->pricePresentation($sellableItem),
             'badge' => $this->badge,
-            'inStock' => $sellableItems->contains(
-                fn ($item): bool => $item->availableQuantity() > 0,
-            ),
+            'inStock' => $sellableItem?->availableQuantity() > 0,
             'image' => $this->mediaUrl($image),
         ];
     }
@@ -105,9 +104,10 @@ class ProductListResource extends JsonResource
         return $this->localizedValue($value['ar'] ?? null, $value['en'] ?? null);
     }
 
-    protected function primaryImage(Collection $sellableItems)
+    protected function primaryImage(?SellableItem $sellableItem)
     {
-        return $this->productImages->first(fn ($attachment): bool => $attachment->is_primary);
+        return $sellableItem?->variantImages->first(fn ($attachment): bool => $attachment->is_primary)
+            ?? $this->productImages->first(fn ($attachment): bool => $attachment->is_primary);
     }
 
     protected function orderedAttachments(Collection $attachments): Collection

@@ -15,6 +15,7 @@ use App\Models\ReturnCorrection;
 use App\Models\ReturnReceipt;
 use App\Models\ReturnReceiptItem;
 use App\Models\SellableItem;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection as SupportCollection;
@@ -527,25 +528,82 @@ class PhysicalReturnService
 
     public function summary(Order $order): string
     {
-        $items = OrderItem::query()->where('order_id', $order->getKey())->get(['id', 'quantity']);
-        $returned = ReturnReceiptItem::query()
-            ->select('order_item_id')
-            ->selectRaw('SUM(effective_received_quantity) AS returned_quantity')
-            ->whereHas('receipt', fn ($query) => $query->where('order_id', $order->getKey())->whereNull('reversed_at'))
-            ->groupBy('order_item_id')
-            ->pluck('returned_quantity', 'order_item_id');
+        return $this->summaries(new EloquentCollection([$order]))[$order->getKey()]['return_summary'];
+    }
 
-        $hasReturn = false;
-        $isFull = true;
-        foreach ($items as $item) {
-            $quantity = (int) ($returned[$item->getKey()] ?? 0);
-            $hasReturn = $hasReturn || $quantity > 0;
-            if ($quantity < (int) $item->quantity) {
-                $isFull = false;
-            }
+    /** @return array<int, array{return_summary: string, return_workflow_status: ?string}> */
+    public function summaries(EloquentCollection $orders): array
+    {
+        $orderIds = $orders->modelKeys();
+        if ($orderIds === []) {
+            return [];
         }
 
-        return ! $hasReturn ? 'none' : ($isFull ? 'full' : 'partial');
+        $returnedByItem = DB::table('return_receipt_items as receipt_items')
+            ->join('return_receipts as receipts', 'receipts.id', '=', 'receipt_items.return_receipt_id')
+            ->whereIn('receipts.order_id', $orderIds)
+            ->whereNull('receipts.reversed_at')
+            ->select('receipt_items.order_item_id')
+            ->selectRaw('SUM(receipt_items.effective_received_quantity) AS returned_quantity')
+            ->groupBy('receipt_items.order_item_id');
+
+        $quantitiesByOrder = DB::table('order_items as items')
+            ->leftJoinSub($returnedByItem, 'returned_items', 'returned_items.order_item_id', '=', 'items.id')
+            ->whereIn('items.order_id', $orderIds)
+            ->select('items.order_id')
+            ->selectRaw('COUNT(items.id) AS item_count')
+            ->selectRaw('SUM(CASE WHEN COALESCE(returned_items.returned_quantity, 0) > 0 THEN 1 ELSE 0 END) AS items_with_returns')
+            ->selectRaw('SUM(CASE WHEN COALESCE(returned_items.returned_quantity, 0) >= items.quantity THEN 1 ELSE 0 END) AS fully_received_items')
+            ->groupBy('items.order_id')
+            ->get()
+            ->keyBy('order_id');
+
+        $workflowsByOrder = OrderReturn::query()
+            ->whereIn('order_id', $orderIds)
+            ->get(['order_id', 'status'])
+            ->keyBy('order_id');
+
+        $summaries = [];
+        foreach ($orders as $order) {
+            $quantities = $quantitiesByOrder->get($order->getKey());
+            $hasReturn = (int) ($quantities?->items_with_returns ?? 0) > 0;
+            $isFull = $quantities !== null
+                && (int) $quantities->item_count > 0
+                && (int) $quantities->fully_received_items === (int) $quantities->item_count;
+            $workflow = $workflowsByOrder->get($order->getKey());
+
+            $summaries[(int) $order->getKey()] = [
+                'return_summary' => ! $hasReturn ? 'none' : ($isFull ? 'full' : 'partial'),
+                'return_workflow_status' => $workflow?->status?->value,
+            ];
+        }
+
+        return $summaries;
+    }
+
+    public function applySummaryFilter(Builder $query, string $status): void
+    {
+        if ($status === 'awaiting_return') {
+            $query->whereHas('orderReturn', fn (Builder $workflow): Builder => $workflow->where('status', OrderReturnStatus::WaitingForReturn->value));
+
+            return;
+        }
+
+        if ($status === 'received') {
+            $query->whereDoesntHave('orderReturn', fn (Builder $workflow): Builder => $workflow->where('status', OrderReturnStatus::WaitingForReturn->value))
+                ->whereHas('returnReceipts', function (Builder $receipt): void {
+                    $receipt->whereNull('reversed_at')
+                        ->whereHas('items', fn (Builder $item): Builder => $item->where('effective_received_quantity', '>', 0));
+                });
+
+            return;
+        }
+
+        $query->whereDoesntHave('orderReturn', fn (Builder $workflow): Builder => $workflow->where('status', OrderReturnStatus::WaitingForReturn->value))
+            ->whereDoesntHave('returnReceipts', function (Builder $receipt): void {
+                $receipt->whereNull('reversed_at')
+                    ->whereHas('items', fn (Builder $item): Builder => $item->where('effective_received_quantity', '>', 0));
+            });
     }
 
     public function loadReceipt(ReturnReceipt $receipt, bool $withCorrections = true): ReturnReceipt

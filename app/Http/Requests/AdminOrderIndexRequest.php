@@ -13,7 +13,7 @@ class AdminOrderIndexRequest extends FormRequest
 {
     private const QUERY_KEYS = [
         'search', 'status', 'contact_status', 'payment_method', 'payment_status',
-        'shipping_area_id', 'date_from', 'date_to', 'sort', 'per_page', 'page',
+        'return_status', 'refund_status', 'shipping_area_id', 'date_from', 'date_to', 'sort', 'per_page', 'page',
     ];
 
     public function authorize(): bool
@@ -37,6 +37,8 @@ class AdminOrderIndexRequest extends FormRequest
             'contact_status' => ['sometimes', 'string', Rule::notIn(['']), Rule::enum(ContactStatus::class)],
             'payment_method' => ['sometimes', 'string', Rule::notIn(['']), Rule::enum(PaymentMethod::class)],
             'payment_status' => ['sometimes', 'string', Rule::notIn(['']), Rule::enum(PaymentStatus::class)],
+            'return_status' => ['sometimes', 'string', Rule::in(['awaiting_return', 'received', 'none'])],
+            'refund_status' => ['sometimes', 'string', Rule::in(['review', 'recorded', 'none'])],
             'shipping_area_id' => ['sometimes', 'required', 'integer', 'exists:shipping_areas,id'],
             'date_from' => ['sometimes', 'required', 'date_format:Y-m-d'],
             'date_to' => ['sometimes', 'required', 'date_format:Y-m-d'],
