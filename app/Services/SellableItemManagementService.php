@@ -31,6 +31,7 @@ class SellableItemManagementService
 
             $item->save();
             $item->optionValues()->sync($valueIds);
+            $this->assertReadyIfRequired($lockedProduct);
 
             return $item;
         });
@@ -64,6 +65,9 @@ class SellableItemManagementService
             if ($hasValues) {
                 $locked->optionValues()->sync($valueIds);
             }
+            if ($hasValues || array_key_exists('status', $data) || array_key_exists('is_default', $data)) {
+                $this->assertReadyIfRequired($lockedProduct);
+            }
 
             return $locked;
         });
@@ -78,6 +82,7 @@ class SellableItemManagementService
                 return 'variant_has_reservations';
             }
             $locked->delete();
+            $this->assertReadyIfRequired($lockedProduct);
 
             return null;
         });
@@ -102,6 +107,7 @@ class SellableItemManagementService
             }
             $item->status = 'inactive';
             $item->restore();
+            $this->assertReadyIfRequired($lockedProduct);
 
             return $item;
         });
@@ -153,6 +159,13 @@ class SellableItemManagementService
     {
         if ($stock < $reserved) {
             throw ValidationException::withMessages(['stock_quantity' => 'Stock quantity cannot be lower than reserved quantity.']);
+        }
+    }
+
+    private function assertReadyIfRequired(Product $product): void
+    {
+        if (app(ProductReadinessService::class)->isRequired($product)) {
+            app(ProductReadinessService::class)->assertReady($product);
         }
     }
 

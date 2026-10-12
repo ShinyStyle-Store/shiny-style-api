@@ -153,16 +153,14 @@ final class AdminProductCreationService
 
     private function assertLifecycle(Product $product): void
     {
-        if ($product->status !== 'active' && $product->published_at === null) {
+        if (! app(ProductReadinessService::class)->isRequired($product)) {
             return;
         }
 
         if (! $product->categories()->where('categories.status', 'active')->exists()) {
             throw ValidationException::withMessages(['status' => 'An active product must have an active category.']);
         }
-        if (! $product->sellableItems()->where('status', 'active')->exists()) {
-            throw ValidationException::withMessages(['status' => 'An active product must have an active sellable item.']);
-        }
+        app(ProductReadinessService::class)->assertReady($product);
     }
 
     /** @param list<MediaAttachment> $attachments @param list<array{id: int, disk: string, path: string}> $assets */

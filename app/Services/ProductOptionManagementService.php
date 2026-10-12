@@ -20,14 +20,19 @@ class ProductOptionManagementService
                 ]);
             }
 
-            return $this->saveOption($lockedProduct, $data);
+            $option = $this->saveOption($lockedProduct, $data);
+            $this->assertReadyIfRequired($lockedProduct);
+
+            return $option;
         });
     }
 
-    public function updateOption(ProductOption $option, array $data): ProductOption
+    public function updateOption(Product $product, ProductOption $option, array $data): ProductOption
     {
-        return DB::transaction(function () use ($option, $data): ProductOption {
-            $locked = ProductOption::query()->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $option, $data): ProductOption {
+            $lockedProduct = $this->lockProduct($product);
+            $locked = ProductOption::query()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
             $this->assertNotArchived($locked);
             $this->fillOption($locked, $data);
             $locked->save();
@@ -36,10 +41,12 @@ class ProductOptionManagementService
         });
     }
 
-    public function createValue(ProductOption $option, array $data): ProductOptionValue
+    public function createValue(Product $product, ProductOption $option, array $data): ProductOptionValue
     {
-        return DB::transaction(function () use ($option, $data): ProductOptionValue {
-            $locked = ProductOption::query()->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $option, $data): ProductOptionValue {
+            $lockedProduct = $this->lockProduct($product);
+            $locked = ProductOption::query()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
             $this->assertNotArchived($locked);
 
             $value = new ProductOptionValue;
@@ -52,10 +59,14 @@ class ProductOptionManagementService
         });
     }
 
-    public function updateValue(ProductOptionValue $value, array $data): ProductOptionValue
+    public function updateValue(Product $product, ProductOptionValue $value, array $data): ProductOptionValue
     {
-        return DB::transaction(function () use ($value, $data): ProductOptionValue {
-            $locked = ProductOptionValue::query()->whereKey($value->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $value, $data): ProductOptionValue {
+            $lockedProduct = $this->lockProduct($product);
+            $option = ProductOption::query()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($value->product_option_id)->lockForUpdate()->firstOrFail();
+            $locked = ProductOptionValue::query()->where('product_option_id', $option->getKey())
+                ->whereKey($value->getKey())->lockForUpdate()->firstOrFail();
             $this->assertNotArchived($locked);
             $locked->fill($data);
             $this->fillValueNormalized($locked);
@@ -65,53 +76,71 @@ class ProductOptionManagementService
         });
     }
 
-    public function archiveOption(ProductOption $option): ?string
+    public function archiveOption(Product $product, ProductOption $option): ?string
     {
-        return DB::transaction(function () use ($option): ?string {
-            $locked = ProductOption::query()->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $option): ?string {
+            $lockedProduct = $this->lockProduct($product);
+            $locked = ProductOption::query()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
             if ($locked->values()->withTrashed()->whereHas('sellableItems')->exists()) {
                 return 'option_in_use';
             }
             $locked->delete();
+            $this->assertReadyIfRequired($lockedProduct);
 
             return null;
         });
     }
 
-    public function restoreOption(int $optionId): ProductOption|string
+    public function restoreOption(Product $product, int $optionId): ProductOption|string
     {
-        return DB::transaction(function () use ($optionId): ProductOption|string {
-            $option = ProductOption::withTrashed()->whereKey($optionId)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $optionId): ProductOption|string {
+            $lockedProduct = $this->lockProduct($product);
+            $option = ProductOption::withTrashed()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($optionId)->lockForUpdate()->firstOrFail();
             if (! $option->trashed()) {
                 return 'option_not_archived';
             }
             $option->restore();
+            if (app(ProductReadinessService::class)->isRequired($lockedProduct)) {
+                app(ProductReadinessService::class)->assertReady($lockedProduct);
+            }
 
             return $option;
         });
     }
 
-    public function archiveValue(ProductOptionValue $value): ?string
+    public function archiveValue(Product $product, ProductOptionValue $value): ?string
     {
-        return DB::transaction(function () use ($value): ?string {
-            $locked = ProductOptionValue::query()->whereKey($value->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $value): ?string {
+            $lockedProduct = $this->lockProduct($product);
+            $option = ProductOption::query()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($value->product_option_id)->lockForUpdate()->firstOrFail();
+            $locked = ProductOptionValue::query()->where('product_option_id', $option->getKey())
+                ->whereKey($value->getKey())->lockForUpdate()->firstOrFail();
             if ($locked->sellableItems()->exists()) {
                 return 'value_in_use';
             }
             $locked->delete();
+            $this->assertReadyIfRequired($lockedProduct);
 
             return null;
         });
     }
 
-    public function restoreValue(int $valueId): ProductOptionValue|string
+    public function restoreValue(Product $product, int $valueId, int $optionId): ProductOptionValue|string
     {
-        return DB::transaction(function () use ($valueId): ProductOptionValue|string {
-            $value = ProductOptionValue::withTrashed()->whereKey($valueId)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($product, $valueId, $optionId): ProductOptionValue|string {
+            $lockedProduct = $this->lockProduct($product);
+            $option = ProductOption::withTrashed()->where('product_id', $lockedProduct->getKey())
+                ->whereKey($optionId)->lockForUpdate()->firstOrFail();
+            $value = ProductOptionValue::withTrashed()->where('product_option_id', $option->getKey())
+                ->whereKey($valueId)->lockForUpdate()->firstOrFail();
             if (! $value->trashed()) {
                 return 'value_not_archived';
             }
             $value->restore();
+            $this->assertReadyIfRequired($lockedProduct);
 
             return $value;
         });
@@ -152,6 +181,18 @@ class ProductOptionManagementService
             throw ValidationException::withMessages([
                 'resource' => 'Archived option resources cannot be modified.',
             ]);
+        }
+    }
+
+    private function lockProduct(Product $product): Product
+    {
+        return Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+    }
+
+    private function assertReadyIfRequired(Product $product): void
+    {
+        if (app(ProductReadinessService::class)->isRequired($product)) {
+            app(ProductReadinessService::class)->assertReady($product);
         }
     }
 }

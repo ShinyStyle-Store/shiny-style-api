@@ -158,6 +158,21 @@ class AdminSellableItemApiTest extends TestCase
         $this->assertDatabaseHas('sellable_items', ['id' => $second->json('data.id'), 'is_default' => true, 'price' => '12.50']);
     }
 
+    public function test_disabling_the_last_active_variant_of_an_active_product_rolls_back(): void
+    {
+        $product = $this->product('active-simple');
+        $product->update(['status' => 'active']);
+        $variant = $this->createVariantThroughApi($product, [], 'LAST-ACTIVE', ['status' => 'active']);
+        $variantId = (int) $variant->json('data.id');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson("/api/v1/admin/products/{$product->id}/sellable-items/{$variantId}", [
+            'status' => 'inactive',
+        ])->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+
+        $this->assertDatabaseHas('sellable_items', ['id' => $variantId, 'status' => 'active', 'deleted_at' => null]);
+    }
+
     public function test_patch_preserves_or_validates_option_assignments_by_product_state(): void
     {
         [$product, $values] = $this->configuredProduct();
