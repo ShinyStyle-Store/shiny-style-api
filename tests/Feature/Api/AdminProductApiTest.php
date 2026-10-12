@@ -10,6 +10,7 @@ use App\Models\MediaAsset;
 use App\Models\MediaAttachment;
 use App\Models\Product;
 use App\Models\ProductOption;
+use App\Models\ProductOptionValue;
 use App\Models\SellableItem;
 use App\Models\User;
 use App\Services\MediaService;
@@ -541,6 +542,143 @@ class AdminProductApiTest extends TestCase
         $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
             'status' => 'active', 'published_at' => now()->subMinute()->toISOString(),
         ])->assertOk();
+    }
+
+    public function test_activation_rejects_products_without_exactly_one_active_simple_variant(): void
+    {
+        $category = $this->category('simple-ready');
+        $product = $this->product('simple-readiness');
+        $product->categories()->sync([$category->id => ['is_primary' => true]]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, ['status' => 'active'])
+            ->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+
+        $first = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SIMPLE-ONE', 'price' => 10,
+            'stock_quantity' => 0, 'status' => 'active', 'is_default' => true,
+        ]);
+        SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SIMPLE-TWO', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'active', 'is_default' => false,
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, ['status' => 'active'])
+            ->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+
+        $first->delete();
+        SellableItem::query()->where('product_id', $product->id)->where('sku', 'SIMPLE-TWO')->update(['status' => 'inactive']);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, ['status' => 'active'])
+            ->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+    }
+
+    public function test_activation_ignores_archived_and_inactive_variants_when_one_active_simple_variant_exists(): void
+    {
+        $category = $this->category('simple-single-ready');
+        $product = $this->product('simple-single-readiness');
+        $product->categories()->sync([$category->id => ['is_primary' => true]]);
+        $active = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SIMPLE-ACTIVE', 'price' => 10,
+            'stock_quantity' => 0, 'status' => 'active', 'is_default' => false,
+        ]);
+        SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SIMPLE-INACTIVE', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'inactive', 'is_default' => false,
+        ]);
+        $archived = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SIMPLE-ARCHIVED', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'active', 'is_default' => false,
+        ]);
+        $archived->delete();
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'status' => 'active', 'published_at' => now()->subMinute()->toISOString(),
+        ])->assertOk();
+
+        $this->assertDatabaseHas('sellable_items', ['id' => $active->id, 'stock_quantity' => 0]);
+    }
+
+    public function test_past_publication_date_on_inactive_product_does_not_require_readiness(): void
+    {
+        $product = $this->product('inactive-past-publication', [
+            'status' => 'inactive', 'published_at' => now()->subDay(),
+        ]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'name_en' => 'Updated inactive product',
+        ])->assertOk();
+    }
+
+    public function test_scheduling_a_product_requires_the_same_readiness_as_activation(): void
+    {
+        $category = $this->category('scheduled-ready');
+        $product = $this->product('scheduled-readiness');
+        $product->categories()->sync([$category->id => ['is_primary' => true]]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'published_at' => now()->addDay()->toISOString(),
+        ])->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+
+        $this->assertDatabaseHas('products', ['id' => $product->id, 'published_at' => null]);
+    }
+
+    public function test_activation_rejects_an_incomplete_active_variant_even_when_the_default_is_complete(): void
+    {
+        $category = $this->category('complete-default');
+        $product = $this->product('incomplete-nondefault');
+        $product->categories()->sync([$category->id => ['is_primary' => true]]);
+        $option = ProductOption::create([
+            'product_id' => $product->id, 'code' => 'size', 'name_ar' => 'المقاس', 'name_en' => 'Size',
+        ]);
+        $value = ProductOptionValue::create([
+            'product_option_id' => $option->id, 'code' => 'small', 'value_ar' => 'صغير', 'value_en' => 'Small',
+        ]);
+        $default = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'READY-DEFAULT', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'active', 'is_default' => true,
+        ]);
+        $default->optionValues()->sync([$value->id]);
+        $incomplete = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'INCOMPLETE-ACTIVE', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'active', 'is_default' => false,
+        ]);
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'status' => 'active',
+        ])->assertUnprocessable()->assertJsonValidationErrors("sellable_items.{$incomplete->id}.option_value_ids");
+
+        $this->assertDatabaseHas('products', ['id' => $product->id, 'status' => 'draft']);
+        $this->assertDatabaseHas('sellable_items', ['id' => $default->id, 'is_default' => true]);
+        $this->assertDatabaseMissing('sellable_item_option_values', ['sellable_item_id' => $incomplete->id]);
+    }
+
+    public function test_activation_rejects_an_active_variant_linked_to_archived_option_values(): void
+    {
+        $category = $this->category('archived-value-link');
+        $product = $this->product('archived-value-link');
+        $product->categories()->sync([$category->id => ['is_primary' => true]]);
+        $option = ProductOption::create([
+            'product_id' => $product->id, 'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $value = ProductOptionValue::create([
+            'product_option_id' => $option->id, 'code' => 'red', 'value_ar' => 'أحمر', 'value_en' => 'Red',
+        ]);
+        $item = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'ARCHIVED-LINK', 'price' => 10,
+            'stock_quantity' => 1, 'status' => 'active', 'is_default' => true,
+        ]);
+        $item->optionValues()->sync([$value->id]);
+        $option->delete();
+        $value->delete();
+
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/products/'.$product->id, [
+            'status' => 'active',
+        ])->assertUnprocessable()->assertJsonValidationErrors("sellable_items.{$item->id}.option_value_ids");
+
+        $this->assertDatabaseHas('sellable_item_option_values', [
+            'sellable_item_id' => $item->id, 'product_option_value_id' => $value->id,
+        ]);
     }
 
     public function test_archive_and_restore_preserve_relationships_and_never_publish_on_restore(): void

@@ -11,6 +11,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\SellableItem;
 use App\Models\User;
+use App\Services\AdminProductSummaryQuery;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -44,6 +45,68 @@ class AdminFullOrderReturnTest extends TestCase
         $this->assertSame($before->total, $order->fresh()->total);
         $this->assertSame(OrderStatus::DeliveryRefused, $order->fresh()->status);
         $this->assertSame(OrderReturnStatus::Received, $order->fresh()->orderReturn->status);
+    }
+
+    public function test_old_order_return_restocks_the_superseded_source_without_changing_snapshots_or_current_stock(): void
+    {
+        [$order, $items, $source] = $this->workflowOrder([2]);
+        $item = $items[0];
+        $item->forceFill([
+            'sku' => 'OLD-SOURCE-SKU',
+            'product_name_en' => 'Historical product name',
+            'options_snapshot' => [[
+                'option_name_ar' => 'اللون', 'option_name_en' => 'Color', 'value_ar' => 'أحمر', 'value_en' => 'Red',
+            ]],
+        ])->saveQuietly();
+        $snapshotsBefore = $item->fresh()->only([
+            'sellable_item_id', 'sku', 'product_name_ar', 'product_name_en', 'options_snapshot', 'unit_price', 'line_total',
+        ]);
+
+        $token = $this->adminToken();
+        $source->forceFill(['stock_quantity' => 8, 'reserved_quantity' => 0])->saveQuietly();
+        $context = $this->withToken($token)
+            ->getJson("/api/v1/admin/products/{$source->product_id}/conversion-context/{$source->id}")
+            ->assertOk()->json('data');
+        $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson("/api/v1/admin/products/{$source->product_id}/convert-simple-item/{$source->id}", [
+                'context_token' => $context['contextToken'],
+                'options' => [[
+                    'ref' => 'size-option', 'code' => 'size', 'name_ar' => 'المقاس', 'name_en' => 'Size', 'sort_order' => 0,
+                    'values' => [
+                        ['ref' => 'small', 'code' => 'small', 'value_ar' => 'صغير', 'value_en' => 'Small', 'sort_order' => 0],
+                        ['ref' => 'large', 'code' => 'large', 'value_ar' => 'كبير', 'value_en' => 'Large', 'sort_order' => 1],
+                    ],
+                ]],
+                'variants' => [
+                    ['ref' => 'small-variant', 'sku' => 'CURRENT-SMALL-'.Str::upper(Str::random(6)), 'price' => '110.00', 'stock_quantity' => 4, 'sort_order' => 0, 'option_value_refs' => ['small']],
+                    ['ref' => 'large-variant', 'sku' => 'CURRENT-LARGE-'.Str::upper(Str::random(6)), 'price' => '110.00', 'stock_quantity' => 4, 'sort_order' => 1, 'option_value_refs' => ['large']],
+                ],
+                'default_variant_ref' => 'small-variant',
+            ])->assertCreated();
+        $currentVariants = SellableItem::query()->where('product_id', $source->product_id)
+            ->where('status', 'active')->whereNull('superseded_at')->get();
+        $currentStockBefore = (int) $currentVariants->sum('stock_quantity');
+        $this->assertSame(8, $currentStockBefore);
+        $this->createDecision($token, $order);
+        $response = $this->receipt($token, $order, [
+            'default_reason' => 'changed_mind',
+            'items' => [['order_item_id' => $item->id, 'received_quantity' => 2, 'restock_quantity' => 2]],
+        ])->assertCreated();
+
+        $this->assertSame($source->id, (int) $response->json('data.items.0.sellable_item_id'));
+        $this->assertSame(2, (int) $source->fresh()->stock_quantity);
+        $this->assertSame('inactive', $source->fresh()->status);
+        $this->assertNotNull($source->fresh()->superseded_at);
+        $this->assertSame($currentStockBefore, (int) $currentVariants->fresh()->sum('stock_quantity'));
+        $this->assertSame($snapshotsBefore, $item->fresh()->only(array_keys($snapshotsBefore)));
+
+        $summary = app(AdminProductSummaryQuery::class)->hydrate($source->product()->firstOrFail()->fresh());
+        $this->assertSame(8, $summary->active_stock_total);
+        $this->assertDatabaseHas('return_receipt_items', [
+            'return_receipt_id' => $response->json('data.id'),
+            'order_item_id' => $item->id,
+            'sellable_item_id' => $source->id,
+        ]);
     }
 
     public function test_full_receipt_rejects_incomplete_items_without_mutation(): void

@@ -145,7 +145,7 @@ class AdminProductOptionApiTest extends TestCase
 
     public function test_referenced_options_and_values_cannot_be_archived(): void
     {
-        $product = $this->product();
+        $product = $this->product('referenced-option', ['status' => 'active']);
         $option = $this->option($product);
         $value = $this->value($option);
         SellableItem::create([
@@ -182,6 +182,43 @@ class AdminProductOptionApiTest extends TestCase
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$product->id}/options/{$option->id}/restore")
             ->assertOk()->assertJsonPath('data.id', $option->id);
+    }
+
+    public function test_restoring_an_option_that_makes_an_active_product_incomplete_rolls_back(): void
+    {
+        $product = $this->product('restore-incomplete', ['status' => 'active']);
+        $option = $this->option($product);
+        $this->value($option);
+        $item = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'RESTORE-INCOMPLETE-'.Str::upper(Str::random(5)),
+            'price' => 10, 'stock_quantity' => 1, 'status' => 'active', 'is_default' => true,
+        ]);
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$product->id}/options/{$option->id}/archive")
+            ->assertNoContent();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$product->id}/options/{$option->id}/restore")
+            ->assertUnprocessable()->assertJsonValidationErrors("sellable_items.{$item->id}.option_value_ids");
+
+        $this->assertSoftDeleted('product_options', ['id' => $option->id]);
+    }
+
+    public function test_archiving_an_unused_option_cannot_leave_an_active_product_with_multiple_simple_variants(): void
+    {
+        $product = $this->product('archive-option-readiness', ['status' => 'active']);
+        $option = $this->option($product);
+        $this->value($option);
+        foreach (['ARCHIVE-ONE', 'ARCHIVE-TWO'] as $sku) {
+            SellableItem::create([
+                'product_id' => $product->id, 'sku' => $sku, 'price' => 10,
+                'stock_quantity' => 1, 'status' => 'active', 'is_default' => $sku === 'ARCHIVE-ONE',
+            ]);
+        }
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$product->id}/options/{$option->id}/archive")
+            ->assertUnprocessable()->assertJsonValidationErrors('sellable_items');
+
+        $this->assertDatabaseHas('product_options', ['id' => $option->id, 'deleted_at' => null]);
     }
 
     public function test_active_product_with_existing_variants_cannot_gain_a_new_option(): void

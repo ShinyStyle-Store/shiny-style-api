@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\ProductConversionConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\AdminSellableItemIndexRequest;
 use App\Http\Requests\AdminSellableItemRequest;
@@ -62,10 +63,12 @@ class AdminSellableItemController extends Controller
         Product $product,
         int $variant,
         SellableItemManagementService $items,
-    ): AdminSellableItemResource {
+    ): JsonResponse|AdminSellableItemResource {
         $item = $this->findItem($product, $variant);
         try {
             $updated = $items->update($item, $request->validated());
+        } catch (ProductConversionConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
         } catch (QueryException $exception) {
             $this->convertIntegrityFailure($exception);
             throw $exception;
@@ -84,7 +87,10 @@ class AdminSellableItemController extends Controller
         if ($conflict !== null) {
             return response()->json([
                 'code' => $conflict,
-                'message' => 'A variant with reservations cannot be archived.',
+                'message' => match ($conflict) {
+                    'variant_superseded' => 'A superseded source item cannot be archived.',
+                    default => 'A variant with reservations cannot be archived.',
+                },
             ], 409);
         }
 
@@ -106,6 +112,7 @@ class AdminSellableItemController extends Controller
                     'variant_not_archived' => 'The variant is not archived.',
                     'product_archived' => 'The parent product must be restored before restoring this variant.',
                     'variant_default_conflict' => 'The variant cannot be restored while another default variant exists.',
+                    'variant_superseded' => 'A superseded source item cannot be restored for sale.',
                     default => 'The variant cannot be restored in its current state.',
                 },
             ], 409);

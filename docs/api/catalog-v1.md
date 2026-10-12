@@ -89,6 +89,25 @@ Only visible products are listed: the product must be active and published,
 have an active sellable item, and have an active category. Results are ordered
 by `published_at` descending and then `id` descending.
 
+### Admin product readiness
+
+An admin product must satisfy its sellable-item and option-value rules before
+it can be activated or scheduled for publication. A future `published_at` is a
+schedule; a past publication timestamp left on an inactive product is not.
+Draft and inactive products without a future publication time can be prepared
+with incomplete variant sets. Active variants must have valid assignments for
+all active options. A product without active options must have exactly one
+active, unarchived variant with no option values. Inactive and archived
+variants do not count toward that rule. Stock may be zero, and products with
+options do not need every possible option combination.
+
+Catalog changes that affect variants or option assignments are checked against
+the final product state in the same transaction. This prevents changes from
+leaving an active or scheduled product incomplete. Existing inactive products
+are not automatically repaired or deactivated; they are checked when an admin
+activates or schedules them. Variant-structure changes are checked when the
+product is already active or has a future publication time.
+
 Each item has this exact resource shape (IDs are strings and prices are JSON
 numbers):
 

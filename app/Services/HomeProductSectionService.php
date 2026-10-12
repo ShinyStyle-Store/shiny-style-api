@@ -4,8 +4,8 @@ namespace App\Services;
 
 use App\Enums\OrderStatus;
 use App\Models\OrderItem;
-use Carbon\CarbonImmutable;
 use App\Models\Product;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -123,12 +123,12 @@ final class HomeProductSectionService
         $visibleCategoryIds ??= $this->hierarchy->effectiveVisibleIds();
         $relations = [
             'categories' => fn ($query) => $query->whereIn('categories.id', $visibleCategoryIds)->ordered(),
-            'sellableItems' => fn ($query) => $query->active()->orderBy('id')->with(['variantImages.mediaAsset']),
+            'sellableItems' => fn ($query) => $query->active()->whereNull('superseded_at')->orderBy('id')->with(['variantImages.mediaAsset']),
             'productImages.mediaAsset',
         ];
 
         if ($includeVariantImages) {
-            $relations['sellableItems'] = fn ($query) => $query->active()->orderBy('id')->with(['variantImages.mediaAsset']);
+            $relations['sellableItems'] = fn ($query) => $query->active()->whereNull('superseded_at')->orderBy('id')->with(['variantImages.mediaAsset']);
         }
 
         return $relations;

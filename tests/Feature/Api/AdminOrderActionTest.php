@@ -15,8 +15,8 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\SellableItem;
-use App\Services\MediaService;
 use App\Models\User;
+use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
@@ -181,6 +181,45 @@ class AdminOrderActionTest extends TestCase
             ->assertOk()->assertJsonPath('data.status', 'shipped')
             ->assertJsonPath('data.payment_status', PaymentStatus::Unpaid->value);
         $this->assertInventory($confirmedItem, 6, 0);
+    }
+
+    public function test_historical_shipment_and_cancellation_still_update_a_superseded_source_by_id(): void
+    {
+        [$shipmentOrder, $source] = $this->orderWithReservation(stock: 5, reserved: 1, quantity: 1);
+        $shipmentItem = $shipmentOrder->items()->firstOrFail();
+        $snapshot = $shipmentItem->only(['sellable_item_id', 'sku', 'product_name_en', 'options_snapshot', 'unit_price', 'line_total']);
+        $source->forceFill(['status' => 'inactive', 'superseded_at' => now()])->saveQuietly();
+
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($shipmentOrder, 'confirm'), [])->assertOk();
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($shipmentOrder, 'prepare'), [])->assertOk();
+        $this->withToken($this->adminToken)->postJson($this->actionUrl($shipmentOrder, 'ship'), [])
+            ->assertOk()->assertJsonPath('data.status', OrderStatus::Shipped->value);
+        $this->assertInventory($source, 4, 0);
+        $this->assertSame($snapshot, $shipmentItem->fresh()->only(array_keys($snapshot)));
+
+        $cancellationOrder = Order::factory()->create();
+        $cancellationItem = OrderItem::factory()->create([
+            'order_id' => $cancellationOrder->id,
+            'product_id' => $source->product_id,
+            'sellable_item_id' => $source->id,
+            'quantity' => 1,
+            'sku' => 'HISTORICAL-CANCEL-SNAPSHOT',
+        ]);
+        $cancellationSnapshot = $cancellationItem->only([
+            'sellable_item_id', 'sku', 'product_name_en', 'options_snapshot', 'unit_price', 'line_total',
+        ]);
+        $source->refresh()->forceFill(['reserved_quantity' => 1])->saveQuietly();
+        $this->assertSame(1, $cancellationItem->quantity);
+        $this->assertSame(OrderStatus::PendingConfirmation, $cancellationOrder->fresh()->status);
+        $this->assertInventory($source, 4, 1);
+
+        $cancellationResponse = $this->withToken($this->adminToken)->postJson($this->actionUrl($cancellationOrder, 'cancel'), [
+            'reason' => 'customer_cancelled',
+        ]);
+        $cancellationResponse->assertOk()->assertJsonPath('data.status', OrderStatus::Cancelled->value);
+        $this->assertInventory($source, 4, 0);
+        $this->assertSame($cancellationSnapshot, $cancellationItem->fresh()->only(array_keys($cancellationSnapshot)));
+        $this->assertNotNull($source->fresh()->superseded_at);
     }
 
     public function test_deliver_api_maps_incompatible_cod_payment_states_to_conflict_without_mutation(): void

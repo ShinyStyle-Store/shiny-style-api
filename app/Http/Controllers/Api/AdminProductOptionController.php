@@ -69,7 +69,7 @@ class AdminProductOptionController extends Controller
     ): AdminProductOptionResource {
         $model = $this->findOption($product, $option);
         try {
-            $updated = $options->updateOption($model, $request->validated());
+            $updated = $options->updateOption($product, $model, $request->validated());
         } catch (QueryException $exception) {
             $this->convertDuplicate($exception, 'option', $request->validated(), $product->getKey(), $model->getKey());
             throw $exception;
@@ -84,7 +84,7 @@ class AdminProductOptionController extends Controller
         ProductOptionManagementService $options,
     ): JsonResponse|Response {
         $model = $this->findOption($product, $option);
-        $conflict = $options->archiveOption($model);
+        $conflict = $options->archiveOption($product, $model);
         if ($conflict !== null) {
             return response()->json([
                 'code' => $conflict,
@@ -104,7 +104,7 @@ class AdminProductOptionController extends Controller
             ->whereKey($option)
             ->where('product_id', $product->getKey())
             ->firstOrFail();
-        $result = $options->restoreOption($model->getKey());
+        $result = $options->restoreOption($product, $model->getKey());
         if (is_string($result)) {
             return response()->json([
                 'code' => $result,
@@ -132,7 +132,7 @@ class AdminProductOptionController extends Controller
     ): JsonResponse|AdminProductOptionValueResource {
         $parent = $this->findOption($product, $option);
         try {
-            $value = $options->createValue($parent, $request->validated());
+            $value = $options->createValue($product, $parent, $request->validated());
         } catch (QueryException $exception) {
             $this->convertDuplicate($exception, 'value', $request->validated(), $parent->getKey());
             throw $exception;
@@ -159,7 +159,7 @@ class AdminProductOptionController extends Controller
     ): AdminProductOptionValueResource {
         $model = $this->findValue($product, $option, $value);
         try {
-            $updated = $options->updateValue($model, $request->validated());
+            $updated = $options->updateValue($product, $model, $request->validated());
         } catch (QueryException $exception) {
             $this->convertDuplicate($exception, 'value', $request->validated(), $model->product_option_id, $model->getKey());
             throw $exception;
@@ -175,7 +175,7 @@ class AdminProductOptionController extends Controller
         ProductOptionManagementService $options,
     ): JsonResponse|Response {
         $model = $this->findValue($product, $option, $value);
-        $conflict = $options->archiveValue($model);
+        $conflict = $options->archiveValue($product, $model);
         if ($conflict !== null) {
             return response()->json([
                 'code' => $conflict,
@@ -197,7 +197,7 @@ class AdminProductOptionController extends Controller
             ->whereKey($value)
             ->where('product_option_id', $option)
             ->firstOrFail();
-        $result = $options->restoreValue($model->getKey());
+        $result = $options->restoreValue($product, $model->getKey(), $option);
         if (is_string($result)) {
             return response()->json([
                 'code' => $result,

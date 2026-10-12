@@ -577,6 +577,108 @@ part of the public response contract.
 The frontend reads `version` from `GET`, sends it as `expected_version`, and
 refreshes for user review after a conflict instead of automatically retrying.
 
+## Return inventory transfers
+
+Restocking a return continues to increase the historical `sellable_item_id`
+saved on its `OrderItem`. Moving that stock to a current variant is a separate
+admin action after inspection; the destination is selected explicitly.
+
+```http
+GET  /api/v1/admin/orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers
+POST /api/v1/admin/orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers
+POST /api/v1/admin/orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers/{transfer}/reverse
+```
+
+The read returns the historical source, current restock quantity, the
+pre-conversion baseline, eligibility state, allocated and remaining eligible
+quantities, and all transfer/reversal records. A conversion stores the IDs and
+effective restock quantities of return items that existed when stock was
+distributed. Only the effective quantity above that baseline is eligible.
+Conversions without a recorded baseline are conservatively ineligible; no
+historical eligibility is inferred from timestamps or current source stock.
+
+Create a transfer with a UUID `Idempotency-Key` header:
+
+```json
+{
+  "target_sellable_item_id": 132,
+  "quantity": 1,
+  "reason": "Inspected and assigned to the regular fit variant."
+}
+```
+
+A successful response identifies the source and target balances captured by
+the operation:
+
+```json
+{
+  "data": {
+    "id": 18,
+    "order_id": 91,
+    "return_receipt_id": 22,
+    "return_receipt_item_id": 71,
+    "source_sellable_item_id": 44,
+    "target_sellable_item_id": 132,
+    "quantity": 1,
+    "source_stock_before": 2,
+    "source_stock_after": 1,
+    "target_stock_before": 4,
+    "target_stock_after": 5
+  }
+}
+```
+
+The target must be an active, unarchived, non-superseded variant of the same
+product with a valid option combination. The product need not be published.
+Transfers can split one return item across several targets. Stock moves
+atomically from source to target; reservations and order snapshots do not
+change. A successful new transfer returns `201`; an exact replay returns its
+stored response with `200`.
+
+Reverse the entire transfer record with a new UUID idempotency key:
+
+```json
+{ "reversal_reason": "The item was assigned to the wrong variant." }
+```
+
+The response contains `transfer_id`, reversal actor/reason/key, and the source
+and target stock before and after the reversal.
+
+Reversal moves the same quantity back to the historical source and never
+reactivates it. The target must have enough available stock after reservations;
+archived or inactive targets remain eligible for historical reversal. Transfer
+and reversal records retain actor, reason, idempotency, timestamps, and before
+and after stock quantities. A reversal is a separate append-only record linked
+to the transfer; it does not update or delete the original transfer row, and a
+unique transfer link permits only one reversal.
+
+Corrections cannot reduce a return item's restock quantity below its
+non-reversed transferred quantity, and a receipt with active transfers cannot
+be reversed. Reverse the linked transfer first. Reason or note edits that do
+not reduce stock remain allowed. Reversal does not cascade into return
+corrections.
+
+Invalid fields and non-positive quantities return `422`. Domain conflicts
+return `409`, including `idempotency_key_conflict`,
+`return_inventory_eligibility_unknown`,
+`return_inventory_eligible_quantity_insufficient`,
+`return_inventory_target_invalid`, `return_inventory_source_unavailable`,
+`return_inventory_target_unavailable`,
+`return_inventory_transfer_requires_reversal`,
+`return_inventory_transfer_already_reversed`,
+`return_inventory_source_not_converted`, `return_inventory_source_mismatch`,
+`return_inventory_target_missing`, `return_inventory_transfer_item_mismatch`,
+`return_receipt_reversed`, `return_receipt_not_current`,
+`return_inventory_invariant_violation`, `return_inventory_reserved_conflict`,
+and `return_inventory_overflow`.
+
+Mutations share the return workflow lock order: original Order, return
+decision, return receipt, return receipt item, original OrderItem, Product,
+then source and target SellableItems in ascending ID order. The Order lock serializes transfer with
+receipt correction and reversal; ascending SellableItem locks serialize
+competing stock changes. This documents application ordering, not a claim that
+SQLite tests prove PostgreSQL concurrency behavior.
+
 ### Legacy operation replays
 
 Rows created before response snapshots were added have a nullable snapshot and

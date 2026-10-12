@@ -8,12 +8,12 @@ use App\Http\Requests\AdminProductRequest;
 use App\Http\Resources\AdminProductResource;
 use App\Models\Product;
 use App\Services\AdminProductCreationService;
-use App\Services\AdminProductUpdateService;
 use App\Services\AdminProductSummaryQuery;
+use App\Services\AdminProductUpdateService;
 use App\Services\ProductArchiveService;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\QueryException;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -57,7 +57,7 @@ class AdminProductController extends Controller
             'primaryProductImage.mediaAsset',
         ])
             ->withCount('sellableItems')
-            ->withCount(['sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')]);
+            ->withCount(['sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')->whereNull('superseded_at')]);
         $this->summaryQuery->apply($query);
 
         match ($filters['sort'] ?? 'newest') {
@@ -167,7 +167,7 @@ class AdminProductController extends Controller
         ])->loadCount([
             'options as options_count',
             'sellableItems',
-            'sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active'),
+            'sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')->whereNull('superseded_at'),
         ]);
 
         return $this->summaryQuery->hydrate($product);

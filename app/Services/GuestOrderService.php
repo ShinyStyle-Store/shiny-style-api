@@ -2,9 +2,9 @@
 
 namespace App\Services;
 
-use App\Exceptions\IdempotencyConflictException;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
+use App\Exceptions\IdempotencyConflictException;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
@@ -12,8 +12,8 @@ use App\Models\SellableItem;
 use App\Models\ShippingArea;
 use App\Support\ExactMoney;
 use Carbon\CarbonImmutable;
-use Illuminate\Database\QueryException;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -137,6 +137,7 @@ class GuestOrderService
         $sellableItems = SellableItem::query()
             ->whereIn('id', $ids)
             ->active()
+            ->whereNull('superseded_at')
             ->whereIn('product_id', $eligibleProductIds)
             ->with(['product', 'optionValues.option'])
             ->orderBy('id')

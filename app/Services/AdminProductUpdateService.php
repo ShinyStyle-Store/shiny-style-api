@@ -59,7 +59,12 @@ final class AdminProductUpdateService
 
                 $locked->fill($data);
                 $locked->save();
-                $this->assertLifecycle($locked);
+                if ($hasCategories || array_key_exists('status', $data) || array_key_exists('published_at', $data)) {
+                    $this->assertLifecycle(
+                        $locked,
+                        array_key_exists('status', $data) || array_key_exists('published_at', $data),
+                    );
+                }
 
                 if ($mediaCommand !== []) {
                     $this->validateCommand($mediaCommand);
@@ -335,17 +340,17 @@ final class AdminProductUpdateService
         )->all());
     }
 
-    private function assertLifecycle(Product $product): void
+    private function assertLifecycle(Product $product, bool $assertReadiness = true): void
     {
-        if ($product->status !== 'active' && $product->published_at === null) {
+        if (! app(ProductReadinessService::class)->isRequired($product)) {
             return;
         }
 
         if (! $product->categories()->where('categories.status', 'active')->exists()) {
             throw ValidationException::withMessages(['status' => 'An active product must have an active category.']);
         }
-        if (! $product->sellableItems()->where('status', 'active')->exists()) {
-            throw ValidationException::withMessages(['status' => 'An active product must have an active sellable item.']);
+        if ($assertReadiness) {
+            app(ProductReadinessService::class)->assertReady($product);
         }
     }
 }
