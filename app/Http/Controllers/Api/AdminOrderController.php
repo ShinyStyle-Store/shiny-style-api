@@ -16,6 +16,8 @@ use App\Http\Requests\AdminOrderEmptyActionRequest;
 use App\Http\Requests\AdminOrderIndexRequest;
 use App\Http\Requests\AdminOrderReturnDecisionRequest;
 use App\Http\Requests\AdminReturnCorrectionRequest;
+use App\Http\Requests\AdminReturnInventoryTransferRequest;
+use App\Http\Requests\AdminReturnInventoryTransferReversalRequest;
 use App\Http\Requests\AdminReturnReceiptIndexRequest;
 use App\Http\Requests\AdminReturnReceiptRequest;
 use App\Http\Requests\AdminReturnReversalRequest;
@@ -28,6 +30,7 @@ use App\Services\OrderLifecycleService;
 use App\Services\OrderReturnDecisionService;
 use App\Services\PhysicalReturnService;
 use App\Services\RefundRecordService;
+use App\Services\ReturnInventoryTransferService;
 use App\Support\EgyptianPhone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -199,6 +202,73 @@ class AdminOrderController extends Controller
             return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
         } catch (ValidationException $exception) {
             throw ValidationException::withMessages($this->mapReturnValidationErrors($exception->errors()));
+        }
+
+        return response()->json(['data' => $result['payload']], $result['replayed'] ? 200 : 201);
+    }
+
+    public function returnInventoryTransfers(
+        string $public_id,
+        int $return_receipt,
+        int $return_receipt_item,
+        ReturnInventoryTransferService $transfers,
+    ): JsonResponse {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+
+        try {
+            return response()->json(['data' => $transfers->show($order, $return_receipt, $return_receipt_item)]);
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
+        }
+    }
+
+    public function storeReturnInventoryTransfer(
+        AdminReturnInventoryTransferRequest $request,
+        string $public_id,
+        int $return_receipt,
+        int $return_receipt_item,
+        ReturnInventoryTransferService $transfers,
+    ): JsonResponse {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+
+        try {
+            $result = $transfers->transfer(
+                $order,
+                $return_receipt,
+                $return_receipt_item,
+                $request->servicePayload(),
+                (int) $request->user()->getKey(),
+                $request->idempotencyKey(),
+            );
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
+        }
+
+        return response()->json(['data' => $result['payload']], $result['replayed'] ? 200 : 201);
+    }
+
+    public function reverseReturnInventoryTransfer(
+        AdminReturnInventoryTransferReversalRequest $request,
+        string $public_id,
+        int $return_receipt,
+        int $return_receipt_item,
+        int $transfer,
+        ReturnInventoryTransferService $transfers,
+    ): JsonResponse {
+        $order = Order::query()->where('public_id', $public_id)->firstOrFail();
+
+        try {
+            $result = $transfers->reverse(
+                $order,
+                $return_receipt,
+                $return_receipt_item,
+                $transfer,
+                ['reversal_reason' => $request->validated('reversal_reason')],
+                (int) $request->user()->getKey(),
+                $request->idempotencyKey(),
+            );
+        } catch (PhysicalReturnConflictException $exception) {
+            return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], 409);
         }
 
         return response()->json(['data' => $result['payload']], $result['replayed'] ? 200 : 201);

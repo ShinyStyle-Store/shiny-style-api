@@ -6,6 +6,7 @@ use App\Enums\ReturnReason;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ReturnReceiptItem extends Model
 {
@@ -44,5 +45,10 @@ class ReturnReceiptItem extends Model
     public function sellableItem(): BelongsTo
     {
         return $this->belongsTo(SellableItem::class)->withTrashed();
+    }
+
+    public function inventoryTransfers(): HasMany
+    {
+        return $this->hasMany(ReturnInventoryTransfer::class, 'return_receipt_item_id');
     }
 }

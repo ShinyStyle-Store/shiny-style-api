@@ -121,6 +121,12 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
         Route::post('orders/{public_id}/returns/{return_receipt}/reverse', [AdminOrderController::class, 'reverseReturn'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt');
+        Route::get('orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers', [AdminOrderController::class, 'returnInventoryTransfers'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt')->whereNumber('return_receipt_item');
+        Route::post('orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers', [AdminOrderController::class, 'storeReturnInventoryTransfer'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt')->whereNumber('return_receipt_item');
+        Route::post('orders/{public_id}/returns/{return_receipt}/items/{return_receipt_item}/inventory-transfers/{transfer}/reverse', [AdminOrderController::class, 'reverseReturnInventoryTransfer'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')->whereNumber('return_receipt')->whereNumber('return_receipt_item')->whereNumber('transfer');
         Route::post('orders/{public_id}/confirm', [AdminOrderController::class, 'confirm'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}');
         Route::post('orders/{public_id}/prepare', [AdminOrderController::class, 'prepare'])

@@ -12,6 +12,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\OrderReturn;
 use App\Models\ReturnCorrection;
+use App\Models\ReturnInventoryTransfer;
 use App\Models\ReturnReceipt;
 use App\Models\ReturnReceiptItem;
 use App\Models\SellableItem;
@@ -342,6 +343,7 @@ class PhysicalReturnService
 
             $this->assertNoOp($history);
             $this->assertProposedTotals($order, $receiptItems, $proposed);
+            $this->assertNoTransferredRestockReduction($proposed);
             $this->applyStockDeltas($targets, $stockDeltas);
 
             $newRevision = (int) $lockedReceipt->revision + 1;
@@ -478,6 +480,7 @@ class PhysicalReturnService
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
+            $this->assertNoActiveReceiptTransfers($receiptItems);
             $targets = $this->lockCorrectionTargets($receiptItems);
             $stockDeltas = [];
             foreach ($receiptItems as $item) {
@@ -737,6 +740,54 @@ class PhysicalReturnService
         }
 
         return SellableItem::withTrashed()->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get()->keyBy('id')->all();
+    }
+
+    /** @param array<int, array{received: int, restockable: int, reason: ReturnReason, note: ?string}> $proposed */
+    private function assertNoTransferredRestockReduction(array $proposed): void
+    {
+        $itemIds = array_keys($proposed);
+        if ($itemIds === []) {
+            return;
+        }
+
+        $transferred = ReturnInventoryTransfer::query()
+            ->whereIn('return_receipt_item_id', $itemIds)
+            ->whereDoesntHave('reversal')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get()
+            ->groupBy('return_receipt_item_id');
+        foreach ($proposed as $itemId => $values) {
+            $activeQuantity = (int) ($transferred->get($itemId)?->sum('quantity') ?? 0);
+            if ($values['restockable'] < $activeQuantity) {
+                throw new PhysicalReturnConflictException(
+                    'return_inventory_transfer_requires_reversal',
+                    'Reverse the inventory transfer linked to this return item before reducing its restock quantity.',
+                );
+            }
+        }
+    }
+
+    /** @param EloquentCollection<int, ReturnReceiptItem> $items */
+    private function assertNoActiveReceiptTransfers(EloquentCollection $items): void
+    {
+        $itemIds = $items->modelKeys();
+        if ($itemIds === []) {
+            return;
+        }
+
+        $activeTransfers = ReturnInventoryTransfer::query()
+            ->whereIn('return_receipt_item_id', $itemIds)
+            ->whereDoesntHave('reversal')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+        if ($activeTransfers->isNotEmpty()) {
+            throw new PhysicalReturnConflictException(
+                'return_inventory_transfer_requires_reversal',
+                'Reverse all inventory transfers linked to this return receipt before reversing the receipt.',
+            );
+        }
     }
 
     /** @param array<int, SellableItem> $targets @param array<int, int> $deltas */

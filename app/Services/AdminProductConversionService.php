@@ -7,6 +7,7 @@ use App\Models\Product;
 use App\Models\ProductConversion;
 use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
+use App\Models\ReturnReceiptItem;
 use App\Models\SellableItem;
 use App\Support\ExactMoney;
 use Illuminate\Database\QueryException;
@@ -96,6 +97,14 @@ final class AdminProductConversionService
                 }
 
                 $oldStock = (int) $source->stock_quantity;
+                $returnRestockBaseline = ReturnReceiptItem::query()
+                    ->where('sellable_item_id', $source->getKey())
+                    ->orderBy('id')
+                    ->get(['id', 'effective_restockable_quantity'])
+                    ->mapWithKeys(fn (ReturnReceiptItem $item): array => [
+                        (string) $item->getKey() => (int) $item->effective_restockable_quantity,
+                    ])
+                    ->all();
                 $allocatedStock = $this->allocatedStock($data['variants']);
                 $difference = $allocatedStock - $oldStock;
                 $reason = $this->assertStockDifference($data, $difference);
@@ -141,6 +150,7 @@ final class AdminProductConversionService
                     'allocated_stock' => $allocatedStock,
                     'stock_difference' => $difference,
                     'stock_difference_reason' => $reason,
+                    'return_restock_baseline' => $returnRestockBaseline,
                     'allocation' => collect($variants)->map(fn (array $variant): array => [
                         'variant_id' => $variant['id'],
                         'sku' => $variant['sku'],

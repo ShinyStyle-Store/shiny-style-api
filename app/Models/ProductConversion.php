@@ -17,6 +17,7 @@ class ProductConversion extends Model
         'allocated_stock',
         'stock_difference',
         'stock_difference_reason',
+        'return_restock_baseline',
         'allocation',
         'result',
     ];
@@ -27,6 +28,7 @@ class ProductConversion extends Model
             'old_stock' => 'integer',
             'allocated_stock' => 'integer',
             'stock_difference' => 'integer',
+            'return_restock_baseline' => 'array',
             'allocation' => 'array',
             'result' => 'array',
         ];
