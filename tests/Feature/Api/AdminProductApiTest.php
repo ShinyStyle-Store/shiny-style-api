@@ -786,6 +786,16 @@ class AdminProductApiTest extends TestCase
             'stock_quantity' => 100, 'reserved_quantity' => 0, 'status' => 'active',
         ]);
         $archived->delete();
+        $supersededInactive = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'INDEX-SUPERSEDED-INACTIVE', 'price' => '3.00',
+            'stock_quantity' => 0, 'reserved_quantity' => 0, 'status' => 'inactive',
+        ]);
+        $supersededInactive->forceFill(['superseded_at' => now()])->save();
+        $supersededActive = SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'INDEX-SUPERSEDED-ACTIVE', 'price' => '4.00',
+            'stock_quantity' => 100, 'reserved_quantity' => 0, 'status' => 'active',
+        ]);
+        $supersededActive->forceFill(['superseded_at' => now()])->save();
         $this->productImage($product, 'index-primary.jpg', 0, true);
 
         $inactiveOnly = $this->product('index-inactive-only');
@@ -793,6 +803,17 @@ class AdminProductApiTest extends TestCase
             'product_id' => $inactiveOnly->id, 'sku' => 'INDEX-NO-ACTIVE', 'price' => '999.00',
             'stock_quantity' => 50, 'reserved_quantity' => 0, 'status' => 'inactive',
         ]);
+        $noCurrentItems = $this->product('index-no-current-items', ['status' => 'inactive']);
+        $supersededOnly = SellableItem::create([
+            'product_id' => $noCurrentItems->id, 'sku' => 'INDEX-SUPERSEDED-ONLY', 'price' => '5.00',
+            'stock_quantity' => 0, 'reserved_quantity' => 0, 'status' => 'active',
+        ]);
+        $supersededOnly->forceFill(['superseded_at' => now()])->save();
+        $softDeletedOnly = SellableItem::create([
+            'product_id' => $noCurrentItems->id, 'sku' => 'INDEX-DELETED-ONLY', 'price' => '6.00',
+            'stock_quantity' => 0, 'reserved_quantity' => 0, 'status' => 'active',
+        ]);
+        $softDeletedOnly->delete();
 
         $response = $this->withToken($this->adminToken)
             ->getJson('/api/v1/admin/products?per_page=100')
@@ -816,12 +837,20 @@ class AdminProductApiTest extends TestCase
         $this->assertFalse($inactiveSummary['inStock']);
         $this->assertNull($inactiveSummary['primaryImage']);
 
+        $noCurrentSummary = $items->get($noCurrentItems->slug);
+        $this->assertNotNull($noCurrentSummary);
+        $this->assertSame(0, $noCurrentSummary['variantsCount']);
+        $this->assertSame(0, $noCurrentSummary['activeVariantsCount']);
+        $this->assertDatabaseHas('sellable_items', ['id' => $supersededOnly->id]);
+
         $detail = $this->withToken($this->adminToken)
             ->getJson('/api/v1/admin/products/'.$product->id)
             ->assertOk();
         $this->assertSame($summary['priceRange'], $detail->json('data.priceRange'));
         $this->assertSame($summary['stock'], $detail->json('data.stock'));
         $this->assertSame($summary['inStock'], $detail->json('data.inStock'));
+        $this->assertSame($summary['variantsCount'], $detail->json('data.variantsCount'));
+        $this->assertSame($summary['activeVariantsCount'], $detail->json('data.activeVariantsCount'));
     }
 
     public function test_product_detail_returns_operational_summary_without_embedding_collections(): void
