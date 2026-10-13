@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class ContentPage extends Model
 {
@@ -13,4 +14,9 @@ class ContentPage extends Model
         'body_ar',
         'body_en',
     ];
+
+    public function seoRecords(): MorphMany
+    {
+        return $this->morphMany(SeoRecord::class, 'seoable');
+    }
 }

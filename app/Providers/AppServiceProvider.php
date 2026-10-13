@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Infrastructure\Cloudinary\CloudinaryFilesystemAdapter;
 use App\Models\Banner;
 use App\Models\Category;
+use App\Models\ContentPage;
 use App\Models\Product;
 use App\Models\ProductReviewImage;
 use App\Models\RefundRecord;
@@ -78,6 +79,7 @@ class AppServiceProvider extends ServiceProvider
 
         Relation::morphMap([
             'category' => Category::class,
+            'content_page' => ContentPage::class,
             'product' => Product::class,
             'product_review_image' => ProductReviewImage::class,
             'sellable_item' => SellableItem::class,

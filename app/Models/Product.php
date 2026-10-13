@@ -66,6 +66,11 @@ class Product extends Model
         return $this->belongsToMany(Offer::class, 'offer_product');
     }
 
+    public function seoRecords(): MorphMany
+    {
+        return $this->morphMany(SeoRecord::class, 'seoable');
+    }
+
     public function mediaAttachments(): MorphMany
     {
         return $this->morphMany(MediaAttachment::class, 'mediable')

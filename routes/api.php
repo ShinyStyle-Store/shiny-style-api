@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\AdminProfileController;
 use App\Http\Controllers\Api\AdminRefundRecordController;
 use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\AdminShippingAreaController;
+use App\Http\Controllers\Api\AdminSeoController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -71,6 +72,11 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('seo/settings', [AdminSeoController::class, 'settings']);
+        Route::put('seo/settings', [AdminSeoController::class, 'updateSettings']);
+        Route::get('seo/history', [AdminSeoController::class, 'history']);
+        Route::get('seo/{type}/{id}', [AdminSeoController::class, 'show'])->whereNumber('id');
+        Route::put('seo/{type}/{id}', [AdminSeoController::class, 'update'])->whereNumber('id');
         Route::get('dashboard/overview', [AdminDashboardController::class, 'overview']);
         Route::get('store/contact', [StoreContactController::class, 'adminShow']);
         Route::put('store/contact', [StoreContactController::class, 'update']);
