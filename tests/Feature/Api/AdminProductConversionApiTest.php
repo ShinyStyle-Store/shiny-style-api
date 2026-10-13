@@ -82,6 +82,17 @@ class AdminProductConversionApiTest extends TestCase
         $this->assertSame($historicalSnapshot, $historicalOrderItem->fresh()->only(array_keys($historicalSnapshot)));
         $this->assertSame($source->id, (int) $historicalOrderItem->fresh()->sellableItem->getKey());
 
+        $listProduct = $this->withToken($this->adminToken)->getJson('/api/v1/admin/products')
+            ->assertOk()
+            ->assertJsonPath('data.0.variantsCount', 2)
+            ->assertJsonPath('data.0.activeVariantsCount', 2);
+        $this->assertSame((int) $product->getKey(), (int) $listProduct->json('data.0.id'));
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson("/api/v1/admin/products/{$product->id}")
+            ->assertOk()
+            ->assertJsonPath('data.variantsCount', 2)
+            ->assertJsonPath('data.activeVariantsCount', 2);
+
         $product->status = 'draft';
         $product->save();
         $this->app['auth']->forgetGuards();

@@ -57,7 +57,7 @@ class AdminProductController extends Controller
             'categories' => fn (BelongsToMany $category) => $category->withTrashed()->orderByDesc('category_product.is_primary')->orderBy('categories.id'),
             'primaryProductImage.mediaAsset',
         ])
-            ->withCount('sellableItems')
+            ->withCount(['sellableItems as sellable_items_count' => fn (Builder $item) => $item->whereNull('superseded_at')])
             ->withCount(['sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')->whereNull('superseded_at')]);
         $this->summaryQuery->apply($query);
 
@@ -172,7 +172,7 @@ class AdminProductController extends Controller
             'primaryProductImage.mediaAsset',
         ])->loadCount([
             'options as options_count',
-            'sellableItems',
+            'sellableItems as sellable_items_count' => fn (Builder $item) => $item->whereNull('superseded_at'),
             'sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')->whereNull('superseded_at'),
         ]);
 

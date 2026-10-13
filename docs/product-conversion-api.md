@@ -19,6 +19,8 @@ Product list item example:
 }
 ```
 
+Admin product list and detail responses count only current, non-deleted sellable items. `variantsCount` includes current items with either active or inactive status, and excludes every item with `supersededAt` set. `activeVariantsCount` counts only active items from that same current set. A converted historical source is therefore excluded from both counts, while a current inactive variant remains included in `variantsCount` only. Soft-deleted items are excluded from both fields.
+
 ## Read conversion context
 
 `GET /api/v1/admin/products/{product}/conversion-context/{source}` returns the simple sellable item, its stock/reservation quantities, and a `contextToken`. Read this immediately before submitting the conversion. The token becomes stale when the product catalog or source state changes.
