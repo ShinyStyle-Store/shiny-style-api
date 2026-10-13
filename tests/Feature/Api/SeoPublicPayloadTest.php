@@ -146,6 +146,7 @@ class SeoPublicPayloadTest extends TestCase
 
         $arabic = $this->withHeader('Accept-Language', 'ar')->getJson('/api/v1/products/'.$product->slug)
             ->assertOk();
+        $this->travelTo($englishChangeAt);
         $english = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
             ->assertOk();
         $stored = DB::table('products')->where('id', $product->getKey())->first();
@@ -248,6 +249,28 @@ class SeoPublicPayloadTest extends TestCase
         $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.seo.openGraph.image', Storage::disk('public')->url($defaultImage->path));
+    }
+
+    public function test_product_media_attachment_timestamps_contribute_to_last_significant_modified_at(): void
+    {
+        config(['seo.indexing_allowed' => true]);
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        $image = $this->image('seo-product-attachment.jpg');
+
+        $this->travelTo(now()->addMinutes(5));
+        $attachment = $product->mediaAttachments()->create([
+            'media_asset_id' => $image->getKey(),
+            'role' => MediaRole::PRODUCT_IMAGE,
+            'is_primary' => true,
+        ]);
+
+        $this->travelTo(now()->addMinutes(2));
+        $attachment->update(['alt_en' => 'Updated image description']);
+
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.seo.lastSignificantModifiedAt', '2026-05-01T12:07:00.000000Z');
     }
 
     public function test_canonical_falls_back_when_a_saved_path_no_longer_matches_the_live_route(): void

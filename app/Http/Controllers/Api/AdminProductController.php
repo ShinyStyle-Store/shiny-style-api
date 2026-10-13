@@ -7,6 +7,7 @@ use App\Http\Requests\AdminProductIndexRequest;
 use App\Http\Requests\AdminProductRequest;
 use App\Http\Resources\AdminProductResource;
 use App\Models\Product;
+use App\Services\AdminProductConversionService;
 use App\Services\AdminProductCreationService;
 use App\Services\AdminProductSummaryQuery;
 use App\Services\AdminProductUpdateService;
@@ -66,9 +67,14 @@ class AdminProductController extends Controller
             default => $query->orderByDesc('created_at')->orderByDesc('id'),
         };
 
-        return AdminProductResource::collection(
-            $query->paginate($filters['per_page'] ?? 20)->withQueryString(),
-        );
+        $products = $query->paginate($filters['per_page'] ?? 20)->withQueryString();
+        $conversions = app(AdminProductConversionService::class);
+        $sourceIds = $conversions->eligibleSourceSellableItemIds($products->getCollection());
+        $products->getCollection()->each(function (Product $product) use ($sourceIds): void {
+            $product->setAttribute('source_sellable_item_id', $sourceIds[$product->getKey()] ?? null);
+        });
+
+        return AdminProductResource::collection($products);
     }
 
     public function store(AdminProductRequest $request): JsonResponse|AdminProductResource
@@ -170,7 +176,11 @@ class AdminProductController extends Controller
             'sellableItems as active_sellable_items_count' => fn (Builder $item) => $item->where('status', 'active')->whereNull('superseded_at'),
         ]);
 
-        return $this->summaryQuery->hydrate($product);
+        $product = $this->summaryQuery->hydrate($product);
+        $sourceIds = app(AdminProductConversionService::class)->eligibleSourceSellableItemIds(collect([$product]));
+        $product->setAttribute('source_sellable_item_id', $sourceIds[$product->getKey()] ?? null);
+
+        return $product;
     }
 
     private function applySearch(Builder $query, string $search): void

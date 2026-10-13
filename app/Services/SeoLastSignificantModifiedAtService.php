@@ -110,7 +110,7 @@ final class SeoLastSignificantModifiedAtService
                     ->whereIn('mediable_id', $variantIds);
             });
         });
-        $this->addColumns($sources, $attachments, ['created_at', 'deleted_at']);
+        $this->addColumns($sources, $attachments, ['created_at', 'updated_at']);
 
         $assetIds = DB::table('media_attachments')->select('media_asset_id')->where(function (Builder $query) use ($product, $variantIds): void {
             $query->where(function (Builder $query) use ($product): void {
@@ -174,7 +174,7 @@ final class SeoLastSignificantModifiedAtService
             ->where('mediable_type', $category->getMorphClass())
             ->where('mediable_id', $category->getKey())
             ->where('role', 'category_cover');
-        $this->addColumns($sources, $attachments, ['created_at', 'updated_at', 'deleted_at']);
+        $this->addColumns($sources, $attachments, ['created_at', 'updated_at']);
         $assetIds = DB::table('media_attachments')
             ->select('media_asset_id')
             ->where('mediable_type', $category->getMorphClass())

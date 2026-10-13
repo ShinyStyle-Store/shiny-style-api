@@ -43,6 +43,7 @@ class AdminProductResource extends JsonResource
             'primaryCategoryId' => $this->whenLoaded('categories', fn () => $this->categories->firstWhere('pivot.is_primary', true)?->getKey()),
             'variantsCount' => $this->when(isset($this->sellable_items_count), (int) $this->sellable_items_count),
             'activeVariantsCount' => $this->when(isset($this->active_sellable_items_count), (int) $this->active_sellable_items_count),
+            'sourceSellableItemId' => $this->when(array_key_exists('source_sellable_item_id', $this->getAttributes()), $this->source_sellable_item_id === null ? null : (int) $this->source_sellable_item_id),
             'hasOptions' => $this->when($summaryLoaded, (int) $this->options_count > 0),
             'optionsCount' => $this->when($summaryLoaded, (int) $this->options_count),
             'priceRange' => $this->when(array_key_exists('active_min_price', $this->getAttributes()), function (): ?array {

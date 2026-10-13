@@ -11,6 +11,7 @@ use App\Models\Category;
 use App\Services\CategoryArchiveService;
 use App\Services\CategoryCoverService;
 use App\Services\CategoryHierarchyService;
+use App\Services\SeoSignificantModificationService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\JsonResponse;
@@ -178,7 +179,7 @@ class AdminCategoryController extends Controller
                     'en' => ['name_en', 'description_en'],
                 ];
                 $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
-                $significantChanges = app(\App\Services\SeoSignificantModificationService::class);
+                $significantChanges = app(SeoSignificantModificationService::class);
                 if ($sharedFields !== []) {
                     $significantChanges->mark($locked);
                 }
