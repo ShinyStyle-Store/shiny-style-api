@@ -35,7 +35,12 @@ class ProductOptionManagementService
                 ->whereKey($option->getKey())->lockForUpdate()->firstOrFail();
             $this->assertNotArchived($locked);
             $this->fillOption($locked, $data);
+            $dirtyFields = array_keys($locked->getDirty());
             $locked->save();
+            $this->markProductForLocalizedFields($lockedProduct, $dirtyFields, [
+                'ar' => ['name_ar', 'name_ar_normalized'],
+                'en' => ['name_en', 'name_en_normalized'],
+            ]);
 
             return $locked;
         });
@@ -70,7 +75,12 @@ class ProductOptionManagementService
             $this->assertNotArchived($locked);
             $locked->fill($data);
             $this->fillValueNormalized($locked);
+            $dirtyFields = array_keys($locked->getDirty());
             $locked->save();
+            $this->markProductForLocalizedFields($lockedProduct, $dirtyFields, [
+                'ar' => ['value_ar', 'value_ar_normalized'],
+                'en' => ['value_en', 'value_en_normalized'],
+            ]);
 
             return $locked;
         });
@@ -86,6 +96,7 @@ class ProductOptionManagementService
                 return 'option_in_use';
             }
             $locked->delete();
+            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             $this->assertReadyIfRequired($lockedProduct);
 
             return null;
@@ -102,6 +113,7 @@ class ProductOptionManagementService
                 return 'option_not_archived';
             }
             $option->restore();
+            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             if (app(ProductReadinessService::class)->isRequired($lockedProduct)) {
                 app(ProductReadinessService::class)->assertReady($lockedProduct);
             }
@@ -122,6 +134,7 @@ class ProductOptionManagementService
                 return 'value_in_use';
             }
             $locked->delete();
+            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             $this->assertReadyIfRequired($lockedProduct);
 
             return null;
@@ -140,6 +153,7 @@ class ProductOptionManagementService
                 return 'value_not_archived';
             }
             $value->restore();
+            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             $this->assertReadyIfRequired($lockedProduct);
 
             return $value;
@@ -167,6 +181,26 @@ class ProductOptionManagementService
     {
         $option->name_ar_normalized = trim((string) $option->name_ar);
         $option->name_en_normalized = mb_strtolower(trim((string) $option->name_en));
+    }
+
+    /** @param list<string> $dirtyFields @param array<string, list<string>> $localizedFields */
+    private function markProductForLocalizedFields(Product $product, array $dirtyFields, array $localizedFields): void
+    {
+        if ($dirtyFields === []) {
+            return;
+        }
+
+        $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
+        $significantChanges = app(SeoSignificantModificationService::class);
+        if ($sharedFields !== []) {
+            $significantChanges->mark($product);
+        }
+
+        foreach ($localizedFields as $locale => $fields) {
+            if (array_intersect($dirtyFields, $fields) !== []) {
+                $significantChanges->mark($product, locale: $locale);
+            }
+        }
     }
 
     private function fillValueNormalized(ProductOptionValue $value): void

@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\SeoResolverService;
 use App\Support\ProductFeatures;
 use App\Support\ProductSpecifications;
 use Illuminate\Http\Request;
@@ -10,6 +11,8 @@ class ProductDetailResource extends ProductListResource
 {
     public function toArray(Request $request): array
     {
+        $productData = parent::toArray($request);
+        $description = $this->localizedValue($this->description_ar, $this->description_en);
         $sellableItems = $this->publicSellableItems();
         $displaySellableItem = $this->displaySellableItem($sellableItems);
         $activeOptionValueIds = $sellableItems
@@ -20,8 +23,12 @@ class ProductDetailResource extends ProductListResource
         $video = $this->orderedAttachments($variantVideos->concat($this->productVideos))->first();
 
         return [
-            ...parent::toArray($request),
-            'description' => $this->localizedValue($this->description_ar, $this->description_en),
+            ...$productData,
+            'description' => $description,
+            'seo' => app(SeoResolverService::class)->resolve($this->resource, true, [
+                ...$productData,
+                'description' => $description,
+            ]),
             'features' => ProductFeatures::localize($this->features),
             'specifications' => ProductSpecifications::localize($this->specifications),
             'gallery' => $this->productImages

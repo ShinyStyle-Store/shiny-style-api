@@ -36,8 +36,10 @@ return new class extends Migration
 
         Schema::create('return_inventory_transfer_reversals', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('return_inventory_transfer_id')->unique()
-                ->constrained('return_inventory_transfers')->restrictOnDelete();
+            $table->foreignId('return_inventory_transfer_id');
+            $table->foreign('return_inventory_transfer_id', 'ritr_transfer_fk')
+                ->references('id')->on('return_inventory_transfers')->restrictOnDelete();
+            $table->unique('return_inventory_transfer_id', 'ritr_transfer_uq');
             $table->text('reason');
             $table->foreignId('recorded_by_user_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('idempotency_key', 36)->unique();

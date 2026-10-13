@@ -147,6 +147,7 @@ class AdminCategoryController extends Controller
                 $category, $validated, $hierarchy, $covers, $asset, $remove, &$formerAssetIds,
             ): Category {
                 $locked = Category::query()->whereKey($category->getKey())->lockForUpdate()->firstOrFail();
+                $previousParentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
 
                 if (array_key_exists('parent_id', $validated)) {
                     $parent = $validated['parent_id'] === null
@@ -169,7 +170,30 @@ class AdminCategoryController extends Controller
                 }
 
                 $locked->fill($validated);
+                $dirtyFields = array_keys($locked->getDirty());
                 $locked->save();
+
+                $localizedFields = [
+                    'ar' => ['name_ar', 'description_ar'],
+                    'en' => ['name_en', 'description_en'],
+                ];
+                $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
+                $significantChanges = app(\App\Services\SeoSignificantModificationService::class);
+                if ($sharedFields !== []) {
+                    $significantChanges->mark($locked);
+                }
+                foreach ($localizedFields as $locale => $fields) {
+                    if (array_intersect($dirtyFields, $fields) !== []) {
+                        $significantChanges->mark($locked, locale: $locale);
+                    }
+                }
+
+                $nextParentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
+                if ($previousParentId !== $nextParentId) {
+                    app(SeoSignificantModificationService::class)->markCategories(
+                        array_values(array_filter([$previousParentId, $nextParentId])),
+                    );
+                }
 
                 if ($asset !== null || $remove) {
                     $formerAssetIds = $covers->changeInTransaction($locked, $asset, $remove);

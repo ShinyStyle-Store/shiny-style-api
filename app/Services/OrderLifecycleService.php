@@ -176,8 +176,13 @@ class OrderLifecycleService
     /** @param array<int, SellableItem> $items @param array<int, int> $quantities */
     private function mutateInventory(array $items, array $quantities, OrderStatus $target): void
     {
+        $availabilityTransitions = [];
         foreach ($quantities as $id => $quantity) {
             $item = $items[$id];
+            $availabilityTransitions[] = [
+                'item' => $item,
+                'previousAvailableQuantity' => $item->availableQuantity(),
+            ];
             $item->reserved_quantity -= $quantity;
 
             if ($target === OrderStatus::Shipped) {
@@ -186,6 +191,9 @@ class OrderLifecycleService
 
             $item->saveQuietly();
         }
+
+        app(SeoSignificantModificationService::class)
+            ->markInventoryAvailabilityTransitions($availabilityTransitions);
     }
 
     private function applyOrderState(

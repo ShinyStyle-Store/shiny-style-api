@@ -14,6 +14,7 @@ class CategoryArchiveService
     {
         return DB::transaction(function () use ($category): ?string {
             $locked = Category::query()->whereKey($category->getKey())->lockForUpdate()->firstOrFail();
+            $parentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
 
             if ($locked->children()->exists()) {
                 return 'category_has_children';
@@ -26,6 +27,10 @@ class CategoryArchiveService
             $locked->status = 'inactive';
             $locked->save();
             $locked->delete();
+            app(SeoSignificantModificationService::class)->mark($locked);
+            if ($parentId !== null) {
+                app(SeoSignificantModificationService::class)->markCategories([$parentId]);
+            }
 
             return null;
         });
@@ -64,6 +69,10 @@ class CategoryArchiveService
 
                 $category->status = 'inactive';
                 $category->restore();
+                app(SeoSignificantModificationService::class)->mark($category);
+                if ($category->parent_id !== null) {
+                    app(SeoSignificantModificationService::class)->markCategories([(int) $category->parent_id]);
+                }
 
                 return $category;
             });

@@ -233,6 +233,7 @@ class GuestOrderService
                 : null,
         ]);
 
+        $availabilityTransitions = [];
         foreach ($lines as $line) {
             /** @var SellableItem $sellableItem */
             $sellableItem = $line['item'];
@@ -253,9 +254,15 @@ class GuestOrderService
                 'line_total' => ExactMoney::formatMinorUnits($line['line_total']),
             ]);
 
+            $availabilityTransitions[] = [
+                'item' => $sellableItem,
+                'previousAvailableQuantity' => $sellableItem->availableQuantity(),
+            ];
             $sellableItem->reserved_quantity += $line['quantity'];
             $sellableItem->saveQuietly();
         }
+        app(SeoSignificantModificationService::class)
+            ->markInventoryAvailabilityTransitions($availabilityTransitions);
 
         $order->load(['shippingArea', 'items']);
 

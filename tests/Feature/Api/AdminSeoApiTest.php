@@ -99,6 +99,10 @@ class AdminSeoApiTest extends TestCase
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/content_page/'.$page->id, [
             'locale' => 'en', 'canonicalPath' => '//external.example/about-us',
         ])->assertUnprocessable()->assertJsonValidationErrors('canonicalPath');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/content_page/'.$page->id, [
+            'locale' => 'en', 'canonicalPath' => '/about-us',
+        ])->assertUnprocessable()->assertJsonValidationErrors('canonicalPath');
         $this->assertDatabaseHas('seo_records', [
             'seoable_type' => 'category', 'seoable_id' => $category->id, 'canonical_path' => '/category/seo-category',
         ]);

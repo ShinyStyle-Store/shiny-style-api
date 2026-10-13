@@ -113,12 +113,14 @@ class ProductController extends Controller
     public function show(string $slug, CategoryHierarchyService $hierarchy)
     {
         $instant = CarbonImmutable::now()->utc();
-        $visibleCategoryIds = $hierarchy->effectiveVisibleIds();
+        $visibility = $hierarchy->visibilitySnapshot();
+        $visibleCategoryIds = $visibility->visibleIds();
         $product = Product::query()
             ->visible($visibleCategoryIds)
             ->where('slug', $slug)
             ->with([
                 ...$this->sections->cardRelations($visibleCategoryIds, true),
+                'seoRecords.ogImage',
                 'options' => fn ($query) => $query->ordered(),
                 'options.values' => fn ($query) => $query->ordered(),
                 'sellableItems.optionValues.option',
@@ -126,6 +128,11 @@ class ProductController extends Controller
                 'productVideos.mediaAsset',
             ])
             ->firstOrFail();
+
+        $product->setAttribute(
+            'seo_related_categories',
+            $visibility->ancestorsAndSelfFor($product->categories->modelKeys()),
+        );
 
         $this->pricing->attachToProducts(collect([$product]), $instant);
 

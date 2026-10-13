@@ -14,13 +14,15 @@ class CategoryHierarchyService
     public function visibilitySnapshot(bool $includePresentationData = false): CategoryVisibilitySnapshot
     {
         $columns = [
-            'id', 'parent_id', 'status', 'deleted_at',
+            'id', 'parent_id', 'status', 'deleted_at', 'created_at', 'updated_at',
+            'seo_last_significant_modified_at',
         ];
 
         if ($includePresentationData) {
             $columns = [
                 'id', 'parent_id', 'slug', 'name_ar', 'name_en', 'description_ar', 'description_en',
                 'status', 'sort_order', 'deleted_at', 'created_at', 'updated_at',
+                'seo_last_significant_modified_at',
             ];
         }
 
@@ -80,6 +82,7 @@ class CategoryHierarchyService
             $this->preparePublicCategory($breadcrumb, $snapshot);
         }
         $category->setAttribute('category_breadcrumbs', $breadcrumbs);
+        $category->setAttribute('seo_related_categories', $snapshot->categoriesAffectingDetail($category));
 
         $children = collect($snapshot->directChildren($category, true));
         foreach ($children as $child) {

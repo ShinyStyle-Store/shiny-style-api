@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use App\Models\Category;
-use App\Models\ContentPage;
 use App\Models\Product;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Validation\ValidationException;
@@ -26,7 +25,7 @@ final class SeoCanonicalPath
         }
 
         // The public route pattern for content pages is not defined centrally.
-        return $entity instanceof ContentPage;
+        return false;
     }
 
     public static function validateForEntity(Model $entity, ?string $path): void

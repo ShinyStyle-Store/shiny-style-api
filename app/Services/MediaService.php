@@ -234,7 +234,16 @@ class MediaService
             }
 
             if (! $lockedAsset->trashed()) {
+                $seoTargets = DB::table('seo_records')
+                    ->where('og_image_id', $assetId)
+                    ->get(['seoable_type', 'seoable_id'])
+                    ->map(static fn ($record): array => [
+                        'type' => (string) $record->seoable_type,
+                        'id' => (int) $record->seoable_id,
+                        'locale' => (string) $record->locale,
+                    ])->all();
                 $lockedAsset->delete();
+                app(SeoSignificantModificationService::class)->markSeoTargets($seoTargets);
             }
 
             return ['disk' => $lockedAsset->disk, 'path' => $lockedAsset->path];

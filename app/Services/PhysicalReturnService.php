@@ -811,7 +811,10 @@ class PhysicalReturnService
             if ($newStock < $reserved) {
                 throw new PhysicalReturnConflictException('return_inventory_reserved_conflict', 'The inventory update would reduce stock below reserved quantity.');
             }
+            $previousAvailableQuantity = $item->availableQuantity();
             $item->forceFill(['stock_quantity' => $newStock])->saveQuietly();
+            app(SeoSignificantModificationService::class)
+                ->markInventoryAvailabilityTransition($item, $previousAvailableQuantity);
         }
     }
 

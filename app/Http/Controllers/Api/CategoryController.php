@@ -18,6 +18,7 @@ class CategoryController extends Controller
     {
         $category = $hierarchy->publicDetail($slug);
         abort_if($category === null, 404);
+        $category->loadMissing('seoRecords.ogImage');
 
         return new CategoryResource($category);
     }
