@@ -67,6 +67,53 @@ class CategoryVisibilitySnapshot
         return $this->categories[$id] ?? null;
     }
 
+    /** @param list<int> $categoryIds @return list<Category> */
+    public function ancestorsAndSelfFor(array $categoryIds): array
+    {
+        $result = [];
+        foreach ($categoryIds as $categoryId) {
+            $id = (int) $categoryId;
+            $visited = [];
+            while (! isset($visited[$id]) && isset($this->categories[$id])) {
+                $visited[$id] = true;
+                $result[$id] = $this->categories[$id];
+                $parentId = $this->parents[$id] ?? null;
+                if ($parentId === null) {
+                    break;
+                }
+                $id = $parentId;
+            }
+        }
+
+        return array_values($result);
+    }
+
+    /** @return list<Category> */
+    public function categoriesAffectingDetail(Category $category): array
+    {
+        $related = [];
+        foreach ($this->breadcrumbs($category) as $ancestor) {
+            $related[(int) $ancestor->getKey()] = $ancestor;
+        }
+
+        $frontier = [$category];
+        for ($depth = 0; $depth < 2; $depth++) {
+            $next = [];
+            foreach ($frontier as $parent) {
+                foreach ($this->children[(int) $parent->getKey()] ?? [] as $childId) {
+                    $child = $this->category((int) $childId);
+                    if ($child !== null) {
+                        $related[(int) $child->getKey()] = $child;
+                        $next[] = $child;
+                    }
+                }
+            }
+            $frontier = $next;
+        }
+
+        return array_values($related);
+    }
+
     public function visibleCategoryBySlug(string $slug): ?Category
     {
         foreach ($this->visibleIds as $visibleId) {

@@ -46,9 +46,12 @@ class SellableItemManagementService
                 throw new ProductConversionConflictException('variant_superseded', 'A superseded source item cannot be changed or reactivated.');
             }
             $hasValues = array_key_exists('option_value_ids', $data);
+            $previousValueIds = $locked->optionValues()->pluck('product_option_values.id')
+                ->map(fn ($id): int => (int) $id)->sort()->values()->all();
             $valueIds = $hasValues
                 ? array_map('intval', $data['option_value_ids'])
-                : $locked->optionValues()->pluck('product_option_values.id')->map(fn ($id): int => (int) $id)->all();
+                : $previousValueIds;
+            $previousAvailable = $locked->availableQuantity();
 
             if ($hasValues || ($data['status'] ?? $locked->status) === 'active') {
                 $this->assertCombination($lockedProduct, $valueIds, $locked->getKey());
@@ -67,6 +70,16 @@ class SellableItemManagementService
             $locked->save();
             if ($hasValues) {
                 $locked->optionValues()->sync($valueIds);
+            }
+            $publicFieldsChanged = array_intersect(
+                array_keys($locked->getChanges()),
+                ['sku', 'price', 'original_price', 'status', 'is_default'],
+            ) !== [];
+            $selectionChanged = $hasValues
+                && $previousValueIds !== collect($valueIds)->map(fn (int $id): int => $id)->sort()->values()->all();
+            $availabilityChanged = ($previousAvailable > 0) !== ($locked->availableQuantity() > 0);
+            if ($publicFieldsChanged || $selectionChanged || $availabilityChanged) {
+                app(SeoSignificantModificationService::class)->mark($lockedProduct);
             }
             if ($hasValues || array_key_exists('status', $data) || array_key_exists('is_default', $data)) {
                 $this->assertReadyIfRequired($lockedProduct);
@@ -116,6 +129,7 @@ class SellableItemManagementService
             }
             $item->status = 'inactive';
             $item->restore();
+            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             $this->assertReadyIfRequired($lockedProduct);
 
             return $item;

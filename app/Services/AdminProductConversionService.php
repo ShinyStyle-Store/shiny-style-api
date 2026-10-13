@@ -19,6 +19,69 @@ final class AdminProductConversionService
 {
     public function __construct(private readonly ProductReadinessService $readiness) {}
 
+    /** @param Collection<int, Product> $products @return array<int, int|null> */
+    public function eligibleSourceSellableItemIds(Collection $products): array
+    {
+        $productIds = $products
+            ->map(fn (Product $product): int => (int) $product->getKey())
+            ->all();
+        if ($productIds === []) {
+            return [];
+        }
+
+        $convertedProductIds = ProductConversion::query()
+            ->whereIn('product_id', $productIds)
+            ->pluck('product_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+        $productsWithOptions = ProductOption::query()
+            ->whereIn('product_id', $productIds)
+            ->whereNull('deleted_at')
+            ->pluck('product_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+        $itemsByProduct = SellableItem::withTrashed()
+            ->whereIn('product_id', $productIds)
+            ->get()
+            ->groupBy('product_id');
+        $assignedItemIds = DB::table('sellable_item_option_values')
+            ->join('sellable_items', 'sellable_items.id', '=', 'sellable_item_option_values.sellable_item_id')
+            ->whereIn('sellable_items.product_id', $productIds)
+            ->pluck('sellable_item_option_values.sellable_item_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+
+        $eligibleIds = array_fill_keys(array_map('intval', $productIds), null);
+        foreach ($products as $product) {
+            $productId = (int) $product->getKey();
+            if (
+                $product->deleted_at !== null
+                || in_array($productId, $convertedProductIds, true)
+                || in_array($productId, $productsWithOptions, true)
+            ) {
+                continue;
+            }
+
+            $items = $itemsByProduct->get($productId, collect());
+            $activeItems = $items->filter(fn (SellableItem $item): bool => $item->deleted_at === null
+                && $item->status === 'active');
+            if (
+                $activeItems->count() !== 1
+                || $items->contains(fn (SellableItem $item): bool => (int) $item->reserved_quantity !== 0)
+            ) {
+                continue;
+            }
+
+            $source = $activeItems->first();
+            if ($source instanceof SellableItem && $source->superseded_at === null
+                && ! in_array((int) $source->getKey(), $assignedItemIds, true)) {
+                $eligibleIds[$productId] = (int) $source->getKey();
+            }
+        }
+
+        return $eligibleIds;
+    }
+
     /** @return array<string, mixed> */
     public function context(Product $product, int $sourceId): array
     {
@@ -48,6 +111,7 @@ final class AdminProductConversionService
                     'reservedQuantity' => (int) $source->reserved_quantity,
                     'availableQuantity' => $source->availableQuantity(),
                 ],
+                'sourceSellableItemId' => (int) $source->getKey(),
                 'inventory' => [
                     'oldStock' => (int) $source->stock_quantity,
                     'reserved' => (int) $source->reserved_quantity,

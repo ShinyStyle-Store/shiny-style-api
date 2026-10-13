@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Services\CategoryCoverPresenter;
+use App\Services\SeoResolverService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -10,19 +11,29 @@ class CategoryResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
+        $name = $this->localizedValue($this->name_ar, $this->name_en);
+        $description = $this->localizedValue($this->description_ar, $this->description_en);
+        $coverImage = CategoryCoverPresenter::forPublic($this->resource);
+        $isDetail = (bool) $this->category_detail;
+
         return [
             'id' => $this->getKey(),
             'slug' => $this->slug,
-            'name' => $this->localizedValue($this->name_ar, $this->name_en),
-            'description' => $this->localizedValue($this->description_ar, $this->description_en),
-            'coverImage' => CategoryCoverPresenter::forPublic($this->resource),
+            'name' => $name,
+            'description' => $description,
+            'coverImage' => $coverImage,
             'parentId' => $this->parent_id,
             'parent' => $this->category_parent_summary,
             'depth' => $this->hierarchy_depth,
             'sortOrder' => $this->sort_order,
             'hasChildren' => $this->has_children,
             'childrenCount' => $this->children_count,
-            ...($this->category_detail ? [
+            ...($isDetail ? [
+                'seo' => app(SeoResolverService::class)->resolve($this->resource, true, [
+                    'name' => $name,
+                    'description' => $description,
+                    'image' => $coverImage['url'] ?? null,
+                ]),
                 'breadcrumbs' => collect($this->category_breadcrumbs)->map(fn ($category): array => [
                     'id' => $category->getKey(),
                     'name' => $this->localizedValue($category->name_ar, $category->name_en),

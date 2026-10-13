@@ -63,6 +63,11 @@ class Category extends Model
             ->where('role', MediaRole::CATEGORY_COVER);
     }
 
+    public function seoRecords(): MorphMany
+    {
+        return $this->morphMany(SeoRecord::class, 'seoable');
+    }
+
     #[Scope]
     protected function active(Builder $query): void
     {

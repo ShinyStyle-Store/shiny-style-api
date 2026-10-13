@@ -41,6 +41,8 @@ class ContentPageController extends Controller
             throw (new ModelNotFoundException)->setModel(ContentPage::class, [$slug]);
         }
 
+        $page->loadMissing('seoRecords.ogImage');
+
         return new ContentPageResource($page);
     }
 

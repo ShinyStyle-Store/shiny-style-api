@@ -106,5 +106,11 @@ final class OfferService
         }
 
         $offer->products()->sync($productIds);
+
+        $changedProductIds = array_values(array_unique([
+            ...array_diff($productIds, $previousProductIds),
+            ...array_diff($previousProductIds, $productIds),
+        ]));
+        app(SeoSignificantModificationService::class)->markProducts($changedProductIds);
     }
 }

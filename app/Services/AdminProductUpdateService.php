@@ -52,13 +52,24 @@ final class AdminProductUpdateService
                 &$removedAssetIds,
             ): Product {
                 $locked = Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+                $categoriesChanged = false;
+                $affectedCategoryIds = [];
                 if ($hasCategories) {
+                    $previousCategoryIds = $locked->categories()->pluck('categories.id')->map(fn ($id): int => (int) $id)->all();
                     $this->assertCategoriesAvailable($categoryIds);
-                    $this->syncCategories($locked, $categoryIds ?? [], $primaryCategoryId);
+                    $categoriesChanged = $this->syncCategories($locked, $categoryIds ?? [], $primaryCategoryId);
+                    if ($categoriesChanged) {
+                        $affectedCategoryIds = array_values(array_unique([
+                            ...$previousCategoryIds,
+                            ...array_map('intval', $categoryIds ?? []),
+                        ]));
+                    }
                 }
 
                 $locked->fill($data);
+                $dirtyFields = array_keys($locked->getDirty());
                 $locked->save();
+                $mediaChanged = false;
                 if ($hasCategories || array_key_exists('status', $data) || array_key_exists('published_at', $data)) {
                     $this->assertLifecycle(
                         $locked,
@@ -125,6 +136,34 @@ final class AdminProductUpdateService
 
                     $final = $this->orderFinalImages($remaining->values(), $newAttachments, $primaryAttachmentId, $primaryImage instanceof UploadedFile);
                     $this->normalizeImages($final);
+                    $finalIds = array_map(
+                        static fn (MediaAttachment $image): int => (int) $image->getKey(),
+                        $final,
+                    );
+                    $originalIds = array_map('intval', array_keys($images->all()));
+                    $mediaChanged = $finalIds !== $originalIds;
+                }
+
+                if ($categoriesChanged || $mediaChanged) {
+                    app(SeoSignificantModificationService::class)->mark($locked);
+                }
+                if ($affectedCategoryIds !== []) {
+                    app(SeoSignificantModificationService::class)->markCategories($affectedCategoryIds);
+                }
+
+                $localizedFields = [
+                    'ar' => ['name_ar', 'description_ar'],
+                    'en' => ['name_en', 'description_en'],
+                ];
+                $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
+                $significantChanges = app(SeoSignificantModificationService::class);
+                if ($sharedFields !== []) {
+                    $significantChanges->mark($locked);
+                }
+                foreach ($localizedFields as $locale => $fields) {
+                    if (array_intersect($dirtyFields, $fields) !== []) {
+                        $significantChanges->mark($locked, locale: $locale);
+                    }
                 }
 
                 return $locked;
@@ -319,13 +358,19 @@ final class AdminProductUpdateService
         }
     }
 
-    private function syncCategories(Product $product, array $categoryIds, mixed $primaryCategoryId): void
+    private function syncCategories(Product $product, array $categoryIds, mixed $primaryCategoryId): bool
     {
         $ids = array_values(array_unique(array_map('intval', $categoryIds)));
+        $current = $product->categories()->get()->mapWithKeys(
+            fn (Category $category): array => [(int) $category->getKey() => (bool) $category->pivot->is_primary],
+        )->all();
         if ($ids === []) {
+            if ($current === []) {
+                return false;
+            }
             $product->categories()->sync([]);
 
-            return;
+            return true;
         }
 
         $primary = $primaryCategoryId === null
@@ -335,9 +380,18 @@ final class AdminProductUpdateService
             throw ValidationException::withMessages(['primary_category_id' => 'The primary category must be included in category_ids.']);
         }
 
+        $desired = collect($ids)->mapWithKeys(fn (int $id): array => [$id => $id === $primary])->all();
+        ksort($current);
+        ksort($desired);
+        if ($current === $desired) {
+            return false;
+        }
+
         $product->categories()->sync(collect($ids)->mapWithKeys(
             fn (int $id): array => [$id => ['is_primary' => $id === $primary]],
         )->all());
+
+        return true;
     }
 
     private function assertLifecycle(Product $product, bool $assertReadiness = true): void

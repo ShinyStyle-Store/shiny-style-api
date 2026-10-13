@@ -39,7 +39,23 @@ class ContentPageService
                 ->lockForUpdate()
                 ->firstOrFail();
             $page->fill($data);
+            $dirtyFields = array_keys($page->getDirty());
             $page->save();
+
+            $localizedFields = [
+                'ar' => ['title_ar', 'body_ar'],
+                'en' => ['title_en', 'body_en'],
+            ];
+            $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
+            $significantChanges = app(SeoSignificantModificationService::class);
+            if ($sharedFields !== []) {
+                $significantChanges->mark($page);
+            }
+            foreach ($localizedFields as $locale => $fields) {
+                if (array_intersect($dirtyFields, $fields) !== []) {
+                    $significantChanges->mark($page, locale: $locale);
+                }
+            }
 
             return $page->refresh();
         });

@@ -112,8 +112,14 @@ class ReturnInventoryTransferService
                 if ($sourceAfter < $sourceReserved || $targetAfter < $targetReserved) {
                     $this->conflict('return_inventory_reserved_conflict', 'The transfer would make inventory lower than reserved quantity.');
                 }
+                $availabilityTransitions = [
+                    ['item' => $source, 'previousAvailableQuantity' => $sourceStock - $sourceReserved],
+                    ['item' => $target, 'previousAvailableQuantity' => $targetStock - $targetReserved],
+                ];
                 $source->forceFill(['stock_quantity' => $sourceAfter])->saveQuietly();
                 $target->forceFill(['stock_quantity' => $targetAfter])->saveQuietly();
+                app(SeoSignificantModificationService::class)
+                    ->markInventoryAvailabilityTransitions($availabilityTransitions);
 
                 $transfer = ReturnInventoryTransfer::query()->create([
                     'order_id' => $lockedOrder->getKey(),
@@ -233,8 +239,14 @@ class ReturnInventoryTransferService
                 if ($targetAfter < $targetReserved || $sourceAfter < $sourceReserved) {
                     $this->conflict('return_inventory_reserved_conflict', 'The reversal would make inventory lower than reserved quantity.');
                 }
+                $availabilityTransitions = [
+                    ['item' => $target, 'previousAvailableQuantity' => $targetStock - $targetReserved],
+                    ['item' => $source, 'previousAvailableQuantity' => $sourceStock - $sourceReserved],
+                ];
                 $target->forceFill(['stock_quantity' => $targetAfter])->saveQuietly();
                 $source->forceFill(['stock_quantity' => $sourceAfter])->saveQuietly();
+                app(SeoSignificantModificationService::class)
+                    ->markInventoryAvailabilityTransitions($availabilityTransitions);
 
                 $reversal = ReturnInventoryTransferReversal::query()->create([
                     'return_inventory_transfer_id' => $transfer->getKey(),

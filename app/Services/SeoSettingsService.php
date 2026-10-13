@@ -1,0 +1,98 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\SeoSetting;
+use App\Models\User;
+use App\Support\SeoSettingCatalog;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+
+final class SeoSettingsService
+{
+    public function __construct(private readonly SeoAuditService $audits) {}
+
+    /** @return Collection<int, SeoSetting> */
+    public function all(): Collection
+    {
+        return SeoSetting::query()->orderBy('key')->orderBy('locale')->get();
+    }
+
+    /** @param list<array{key: string, locale: string, value: mixed}> $settings */
+    public function update(array $settings, User $actor): Collection
+    {
+        return DB::transaction(function () use ($settings, $actor): Collection {
+            foreach ($settings as $setting) {
+                $this->updateOne($setting, $actor);
+            }
+
+            return $this->all();
+        });
+    }
+
+    /** @param array{key: string, locale: string, value: mixed} $setting */
+    private function updateOne(array $setting, User $actor): void
+    {
+        $query = SeoSetting::query()
+            ->where('key', $setting['key'])
+            ->where('locale', $setting['locale']);
+        $existing = $query->lockForUpdate()->first();
+        $apiKey = SeoSettingCatalog::apiKey($setting['key']) ?? $setting['key'];
+        $locale = $setting['locale'] === '' ? null : $setting['locale'];
+
+        if ($setting['value'] === null) {
+            if ($existing === null) {
+                return;
+            }
+
+            $before = ['key' => $apiKey, 'locale' => $locale, 'value' => $existing->value_json];
+            $targetId = (int) $existing->getKey();
+            $existing->delete();
+            $this->audits->record((int) $actor->getKey(), 'seo_setting', $targetId, 'delete', $before, null);
+
+            return;
+        }
+
+        if ($existing !== null && $existing->value_json === $setting['value']) {
+            return;
+        }
+
+        $creating = $existing === null;
+        if ($creating) {
+            $now = now();
+            $inserted = DB::table('seo_settings')->insertOrIgnore([
+                'key' => $setting['key'],
+                'locale' => $setting['locale'],
+                'value_json' => json_encode($setting['value'], JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $existing = $query->lockForUpdate()->firstOrFail();
+            $creating = $inserted === 1;
+        }
+
+        if (! $creating && $existing->value_json === $setting['value']) {
+            return;
+        }
+
+        $before = $creating
+            ? null
+            : ['key' => $apiKey, 'locale' => $locale, 'value' => $existing->value_json];
+        $targetId = (int) $existing->getKey();
+
+        if (! $creating) {
+            $existing->value_json = $setting['value'];
+            $existing->save();
+        }
+
+        $after = ['key' => $apiKey, 'locale' => $locale, 'value' => $setting['value']];
+        $this->audits->record(
+            (int) $actor->getKey(),
+            'seo_setting',
+            $targetId,
+            $creating ? 'create' : 'update',
+            $before,
+            $after,
+        );
+    }
+}

@@ -50,6 +50,7 @@ class AdminProductConversionApiTest extends TestCase
         $context = $this->withToken($this->adminToken)
             ->getJson("/api/v1/admin/products/{$product->id}/conversion-context/{$source->id}")
             ->assertOk()->json('data');
+        $this->assertSame((int) $source->getKey(), $context['sourceSellableItemId']);
         $payload = $this->payload($context, 7);
         $key = (string) Str::uuid();
 
@@ -58,6 +59,22 @@ class AdminProductConversionApiTest extends TestCase
             ->assertCreated()->assertJsonPath('data.source.stockAfter', 0)
             ->assertJsonPath('data.inventory.allocatedStock', 10)
             ->assertJsonPath('data.variants.0.isDefault', true);
+        $resultingIds = collect($first->json('data.variants'))->pluck('id')->map(fn ($id): int => (int) $id)->sort()->values()->all();
+        $persistedIds = SellableItem::query()->where('product_id', $product->id)->whereNull('superseded_at')
+            ->orderBy('id')->pluck('id')->map(fn ($id): int => (int) $id)->all();
+        $this->assertSame($persistedIds, $resultingIds);
+        $this->assertNotContains((int) $source->getKey(), $resultingIds);
+        $optionValueIds = collect($first->json('data.options'))->flatMap(fn (array $option): array => array_column($option['values'], 'id'))
+            ->map(fn ($id): int => (int) $id)->all();
+        foreach ($first->json('data.variants') as $variant) {
+            $variantValueIds = collect($variant['optionValueIds'])->map(fn ($id): int => (int) $id)->sort()->values()->all();
+            $this->assertSame([], array_diff($variantValueIds, $optionValueIds));
+            $persistedVariant = SellableItem::query()->with('optionValues')->findOrFail($variant['id']);
+            $this->assertSame(
+                $variantValueIds,
+                collect($persistedVariant->optionValues->modelKeys())->map(fn ($id): int => (int) $id)->sort()->values()->all(),
+            );
+        }
 
         $this->assertDatabaseHas('sellable_items', ['id' => $source->id, 'status' => 'inactive', 'is_default' => false, 'stock_quantity' => 0]);
         $this->assertNotNull(SellableItem::findOrFail($source->id)->superseded_at);
@@ -83,6 +100,49 @@ class AdminProductConversionApiTest extends TestCase
         $this->withToken($this->adminToken)->withHeader('Idempotency-Key', (string) Str::uuid())
             ->postJson("/api/v1/admin/products/{$product->id}/convert-simple-item/{$source->id}", $payload)
             ->assertConflict()->assertJsonPath('code', 'already_converted');
+    }
+
+    public function test_product_list_and_detail_expose_only_an_eligible_simple_source_id(): void
+    {
+        [$product, $source] = $this->simpleProduct();
+
+        $this->withToken($this->adminToken)
+            ->getJson('/api/v1/admin/products')
+            ->assertOk()
+            ->assertJsonPath('data.0.sourceSellableItemId', (int) $source->getKey());
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)
+            ->getJson("/api/v1/admin/products/{$product->id}")
+            ->assertOk()
+            ->assertJsonPath('data.sourceSellableItemId', (int) $source->getKey());
+
+        SellableItem::create([
+            'product_id' => $product->id, 'sku' => 'SECOND-'.Str::upper(Str::random(8)), 'price' => '26.00',
+            'stock_quantity' => 1, 'reserved_quantity' => 0, 'status' => 'active', 'is_default' => false,
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)
+            ->getJson("/api/v1/admin/products/{$product->id}")
+            ->assertOk()
+            ->assertJsonPath('data.sourceSellableItemId', null);
+    }
+
+    public function test_conversion_context_rejects_a_source_owned_by_another_product(): void
+    {
+        [$product] = $this->simpleProduct();
+        [, $otherSource] = $this->simpleProduct();
+
+        $this->withToken($this->adminToken)
+            ->getJson("/api/v1/admin/products/{$product->id}/conversion-context/{$otherSource->id}")
+            ->assertNotFound();
+
+        $otherContext = $this->context($otherSource->product, $otherSource);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson("/api/v1/admin/products/{$product->id}/convert-simple-item/{$otherSource->id}", $this->payload($otherContext, 10))
+            ->assertNotFound();
     }
 
     public function test_stock_difference_requires_exact_confirmation_and_reason_and_rolls_back(): void

@@ -81,6 +81,10 @@ final class AdminMediaManagementService
                 ->firstOrFail();
             $locked->fill($metadata)->save();
 
+            if (array_intersect(array_keys($locked->getChanges()), ['sort_order', 'is_primary']) !== []) {
+                app(SeoSignificantModificationService::class)->markProducts([$this->productId($owner)]);
+            }
+
             return $locked->load('mediaAsset');
         });
     }
@@ -117,6 +121,7 @@ final class AdminMediaManagementService
 
                 $locked->is_primary = true;
                 $locked->save();
+                app(SeoSignificantModificationService::class)->markProducts([$this->productId($owner)]);
 
                 return $locked->load('mediaAsset');
             });
@@ -149,6 +154,11 @@ final class AdminMediaManagementService
                 [$attachment->getKey()],
             );
         }
+    }
+
+    private function productId(Product|SellableItem $owner): int
+    {
+        return (int) ($owner instanceof Product ? $owner->getKey() : $owner->product_id);
     }
 
     private function roleFor(Product|SellableItem $owner, string $kind): string
