@@ -158,7 +158,9 @@ class AdminProductController extends Controller
         if (is_string($result)) {
             return response()->json([
                 'code' => $result,
-                'message' => 'The product is not archived.',
+                'message' => $result === 'product_redirect_conflict'
+                    ? 'The product slug is reserved by SEO redirect history.'
+                    : 'The product is not archived.',
             ], 409);
         }
 
@@ -201,7 +203,8 @@ class AdminProductController extends Controller
         $base = Str::slug($name) ?: 'product';
         $slug = $base;
         $suffix = 2;
-        while (Product::withTrashed()->where('slug', $slug)->exists()) {
+        while (Product::withTrashed()->where('slug', $slug)->exists()
+            || app(\App\Services\SeoRedirectService::class)->slugPathIsReserved('product', $slug)) {
             $slug = $base.'-'.$suffix++;
         }
 

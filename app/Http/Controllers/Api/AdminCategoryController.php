@@ -11,6 +11,7 @@ use App\Models\Category;
 use App\Services\CategoryArchiveService;
 use App\Services\CategoryCoverService;
 use App\Services\CategoryHierarchyService;
+use App\Services\SeoRedirectService;
 use App\Services\SeoSignificantModificationService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -52,6 +53,7 @@ class AdminCategoryController extends Controller
         AdminCategoryRequest $request,
         CategoryHierarchyService $hierarchy,
         CategoryCoverService $covers,
+        SeoRedirectService $redirects,
     ): JsonResponse {
         $data = $request->validated();
         $image = $data['cover_image'] ?? null;
@@ -74,7 +76,13 @@ class AdminCategoryController extends Controller
         $asset = $covers->upload($image, $request->user());
 
         try {
-            $category = DB::transaction(function () use ($data, $hierarchy, $covers, $asset): Category {
+            $transaction = fn (): Category => DB::transaction(function () use ($data, $hierarchy, $covers, $asset, $redirects): Category {
+                if ($redirects->slugPathIsReserved('category', (string) $data['slug'])) {
+                    throw ValidationException::withMessages([
+                        'slug' => 'This slug is reserved by SEO redirect history.',
+                    ]);
+                }
+
                 $parent = isset($data['parent_id'])
                     ? Category::query()->whereKey($data['parent_id'])->lockForUpdate()->first()
                     : null;
@@ -94,12 +102,19 @@ class AdminCategoryController extends Controller
                 }
 
                 $category = Category::query()->create($data);
+                if ($hierarchy->visibilitySnapshot()->contains($category)
+                    && $redirects->slugPathIsReserved('category', (string) $category->slug)) {
+                    throw ValidationException::withMessages([
+                        'slug' => 'This category path is reserved by SEO redirect history.',
+                    ]);
+                }
                 if ($asset !== null) {
                     $covers->changeInTransaction($category, $asset, remove: false);
                 }
 
                 return $category;
             });
+            $category = $redirects->withMutationLock($transaction);
         } catch (Throwable $exception) {
             $covers->discardNewAsset($asset);
             if ($exception instanceof QueryException) {
@@ -118,6 +133,7 @@ class AdminCategoryController extends Controller
         Category $category,
         CategoryHierarchyService $hierarchy,
         CategoryCoverService $covers,
+        SeoRedirectService $redirects,
     ): AdminCategoryResource {
         $validated = $request->validated();
         $image = $validated['cover_image'] ?? null;
@@ -141,11 +157,11 @@ class AdminCategoryController extends Controller
             }
         }
         $asset = $covers->upload($image, $request->user());
-        $formerAssetIds = [];
 
         try {
-            $category = DB::transaction(function () use (
-                $category, $validated, $hierarchy, $covers, $asset, $remove, &$formerAssetIds,
+            $transaction = fn (): Category => DB::transaction(function () use (
+                $category, $validated, $hierarchy, $covers, $asset, $remove,
+                $redirects,
             ): Category {
                 $locked = Category::query()->whereKey($category->getKey())->lockForUpdate()->firstOrFail();
                 $previousParentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
@@ -172,7 +188,20 @@ class AdminCategoryController extends Controller
 
                 $locked->fill($validated);
                 $dirtyFields = array_keys($locked->getDirty());
+                if (in_array('slug', $dirtyFields, true)
+                    && $redirects->slugPathIsReserved('category', (string) $locked->slug)) {
+                    throw ValidationException::withMessages([
+                        'slug' => 'This slug is reserved by SEO redirect history.',
+                    ]);
+                }
                 $locked->save();
+                if (array_intersect($dirtyFields, ['slug', 'status', 'parent_id']) !== []
+                    && $hierarchy->visibilitySnapshot()->contains($locked)
+                    && $redirects->slugPathIsReserved('category', (string) $locked->slug)) {
+                    throw ValidationException::withMessages([
+                        'slug' => 'This category path is reserved by SEO redirect history.',
+                    ]);
+                }
 
                 $localizedFields = [
                     'ar' => ['name_ar', 'description_ar'],
@@ -198,10 +227,12 @@ class AdminCategoryController extends Controller
 
                 if ($asset !== null || $remove) {
                     $formerAssetIds = $covers->changeInTransaction($locked, $asset, $remove);
+                    $covers->cleanupFormerAssetsAfterCommit($formerAssetIds);
                 }
 
                 return $locked;
             });
+            $category = $redirects->withMutationLock($transaction);
         } catch (Throwable $exception) {
             $covers->discardNewAsset($asset);
             if ($exception instanceof QueryException) {
@@ -209,8 +240,6 @@ class AdminCategoryController extends Controller
             }
             throw $exception;
         }
-
-        $covers->cleanupFormerAssets($formerAssetIds);
 
         $this->loadResourceFields($category, $hierarchy);
 
@@ -256,6 +285,7 @@ class AdminCategoryController extends Controller
                 'category_not_archived' => 'The category is not archived.',
                 'category_parent_unavailable' => 'The category parent is unavailable.',
                 'category_slug_conflict' => 'The category slug is already in use.',
+                'category_redirect_conflict' => 'The category slug is reserved by SEO redirect history.',
             ];
 
             return response()->json([

@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\DB;
 
 class CategoryArchiveService
 {
+    public function __construct(private readonly SeoRedirectService $redirects) {}
+
     public function archive(Category $category): ?string
     {
         return DB::transaction(function () use ($category): ?string {
@@ -39,7 +41,7 @@ class CategoryArchiveService
     public function restore(int $categoryId, CategoryHierarchyService $hierarchy): Category|string
     {
         try {
-            return DB::transaction(function () use ($categoryId, $hierarchy): Category|string {
+            $transaction = fn (): Category|string => DB::transaction(function () use ($categoryId, $hierarchy): Category|string {
                 $category = Category::withTrashed()
                     ->whereKey($categoryId)
                     ->lockForUpdate()
@@ -51,6 +53,9 @@ class CategoryArchiveService
 
                 if (! $category->trashed()) {
                     return 'category_not_archived';
+                }
+                if ($this->redirects->slugPathIsReserved('category', (string) $category->slug)) {
+                    return 'category_redirect_conflict';
                 }
 
                 $parent = null;
@@ -76,6 +81,8 @@ class CategoryArchiveService
 
                 return $category;
             });
+
+            return $this->redirects->withMutationLock($transaction);
         } catch (QueryException $exception) {
             if ($this->isSlugConflict($exception)) {
                 return 'category_slug_conflict';

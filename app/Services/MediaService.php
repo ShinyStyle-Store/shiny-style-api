@@ -7,6 +7,7 @@ use App\Exceptions\MediaOperationException;
 use App\Models\Banner;
 use App\Models\MediaAsset;
 use App\Models\MediaAttachment;
+use App\Models\SeoSetting;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -212,12 +213,14 @@ class MediaService
         $assetId = $asset instanceof MediaAsset ? $asset->getKey() : $asset;
         $exists = MediaAsset::withTrashed()->whereKey($assetId)->exists();
 
-        return $exists && ! MediaAttachment::query()->where('media_asset_id', $assetId)->exists();
+        return $exists
+            && ! MediaAttachment::query()->where('media_asset_id', $assetId)->exists()
+            && ! $this->hasSeoReferences((int) $assetId);
     }
 
     /**
-     * Remove the stored file and database row only when the asset has no attachments.
-     * Missing assets are treated as already deleted; attached assets are left untouched.
+     * Remove the stored file and database row only when the asset has no media or SEO references.
+     * Missing assets are treated as already deleted; referenced assets are left untouched.
      */
     public function deleteOrphanedAsset(MediaAsset|int $asset): bool
     {
@@ -232,18 +235,12 @@ class MediaService
             if (MediaAttachment::query()->where('media_asset_id', $assetId)->exists()) {
                 return false;
             }
+            if ($this->hasSeoReferences((int) $assetId)) {
+                return false;
+            }
 
             if (! $lockedAsset->trashed()) {
-                $seoTargets = DB::table('seo_records')
-                    ->where('og_image_id', $assetId)
-                    ->get(['seoable_type', 'seoable_id'])
-                    ->map(static fn ($record): array => [
-                        'type' => (string) $record->seoable_type,
-                        'id' => (int) $record->seoable_id,
-                        'locale' => (string) $record->locale,
-                    ])->all();
                 $lockedAsset->delete();
-                app(SeoSignificantModificationService::class)->markSeoTargets($seoTargets);
             }
 
             return ['disk' => $lockedAsset->disk, 'path' => $lockedAsset->path];
@@ -262,7 +259,12 @@ class MediaService
             if ($lockedAsset === null) {
                 return true;
             }
-            if (MediaAttachment::query()->where('media_asset_id', $assetId)->exists()) {
+            if (MediaAttachment::query()->where('media_asset_id', $assetId)->exists()
+                || $this->hasSeoReferences((int) $assetId)) {
+                if ($lockedAsset->trashed()) {
+                    $lockedAsset->restore();
+                }
+
                 return false;
             }
 
@@ -387,5 +389,23 @@ class MediaService
         } catch (Throwable) {
             // Storage cleanup is best-effort; never expose adapter details or paths.
         }
+    }
+
+    private function hasSeoReferences(int $assetId): bool
+    {
+        if (DB::table('seo_records')->where('og_image_id', $assetId)->exists()) {
+            return true;
+        }
+
+        return SeoSetting::query()
+            ->whereIn('key', ['default_og_image_id', 'store_logo_id'])
+            ->where('locale', '')
+            ->get(['value_json'])
+            ->contains(static function (SeoSetting $setting) use ($assetId): bool {
+                $value = $setting->value_json;
+
+                return $value === $assetId
+                    || (is_string($value) && ctype_digit($value) && (int) $value === $assetId);
+            });
     }
 }

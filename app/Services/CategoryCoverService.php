@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\MediaAsset;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -68,6 +69,18 @@ final class CategoryCoverService
         foreach ($assetIds as $assetId) {
             $this->cleanupAsset($assetId);
         }
+    }
+
+    /** @param list<int> $assetIds */
+    public function cleanupFormerAssetsAfterCommit(array $assetIds): void
+    {
+        if ($assetIds === []) {
+            return;
+        }
+
+        DB::afterCommit(function () use ($assetIds): void {
+            $this->cleanupFormerAssets($assetIds);
+        });
     }
 
     private function cleanupAsset(int $assetId): void

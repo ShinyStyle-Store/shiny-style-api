@@ -359,6 +359,104 @@ usable store name. The frontend should map these source fields to Schema.org
 types and emit JSON-LD in page HTML; it must not fill missing values with
 guesses or accept free-form JSON-LD from admin input.
 
+## SEO redirects
+
+Redirect rows are scoped to the host (and non-default port) from the configured
+global `canonical_base_url` SEO setting. The host is not hard-coded. If that
+setting is absent or invalid, the public resolver safely returns no match and
+manual redirect writes are rejected; changing the slug of a currently public
+product also fails atomically until a valid canonical origin is configured.
+Configure the production HTTPS origin before enabling redirect management.
+Changing that origin selects a new domain scope; existing rows are not copied
+to the new scope automatically, so domain migrations need an explicit redirect
+data plan.
+
+The API stores locale-prefixed logical paths, such as
+`/ar/products/old-slug` and `/en/products/old-slug`. It does not store a full
+URL or issue an HTTP redirect. Product slug changes create 301 history for both
+supported locales when the old product page was publicly visible. Robots
+`noindex` does not make a public URL ineligible for history. Repeated changes
+update earlier product history to the latest path rather than building chains.
+Category and mapped content paths can be managed manually; automatic history
+is currently connected only to product slug updates.
+
+Every source path remains reserved while its row exists, including when the
+row is inactive. This prevents a live product/category path from shadowing
+history or creating a loop. The API does not silently delete old history or
+reuse a reserved slug. Product/category create, update, and restore operations
+validate this reservation. Archiving or deleting a destination does not create
+a redirect; the resolver returns no match whenever its source is live or its
+destination is no longer public. A redirect becomes usable again only if its
+destination is public and its row remains active.
+
+### Public resolver
+
+```http
+GET /api/v1/seo/redirects/resolve?path=%2Fen%2Fproducts%2Fold-slug
+Accept: application/json
+```
+
+Matched response:
+
+```json
+{
+  "data": {
+    "destinationPath": "/en/products/new-slug",
+    "statusCode": 301
+  }
+}
+```
+
+No match is `{"data":null}`. Unsupported, non-normalized, external, or
+unrecognized paths receive `422` validation errors. Supported paths are
+locale-prefixed product, category, and mapped content paths only. The frontend
+should use the returned status code for a permanent redirect on its own
+storefront host, preserving the locale in the path; it must not redirect to the
+API host or assume that a redirect exists when the response is null.
+
+Lookup caches positive and negative results for up to ten minutes without
+requiring cache tags. Writes invalidate their source lookup after the database
+transaction commits. Public visibility is checked again during each resolution,
+so cached rows cannot bypass current product/category/content visibility.
+Changes to the storefront's domain and any future frontend lookup cache or
+Sitemap integration need corresponding cache invalidation wiring; those
+integrations are not part of this API change. The resolver currently has no
+dedicated rate limiter; deployment-level request limits should be considered
+if this endpoint is exposed directly to untrusted traffic.
+
+### Admin redirect management
+
+All management endpoints use the existing `auth:sanctum` and `admin.access`
+middleware. Listing is paginated (`per_page` defaults to 20 and is limited to
+1–100). Creation accepts a mapped, non-live source, a currently public
+internal destination, and status 301 or 308:
+
+```http
+POST /api/v1/admin/redirects
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "sourcePath": "/en/products/legacy-name",
+  "destinationPath": "/en/products/current-name",
+  "statusCode": 301
+}
+```
+
+`PATCH /api/v1/admin/redirects/{id}` can change `destinationPath`,
+`statusCode`, or `isActive`. Activating a row revalidates its internal
+destination and rejects live sources and chains. `DELETE` deactivates the row
+without deleting its audit/history record. Creation, changes, and deactivation
+are written to the existing SEO audit log in the same transaction. The
+database unique key on `(domain_scope, source_hash)` is the final duplicate
+guard, and the exact source text is also checked after hash lookup.
+
+The existing API has no general public API throttle; only selected commerce and
+authentication routes use named limiters. This redirect resolver follows that
+existing convention rather than introducing a new limiter in this change.
+
 ### Store and merchant structured data source
 
 ```http

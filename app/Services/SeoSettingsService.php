@@ -18,6 +18,19 @@ final class SeoSettingsService
         return SeoSetting::query()->orderBy('key')->orderBy('locale')->get();
     }
 
+    public function find(string $apiKey, ?string $locale = null): ?SeoSetting
+    {
+        $definition = SeoSettingCatalog::definition($apiKey);
+        if ($definition === null) {
+            return null;
+        }
+
+        return SeoSetting::query()
+            ->where('key', $definition['key'])
+            ->where('locale', $definition['localized'] ? ($locale ?? app()->getLocale()) : '')
+            ->first();
+    }
+
     /** @param list<array{key: string, locale: string, value: mixed}> $settings */
     public function update(array $settings, User $actor): Collection
     {

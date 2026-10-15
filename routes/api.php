@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\AdminRefundRecordController;
 use App\Http\Controllers\Api\AdminSellableItemController;
 use App\Http\Controllers\Api\AdminShippingAreaController;
 use App\Http\Controllers\Api\AdminSeoController;
+use App\Http\Controllers\Api\AdminSeoRedirectController;
 use App\Http\Controllers\Api\BannerController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CheckoutQuoteController;
@@ -31,6 +32,7 @@ use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Controllers\Api\StoreContactController;
 use App\Http\Controllers\Api\StoreStructuredDataController;
 use App\Http\Controllers\Api\StoreSocialLinkController;
+use App\Http\Controllers\Api\SeoRedirectResolverController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
 
@@ -48,6 +50,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('store/contact', [StoreContactController::class, 'showPublic']);
     Route::get('store/social-links', [StoreSocialLinkController::class, 'publicIndex']);
     Route::get('store/structured-data', [StoreStructuredDataController::class, 'show']);
+    Route::get('seo/redirects/resolve', [SeoRedirectResolverController::class, 'show']);
     Route::get('content-pages/{slug}', [ContentPageController::class, 'publicShow']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
@@ -77,6 +80,10 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
         Route::get('seo/settings', [AdminSeoController::class, 'settings']);
         Route::put('seo/settings', [AdminSeoController::class, 'updateSettings']);
         Route::get('seo/history', [AdminSeoController::class, 'history']);
+        Route::get('redirects', [AdminSeoRedirectController::class, 'index']);
+        Route::post('redirects', [AdminSeoRedirectController::class, 'store']);
+        Route::patch('redirects/{redirect}', [AdminSeoRedirectController::class, 'update'])->whereNumber('redirect');
+        Route::delete('redirects/{redirect}', [AdminSeoRedirectController::class, 'destroy'])->whereNumber('redirect');
         Route::get('seo/{type}/{id}', [AdminSeoController::class, 'show'])->whereNumber('id');
         Route::put('seo/{type}/{id}', [AdminSeoController::class, 'update'])->whereNumber('id');
         Route::get('dashboard/overview', [AdminDashboardController::class, 'overview']);

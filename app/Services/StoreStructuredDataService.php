@@ -10,6 +10,7 @@ use App\Models\SeoSetting;
 use App\Models\SocialLink;
 use App\Models\StoreContact;
 use App\Support\SeoCanonicalPath;
+use App\Support\SeoCanonicalOrigin;
 use App\Support\SeoSettingCatalog;
 use App\Support\SocialLinkUrl;
 use Illuminate\Http\Request;
@@ -33,7 +34,7 @@ final class StoreStructuredDataService
     public function identity(Collection $settings, string $locale): array
     {
         $name = $this->metadata->cleanPublicText($this->settingValue($settings, 'storeName', $locale));
-        $url = $this->canonicalOrigin($this->settingValue($settings, 'canonicalBaseUrl'));
+        $url = SeoCanonicalOrigin::normalize($this->settingValue($settings, 'canonicalBaseUrl'));
 
         return [
             'organizationId' => $url === null ? null : $url.'/#organization',
@@ -92,29 +93,6 @@ final class StoreStructuredDataService
         return $setting instanceof SeoSetting ? $setting->value_json : null;
     }
 
-    private function canonicalOrigin(mixed $value): ?string
-    {
-        if (! is_string($value) || filter_var($value, FILTER_VALIDATE_URL) === false) {
-            return null;
-        }
-
-        $parts = parse_url($value);
-        if (! is_array($parts)
-            || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
-            || ! is_string($parts['host'] ?? null)
-            || $parts['host'] === ''
-            || ! $this->isPublicHost($parts['host'])
-            || isset($parts['user'])
-            || isset($parts['pass'])
-            || ! in_array($parts['path'] ?? '', ['', '/'], true)
-            || isset($parts['query'])
-            || isset($parts['fragment'])) {
-            return null;
-        }
-
-        return rtrim($value, '/');
-    }
-
     private function logoUrl(mixed $assetId): ?string
     {
         if (filter_var($assetId, FILTER_VALIDATE_INT) === false || (int) $assetId < 1) {
@@ -146,7 +124,7 @@ final class StoreStructuredDataService
             && in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
             && is_string($parts['host'] ?? null)
             && $parts['host'] !== ''
-            && $this->isPublicHost($parts['host'])
+            && SeoCanonicalOrigin::isPublicHost($parts['host'])
             && ! isset($parts['user'])
             && ! isset($parts['pass'])
                 ? $url
@@ -181,21 +159,6 @@ final class StoreStructuredDataService
         }
 
         return $value;
-    }
-
-    private function isPublicHost(string $host): bool
-    {
-        $host = strtolower(rtrim(trim($host, '[]'), '.'));
-        if ($host === 'localhost'
-            || preg_match('/\.(?:localhost|local|internal|test|invalid|home\.arpa)$/', $host) === 1) {
-            return false;
-        }
-
-        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
-            return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
-        }
-
-        return str_contains($host, '.');
     }
 
     /** @return array{returns: ?array{contentPageSlug: string, path: string, url: ?string}, shipping: ?array{contentPageSlug: string, path: string, url: ?string}} */

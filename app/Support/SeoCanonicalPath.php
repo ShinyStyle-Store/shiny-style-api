@@ -44,6 +44,13 @@ final class SeoCanonicalPath
         return null;
     }
 
+    public static function contentPageSlugForPath(string $path): ?string
+    {
+        $slug = array_search($path, self::CONTENT_PAGE_PATHS, true);
+
+        return is_string($slug) ? $slug : null;
+    }
+
     public static function validateForEntity(Model $entity, ?string $path): void
     {
         if ($path === null) {

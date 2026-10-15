@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\DB;
 
 class ProductArchiveService
 {
+    public function __construct(private readonly SeoRedirectService $redirects) {}
+
     public function archive(Product $product): void
     {
         DB::transaction(function () use ($product): void {
@@ -20,13 +22,16 @@ class ProductArchiveService
 
     public function restore(int $productId): Product|string
     {
-        return DB::transaction(function () use ($productId): Product|string {
+        $transaction = fn (): Product|string => DB::transaction(function () use ($productId): Product|string {
             $product = Product::withTrashed()->whereKey($productId)->lockForUpdate()->first();
             if ($product === null) {
                 throw (new ModelNotFoundException)->setModel(Product::class, [$productId]);
             }
             if (! $product->trashed()) {
                 return 'product_not_archived';
+            }
+            if ($this->redirects->slugPathIsReserved('product', (string) $product->slug)) {
+                return 'product_redirect_conflict';
             }
 
             $product->status = 'inactive';
@@ -35,5 +40,7 @@ class ProductArchiveService
 
             return $product;
         });
+
+        return $this->redirects->withMutationLock($transaction);
     }
 }
