@@ -316,6 +316,45 @@ This returns category metadata only, with the same fields as category listing.
 It does not embed products. Use `/api/v1/products?category={slug}` to load
 products. Missing, inactive, or deleted categories return `404`.
 
+### Content pages
+
+```http
+GET /api/v1/content-pages/{slug}
+```
+
+The API slug remains the backend content record slug. Public logical
+`seo.canonicalPath` values use the confirmed frontend route mapping below;
+they do not include a locale prefix or domain. The frontend adds both from its
+own routing and canonical-origin configuration.
+
+| Backend slug | `seo.canonicalPath` |
+|---|---|
+| `about-us` | `/about` |
+| `returns-policy` | `/return-policy` |
+| `shipping-policy` | `/shipping-policy` |
+
+For these pages, an admin canonical override is accepted only when it exactly
+matches the mapped path for that record. A missing override uses the mapped
+path. If a stored override no longer matches, the API returns the mapped path
+without changing the stored SEO record during the read. A content page without
+a confirmed mapping returns `null`; the API does not infer a path from its
+backend slug. For example, `privacy-policy` currently has no confirmed public
+mapping.
+
+The page response keeps its localized `title` and `body` fields and includes
+the shared `seo` object. Its `canonicalPath` remains locale-free, for example:
+
+```json
+{
+  "data": {
+    "title": "About us",
+    "seo": {
+      "canonicalPath": "/about"
+    }
+  }
+}
+```
+
 ## 9. Localization shape
 
 Localized public fields are single values, for example:

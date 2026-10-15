@@ -88,15 +88,7 @@ final class SeoMetadataService
 
     private function canonicalPath(Model $entity, ?string $customPath): ?string
     {
-        if ($entity instanceof ContentPage) {
-            return null;
-        }
-
-        $defaultPath = match (true) {
-            $entity instanceof Product => '/products/'.$entity->slug,
-            $entity instanceof Category => '/category/'.$entity->slug,
-            default => null,
-        };
+        $defaultPath = SeoCanonicalPath::expectedPath($entity);
 
         if ($defaultPath === null) {
             return null;

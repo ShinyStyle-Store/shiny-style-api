@@ -392,7 +392,7 @@ class SeoPublicPayloadTest extends TestCase
         $this->assertArrayNotHasKey('seo', $list->json('data.0'));
     }
 
-    public function test_content_page_seo_reports_only_actual_translation_and_no_guessed_frontend_canonical(): void
+    public function test_content_page_seo_reports_actual_translation_and_confirmed_canonical(): void
     {
         config(['seo.indexing_allowed' => true]);
         ContentPage::query()->create([
@@ -417,7 +417,7 @@ class SeoPublicPayloadTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.seo.title', 'Default page title')
             ->assertJsonPath('data.seo.description', 'Default page description')
-            ->assertJsonPath('data.seo.canonicalPath', null)
+            ->assertJsonPath('data.seo.canonicalPath', '/about')
             ->assertJsonPath('data.seo.robots.index', false)
             ->assertJsonPath('data.seo.indexable', false)
             ->assertJsonPath('data.seo.availableLocales', ['ar']);
@@ -428,6 +428,65 @@ class SeoPublicPayloadTest extends TestCase
             ->assertJsonPath('data.seo.description', 'عن المتجر اليوم')
             ->assertJsonPath('data.seo.robots.index', true)
             ->assertJsonPath('data.seo.indexable', true);
+    }
+
+    public function test_content_page_canonical_mapping_is_locale_free_and_reads_do_not_write(): void
+    {
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $pages = [
+            'about-us' => ['/about', ['en' => '/about', 'ar' => '/about-us']],
+            'returns-policy' => ['/return-policy', ['en' => null]],
+            'shipping-policy' => ['/shipping-policy', ['en' => '/shipping-policy-old']],
+            'privacy-policy' => [null, ['en' => '/privacy-policy']],
+        ];
+
+        foreach ($pages as $slug => [$expectedPath, $canonicalPaths]) {
+            $page = ContentPage::query()->create([
+                'slug' => $slug,
+                'title_ar' => 'Arabic page',
+                'title_en' => 'English page',
+                'body_ar' => 'Arabic content',
+                'body_en' => 'English content',
+            ]);
+
+            foreach ($canonicalPaths as $locale => $canonicalPath) {
+                $page->seoRecords()->create([
+                    'locale' => $locale,
+                    'canonical_path' => $canonicalPath,
+                ]);
+            }
+        }
+
+        $recordsBefore = DB::table('seo_records')->orderBy('id')->get(['id', 'canonical_path', 'updated_at'])
+            ->map(static fn (object $row): array => (array) $row)
+            ->all();
+        $contentPagesBefore = DB::table('content_pages')->orderBy('id')->get()
+            ->map(static fn (object $row): array => (array) $row)
+            ->all();
+        $auditCountBefore = DB::table('seo_audits')->count();
+
+        foreach ($pages as $slug => [$expectedPath]) {
+            foreach (['ar', 'en'] as $locale) {
+                $this->withHeader('Accept-Language', $locale)
+                    ->getJson('/api/v1/content-pages/'.$slug)
+                    ->assertOk()
+                    ->assertJsonPath('data.seo.canonicalPath', $expectedPath);
+            }
+        }
+
+        $this->assertSame(
+            $recordsBefore,
+            DB::table('seo_records')->orderBy('id')->get(['id', 'canonical_path', 'updated_at'])
+                ->map(static fn (object $row): array => (array) $row)
+                ->all(),
+        );
+        $this->assertSame(
+            $contentPagesBefore,
+            DB::table('content_pages')->orderBy('id')->get()
+                ->map(static fn (object $row): array => (array) $row)
+                ->all(),
+        );
+        $this->assertSame($auditCountBefore, DB::table('seo_audits')->count());
     }
 
     public function test_runtime_indexing_gate_blocks_index_without_changing_public_access(): void
