@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Product;
 use App\Models\SeoRecord;
 use App\Support\SeoSettingCatalog;
 use Illuminate\Database\Eloquent\Model as EloquentModel;
@@ -47,6 +48,59 @@ final class SeoResolverService
             ?->toISOString();
 
         return $resolved;
+    }
+
+    /** @param list<string> $supportedLocales
+     *  @return array{canonicalPath: string, record: ?SeoRecord}|null
+     */
+    public function resolveSitemapLocale(
+        EloquentModel $entity,
+        Collection $settings,
+        string $locale,
+        array $supportedLocales,
+    ): ?array {
+        $record = $this->seoRecord($entity, $locale);
+        $availableLocales = $this->eligibility->availableLocales($entity, $supportedLocales);
+        $metadata = $this->metadata->sitemapPolicy($entity, $record, $settings);
+        $eligibility = $this->eligibility->resolve(
+            true,
+            $locale,
+            $availableLocales,
+            $metadata['robots'],
+        );
+        if (! $eligibility['indexable'] || ! is_string($metadata['canonicalPath'])) {
+            return null;
+        }
+
+        return [
+            'canonicalPath' => $metadata['canonicalPath'],
+            'record' => $record,
+        ];
+    }
+
+    /**
+     * @param list<array{entity: EloquentModel, locale: string, presentation: array<string, mixed>, record: ?SeoRecord}> $entries
+     * @return array<int, ?string>
+     */
+    public function sitemapLastModifiedBatch(array $entries, Collection $settings): array
+    {
+        return array_map(
+            static fn ($date): ?string => $date?->toISOString(),
+            $this->lastModified->resolveMany($entries, $settings),
+        );
+    }
+
+    /** @param iterable<EloquentModel> $entities */
+    public function prepareSitemapBatch(iterable $entities): void
+    {
+        $products = [];
+        foreach ($entities as $entity) {
+            if ($entity instanceof Product) {
+                $products[] = $entity;
+            }
+        }
+
+        $this->lastModified->prepareProductBatch($products);
     }
 
     private function seoRecord(EloquentModel $entity, string $locale): ?SeoRecord

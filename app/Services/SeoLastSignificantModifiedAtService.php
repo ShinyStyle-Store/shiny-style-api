@@ -16,7 +16,36 @@ use Illuminate\Support\Facades\DB;
 /** Resolves the latest known change that can affect one public SEO detail response. */
 final class SeoLastSignificantModifiedAtService
 {
+    /** @var array<int, list<object>> */
+    private array $productOffers = [];
+
     public function __construct(private readonly SeoMetadataService $metadata) {}
+
+    /** @param iterable<Product> $products */
+    public function prepareProductBatch(iterable $products): void
+    {
+        $productIds = [];
+        foreach ($products as $product) {
+            $productIds[] = (int) $product->getKey();
+            $this->productOffers[(int) $product->getKey()] = [];
+        }
+
+        if ($productIds === []) {
+            return;
+        }
+
+        $offers = DB::table('offer_product')
+            ->join('offers', 'offers.id', '=', 'offer_product.offer_id')
+            ->whereIn('offer_product.product_id', array_unique($productIds))
+            ->get([
+                'offer_product.product_id', 'offers.created_at', 'offers.updated_at',
+                'offers.starts_at', 'offers.ends_at', 'offers.is_enabled',
+            ]);
+
+        foreach ($offers as $offer) {
+            $this->productOffers[(int) $offer->product_id][] = $offer;
+        }
+    }
 
     /** @param array<string, mixed> $presentation */
     public function resolve(
@@ -26,37 +55,7 @@ final class SeoLastSignificantModifiedAtService
         ?SeoRecord $record,
         Collection $settings,
     ): ?CarbonImmutable {
-        $sources = [];
-        $this->addColumns($sources, DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey()), [
-            'created_at', 'seo_last_significant_modified_at',
-            ...($entity instanceof ContentPage || $entity instanceof Category || $entity instanceof Product
-                ? ['seo_last_significant_modified_at_'.$locale]
-                : []),
-        ]);
-        $this->addColumns($sources, DB::table('seo_records')
-            ->where('seoable_type', $entity->getMorphClass())
-            ->where('seoable_id', $entity->getKey())
-            ->where('locale', $locale), ['created_at', 'updated_at']);
-
-        if ($entity instanceof Product) {
-            $this->addProductSources($sources, $entity, $locale);
-        } elseif ($entity instanceof Category) {
-            $this->addCategorySources($sources, $entity, $locale);
-        } elseif (! $entity instanceof ContentPage) {
-            return null;
-        }
-
-        $imageIds = $this->imageSettingIds($entity, $record, $presentation);
-        if ($record?->og_image_id !== null) {
-            $imageIds[] = (int) $record->og_image_id;
-        }
-        if ($imageIds !== []) {
-            $this->addColumns($sources, DB::table('media_assets')->whereIn('id', array_unique($imageIds)), [
-                'created_at', 'updated_at', 'deleted_at',
-            ]);
-        }
-
-        $this->addSettingsSources($sources, $entity, $locale, $presentation, $record, $settings);
+        $sources = $this->sources($entity, $locale, $presentation, $record, $settings);
 
         if ($sources === []) {
             return null;
@@ -76,6 +75,108 @@ final class SeoLastSignificantModifiedAtService
         }
 
         return CarbonImmutable::parse($latest, 'UTC')->utc();
+    }
+
+    /**
+     * @param list<array{entity: Model, locale: string, presentation: array<string, mixed>, record: ?SeoRecord}> $entries
+     * @return array<int, ?CarbonImmutable>
+     */
+    public function resolveMany(array $entries, Collection $settings): array
+    {
+        if ($entries === []) {
+            return [];
+        }
+
+        $combined = null;
+        foreach ($entries as $index => $entry) {
+            $sources = $this->sources(
+                $entry['entity'],
+                $entry['locale'],
+                $entry['presentation'],
+                $entry['record'],
+                $settings,
+            );
+            if ($sources === []) {
+                continue;
+            }
+
+            $entityQuery = array_shift($sources);
+            foreach ($sources as $source) {
+                $entityQuery->unionAll($source);
+            }
+
+            $keyedQuery = DB::query()
+                ->fromSub($entityQuery, 'seo_entity_dates')
+                ->selectRaw('? AS entity_key, changed_at', [$index]);
+            if ($combined === null) {
+                $combined = $keyedQuery;
+            } else {
+                $combined->unionAll($keyedQuery);
+            }
+        }
+
+        $results = array_fill(0, count($entries), null);
+        if ($combined === null) {
+            return $results;
+        }
+
+        $dates = DB::query()
+            ->fromSub($combined, 'seo_change_dates')
+            ->where('changed_at', '<=', CarbonImmutable::now('UTC')->toDateTimeString())
+            ->selectRaw('entity_key, MAX(changed_at) AS changed_at')
+            ->groupBy('entity_key')
+            ->get();
+
+        foreach ($dates as $date) {
+            if (is_string($date->changed_at) && trim($date->changed_at) !== '') {
+                $results[(int) $date->entity_key] = CarbonImmutable::parse($date->changed_at, 'UTC')->utc();
+            }
+        }
+
+        return $results;
+    }
+
+    /** @param array<string, mixed> $presentation @return list<Builder> */
+    private function sources(
+        Model $entity,
+        string $locale,
+        array $presentation,
+        ?SeoRecord $record,
+        Collection $settings,
+    ): array {
+        $sources = [];
+        $this->addColumns($sources, DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey()), [
+            'created_at', 'seo_last_significant_modified_at',
+            ...($entity instanceof ContentPage || $entity instanceof Category || $entity instanceof Product
+                ? ['seo_last_significant_modified_at_'.$locale]
+                : []),
+        ]);
+        $this->addColumns($sources, DB::table('seo_records')
+            ->where('seoable_type', $entity->getMorphClass())
+            ->where('seoable_id', $entity->getKey())
+            ->where('locale', $locale), ['created_at', 'updated_at']);
+
+        if ($entity instanceof Product) {
+            $this->addProductSources($sources, $entity, $locale);
+        } elseif ($entity instanceof Category) {
+            $this->addCategorySources($sources, $entity, $locale);
+        } elseif (! $entity instanceof ContentPage) {
+            return [];
+        }
+
+        $imageIds = $this->imageSettingIds($entity, $record, $presentation);
+        if ($record?->og_image_id !== null) {
+            $imageIds[] = (int) $record->og_image_id;
+        }
+        if ($imageIds !== []) {
+            $this->addColumns($sources, DB::table('media_assets')->whereIn('id', array_unique($imageIds)), [
+                'created_at', 'updated_at', 'deleted_at',
+            ]);
+        }
+
+        $this->addSettingsSources($sources, $entity, $locale, $presentation, $record, $settings);
+
+        return $sources;
     }
 
     /** @param list<Builder> $sources @param list<string> $columns */
@@ -142,10 +243,13 @@ final class SeoLastSignificantModifiedAtService
             }
         }
 
-        $offers = DB::table('offers')
-            ->join('offer_product', 'offer_product.offer_id', '=', 'offers.id')
-            ->where('offer_product.product_id', $productId)
-            ->get(['offers.created_at', 'offers.updated_at', 'offers.starts_at', 'offers.ends_at', 'offers.is_enabled']);
+        $offers = array_key_exists($productId, $this->productOffers)
+            ? $this->productOffers[$productId]
+            : DB::table('offers')
+                ->join('offer_product', 'offer_product.offer_id', '=', 'offers.id')
+                ->where('offer_product.product_id', $productId)
+                ->get(['offers.created_at', 'offers.updated_at', 'offers.starts_at', 'offers.ends_at', 'offers.is_enabled'])
+                ->all();
         foreach ($offers as $offer) {
             foreach (['created_at', 'updated_at'] as $column) {
                 if ($offer->{$column} !== null) {

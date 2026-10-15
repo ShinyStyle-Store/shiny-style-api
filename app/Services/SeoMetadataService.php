@@ -48,6 +48,15 @@ final class SeoMetadataService
         ];
     }
 
+    /** @return array{canonicalPath: ?string, robots: array{index: bool, follow: bool}} */
+    public function sitemapPolicy(Model $entity, ?SeoRecord $record, Collection $settings): array
+    {
+        return [
+            'canonicalPath' => $this->canonicalPath($entity, $record?->canonical_path),
+            'robots' => $this->robots($record, $settings),
+        ];
+    }
+
     /**
      * @param array<string, mixed> $presentation
      * @param Collection<int, mixed> $settings

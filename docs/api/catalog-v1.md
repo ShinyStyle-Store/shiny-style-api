@@ -793,3 +793,127 @@ The following are not part of the current catalog contract:
 - Admin APIs
 - Payments
 - Notifications
+
+## SEO sitemap eligibility items
+
+`GET /api/v1/seo/sitemap-items` returns bounded batches of public pages that are
+currently eligible for indexing. The API supplies data only; the frontend
+builds and publishes the XML sitemap on its configured store domain.
+
+Query parameters:
+
+| Parameter | Required | Values | Default / limit |
+| --- | --- | --- | --- |
+| `type` | yes | `product`, `category`, `page` | One entity type per traversal |
+| `cursor` | no | opaque cursor returned by this endpoint | Must belong to the same `type` |
+| `limit` | no | integer | 50; maximum 100 |
+
+Example:
+
+```http
+GET /api/v1/seo/sitemap-items?type=product&limit=50
+Accept: application/json
+```
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 42,
+        "entityType": "product",
+        "slug": "linen-shirt",
+        "eligibleLocales": ["ar", "en"],
+        "locales": [
+          {
+            "locale": "ar",
+            "path": "/products/linen-shirt",
+            "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+          },
+          {
+            "locale": "en",
+            "path": "/products/linen-shirt",
+            "lastSignificantModifiedAt": "2026-05-01T12:03:00.000000Z"
+          }
+        ]
+      }
+    ],
+    "nextCursor": "eyJ2IjoxLCJ0eXBlIjoicHJvZHVjdCIsImlkIjo0Mn0"
+  }
+}
+```
+
+`locales` carries the locale-specific canonical path and significant
+modification timestamp. `eligibleLocales` repeats the locale identifiers for
+simple grouping. Paths are logical and locale-free: the frontend prefixes each
+with the matching locale and configured store origin exactly once. Page paths
+use the existing canonical mapping, for example `about-us` maps to `/about`.
+
+For a category, `entityType` is `category` and `path` uses the existing
+`/category/{slug}` canonical. For a content page, `entityType` is `page` and
+`path` uses the confirmed content-page mapping. Items are emitted only when
+public visibility, the deployment indexing switch, supported locale and real
+translation, locale robots policy, and canonical path all allow indexing.
+Sold-out products remain eligible when their other public visibility rules
+pass. Old redirect sources are excluded.
+
+Category and content-page item examples:
+
+```json
+{
+  "id": 9,
+  "entityType": "category",
+  "slug": "summer",
+  "eligibleLocales": ["ar"],
+  "locales": [
+    {
+      "locale": "ar",
+      "path": "/category/summer",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    }
+  ]
+}
+```
+
+```json
+{
+  "id": 3,
+  "entityType": "page",
+  "slug": "about-us",
+  "eligibleLocales": ["ar", "en"],
+  "locales": [
+    {
+      "locale": "ar",
+      "path": "/about",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    },
+    {
+      "locale": "en",
+      "path": "/about",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    }
+  ]
+}
+```
+
+Continue by passing `nextCursor` unchanged with the same `type` and desired
+`limit`. Stop only when `nextCursor` is `null`. A successful empty result is
+`{"items":[],"nextCursor":null}`. Invalid input or a cursor for another type
+returns the standard Laravel validation error (422); database read failures
+remain errors and are never represented as an empty successful result.
+
+Each request examines at most 200 public candidate records and returns no more
+than 100 eligible items. Significant modification timestamps for the emitted
+locale rows are aggregated in a bounded batch; product offers and redirect
+sources are also loaded by batch. When filtering leaves no item in a batch but more
+candidates remain, the endpoint returns an advancing cursor with an empty
+`items` array. Traversals use stable ascending ID keysets and do not load the
+whole product catalog. They do not provide a database snapshot across multiple
+requests: content, visibility, indexing settings, and timestamps may change
+between batches. The frontend must discard an incomplete traversal after any
+failed batch and must not publish a partial sitemap as complete.
+
+After a successful content or SEO change, frontend sitemap generation and its
+cache should be refreshed through the future commit-level integration point.
+That invalidation integration and XML generation/publication are not part of
+this API endpoint.

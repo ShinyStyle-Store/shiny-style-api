@@ -333,6 +333,22 @@ final class SeoRedirectService
         return $query->exists();
     }
 
+    /** @param list<string> $paths @return list<string> */
+    public function existingSourcePaths(array $paths): array
+    {
+        if ($paths === []) {
+            return [];
+        }
+
+        $query = SeoRedirect::query()->whereIn('source_path', array_values(array_unique($paths)));
+        $scope = $this->currentDomainScope();
+        if ($scope !== null) {
+            $query->where('domain_scope', $scope);
+        }
+
+        return $query->pluck('source_path')->all();
+    }
+
     public function slugPathIsReserved(string $entityType, string $slug): bool
     {
         $segment = match ($entityType) {

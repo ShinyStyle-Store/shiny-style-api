@@ -33,6 +33,7 @@ use App\Http\Controllers\Api\StoreContactController;
 use App\Http\Controllers\Api\StoreStructuredDataController;
 use App\Http\Controllers\Api\StoreSocialLinkController;
 use App\Http\Controllers\Api\SeoRedirectResolverController;
+use App\Http\Controllers\Api\SeoSitemapItemsController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
 
@@ -51,6 +52,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('store/social-links', [StoreSocialLinkController::class, 'publicIndex']);
     Route::get('store/structured-data', [StoreStructuredDataController::class, 'show']);
     Route::get('seo/redirects/resolve', [SeoRedirectResolverController::class, 'show']);
+    Route::get('seo/sitemap-items', [SeoSitemapItemsController::class, 'index']);
     Route::get('content-pages/{slug}', [ContentPageController::class, 'publicShow']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
