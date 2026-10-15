@@ -8,6 +8,7 @@ final class SeoStructuredDataService
      * @param list<string> $galleryImages
      * @param list<array<string, mixed>> $variants
      * @param list<array<string, mixed>> $variationAttributes
+     * @param array{organizationId: ?string, name: ?string, url: ?string, logo: ?string}|null $seller
      * @return array{
      *     productId: string,
      *     name: ?string,
@@ -18,7 +19,8 @@ final class SeoStructuredDataService
      *     offer: ?array{sellableItemId: string, sku: ?string, offerId: ?string, offerApplied: bool, price: ?float, priceCurrency: string, availability: string},
      *     variants: list<array{id: string, sku: ?string, offerId: ?string, offerApplied: bool, price: ?float, originalPrice: ?float, priceCurrency: string, availability: string, inStock: bool, images: list<string>, optionValues: array<string, string>}>,
      *     variationAttributes: list<array{code: string, name: ?string, values: list<array{code: string, label: ?string}>>},
-     *     productGroup: ?array{productGroupId: string, variesBy: list<string>, variants: list<array{id: string, sku: ?string, optionValues: array<string, string>}>}
+     *     productGroup: ?array{productGroupId: string, variesBy: list<string>, variants: list<array{id: string, sku: ?string, optionValues: array<string, string>}>},
+     *     seller: ?array{organizationId: ?string, name: string, url: ?string, logo: ?string}
      * }
      */
     public function product(
@@ -31,6 +33,7 @@ final class SeoStructuredDataService
         ?string $displayVariantId,
         array $variants,
         array $variationAttributes,
+        ?array $seller = null,
     ): array {
         $currency = (string) config('store.currency');
         $normalizedVariants = array_map(function (array $variant) use ($currency): array {
@@ -83,6 +86,49 @@ final class SeoStructuredDataService
             'variants' => $normalizedVariants,
             'variationAttributes' => $normalizedAttributes,
             'productGroup' => $productGroup,
+            'seller' => is_string($seller['name'] ?? null) && trim($seller['name']) !== ''
+                ? $seller
+                : null,
+        ];
+    }
+
+    /**
+     * @param array{organizationId: ?string, name: ?string, url: ?string, logo: ?string} $identity
+     * @param array{supportPhone: ?string, supportWhatsapp: ?string, supportEmail: ?string, address: ?string, googleMapsUrl: ?string} $contact
+     * @param list<string> $sameAs
+     * @param array{returns: ?array{contentPageSlug: string, path: string, url: ?string}, shipping: ?array{contentPageSlug: string, path: string, url: ?string}} $policies
+     * @return array{
+     *     organization: array{organizationId: ?string, name: ?string, url: ?string, logo: ?string, contact: array{supportPhone: ?string, supportWhatsapp: ?string, supportEmail: ?string, address: ?string, googleMapsUrl: ?string}, sameAs: list<string>},
+     *     website: array{websiteId: ?string, name: ?string, url: ?string, inLanguage: string, publisherId: ?string},
+     *     currency: string,
+     *     policies: array{returns: ?array{contentPageSlug: string, path: string, url: ?string}, shipping: ?array{contentPageSlug: string, path: string, url: ?string}}
+     * }
+     */
+    public function storeProfile(
+        array $identity,
+        array $contact,
+        array $sameAs,
+        string $currency,
+        string $locale,
+        array $policies,
+    ): array {
+        $websiteId = $identity['url'] === null ? null : $identity['url'].'/#website';
+
+        return [
+            'organization' => [
+                ...$identity,
+                'contact' => $contact,
+                'sameAs' => $sameAs,
+            ],
+            'website' => [
+                'websiteId' => $websiteId,
+                'name' => $identity['name'],
+                'url' => $identity['url'],
+                'inLanguage' => $locale,
+                'publisherId' => $identity['organizationId'],
+            ],
+            'currency' => $currency,
+            'policies' => $policies,
         ];
     }
 

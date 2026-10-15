@@ -19,10 +19,15 @@ final class SeoResolverService
     /** @param array<string, mixed> $presentation
      *  @return array<string, mixed>
      */
-    public function resolve(EloquentModel $entity, bool $isPubliclyVisible, array $presentation): array
+    public function resolve(
+        EloquentModel $entity,
+        bool $isPubliclyVisible,
+        array $presentation,
+        ?Collection $settings = null,
+    ): array
     {
         $locale = app()->getLocale();
-        $settings = $this->settings->all();
+        $settings ??= $this->settings->all();
         $seoRecord = $this->seoRecord($entity, $locale);
         $supportedLocales = $this->settingValue($settings, 'supported_locales');
         $supportedLocales = is_array($supportedLocales) ? $supportedLocales : ['ar', 'en'];

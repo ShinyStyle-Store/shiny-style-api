@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\SocialLink;
+use App\Support\SocialLinkUrl;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
@@ -89,27 +90,7 @@ class SocialLinkRequest extends FormRequest
                 return;
             }
 
-            $parts = parse_url($url);
-            $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
-            $allowedHosts = config("store.social_platforms.{$platform}.hosts", []);
-            $path = is_array($parts) ? (string) ($parts['path'] ?? '') : '';
-            $requiredPathPattern = config("store.social_platforms.{$platform}.required_path_pattern");
-            $forbiddenPathPattern = config("store.social_platforms.{$platform}.forbidden_path_pattern");
-            $hasCredentials = is_array($parts) && (isset($parts['user']) || isset($parts['pass']));
-            $port = is_array($parts) ? ($parts['port'] ?? null) : null;
-            $hasNonStandardPort = $port !== null && (int) $port !== 443;
-            $hasRequiredPath = $requiredPathPattern === null
-                || preg_match($requiredPathPattern, $path) === 1;
-            $hasForbiddenPath = $forbiddenPathPattern !== null
-                && preg_match($forbiddenPathPattern, $path) === 1;
-
-            if (! is_array($parts)
-                || strtolower((string) ($parts['scheme'] ?? '')) !== 'https'
-                || ! in_array($host, $allowedHosts, true)
-                || $hasCredentials
-                || $hasNonStandardPort
-                || ! $hasRequiredPath
-                || $hasForbiddenPath) {
+            if (! SocialLinkUrl::isValidForPlatform($platform, $url)) {
                 $validator->errors()->add('url', 'The URL is not valid for the selected social platform.');
             }
         });

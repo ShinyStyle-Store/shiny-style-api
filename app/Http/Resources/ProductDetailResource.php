@@ -3,7 +3,9 @@
 namespace App\Http\Resources;
 
 use App\Services\SeoResolverService;
+use App\Services\SeoSettingsService;
 use App\Services\SeoStructuredDataService;
+use App\Services\StoreStructuredDataService;
 use App\Support\ProductFeatures;
 use App\Support\ProductSpecifications;
 use Illuminate\Http\Request;
@@ -22,10 +24,12 @@ class ProductDetailResource extends ProductListResource
         $variantVideos = $sellableItems
             ->flatMap(fn ($sellableItem) => $sellableItem->variantVideos);
         $video = $this->orderedAttachments($variantVideos->concat($this->productVideos))->first();
+        $settings = app(SeoSettingsService::class)->all();
         $seo = app(SeoResolverService::class)->resolve($this->resource, true, [
             ...$productData,
             'description' => $description,
-        ]);
+        ], $settings);
+        $storeIdentity = app(StoreStructuredDataService::class)->identity($settings, app()->getLocale());
         $options = $this->options->map(fn ($option): array => [
             'id' => (string) $option->getKey(),
             'code' => $option->code,
@@ -73,6 +77,7 @@ class ProductDetailResource extends ProductListResource
             $displayVariantId,
             $variantData,
             $options,
+            $storeIdentity,
         );
         $structuredBreadcrumbs = app(SeoStructuredDataService::class)->breadcrumbs(
             $categoryBreadcrumbs,

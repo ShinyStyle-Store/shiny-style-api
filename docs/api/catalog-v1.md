@@ -351,11 +351,96 @@ No path is reconstructed from URL text. `structuredData.breadcrumbs` uses
 and locale-free logical `path` for each entry.
 
 The payload deliberately omits brand, GTIN, MPN, ratings, reviews, seller
-identity, shipping details, and return policy because no authoritative public
-source for these values is currently wired to the catalog response. The
-frontend should map these fields to the appropriate Schema.org types and emit
-JSON-LD in page HTML; it must not fill missing values with guesses or accept
-free-form JSON-LD from admin input.
+shipping details, and return-policy terms because no authoritative source for
+those values is currently wired to the catalog response. When the localized
+`storeName` setting exists, `structuredData.product.seller` contains the same
+organization identity returned below; it is `null` when that locale has no
+usable store name. The frontend should map these source fields to Schema.org
+types and emit JSON-LD in page HTML; it must not fill missing values with
+guesses or accept free-form JSON-LD from admin input.
+
+### Store and merchant structured data source
+
+```http
+GET /api/v1/store/structured-data
+```
+
+This aggregate public endpoint is an implementation choice so the frontend
+can load the Organization/OnlineStore, WebSite, contact, social profile, EGP,
+and policy reference data from one locale-aware response. It reuses the
+existing SEO settings, public store contact, enabled social links, content
+page service, canonical mapping, and store currency. It exposes only the
+allowlisted public fields; the Admin SEO settings response and contact/social
+administration fields are not returned.
+
+Example when the policy pages exist but store identity and canonical origin
+have not been configured:
+
+```json
+{
+  "data": {
+    "organization": {
+      "organizationId": null,
+      "name": null,
+      "url": null,
+      "logo": null,
+      "contact": {
+        "supportPhone": null,
+        "supportWhatsapp": null,
+        "supportEmail": null,
+        "address": null,
+        "googleMapsUrl": null
+      },
+      "sameAs": []
+    },
+    "website": {
+      "websiteId": null,
+      "name": null,
+      "url": null,
+      "inLanguage": "en",
+      "publisherId": null
+    },
+    "currency": "EGP",
+    "policies": {
+      "returns": {"contentPageSlug": "returns-policy", "path": "/return-policy", "url": null},
+      "shipping": {"contentPageSlug": "shipping-policy", "path": "/shipping-policy", "url": null}
+    }
+  }
+}
+```
+
+`organization.name` and `website.name` come from the `storeName` SEO setting
+for the request locale only. Missing translations stay `null`; they do not
+fall back to a default SEO title or another locale. The logo comes only from
+`storeLogoId`, and is omitted if its image asset is missing/deleted, not an
+image, on a non-publicly served disk, or cannot produce an absolute HTTP(S)
+URL. `defaultOgImageId` is not treated as a store logo. `url` comes only from
+the HTTPS origin in `canonicalBaseUrl`; `APP_URL` and frontend defaults are
+not used as a fallback. `organizationId`, `websiteId`, and
+`website.publisherId` are derived from that configured origin, or `null` when
+the origin is absent or invalid.
+
+`contact` uses the same public fields and localized address as
+`GET /api/v1/store/contact`. `sameAs` contains only enabled Facebook,
+Instagram, and TikTok profile links that still pass the platform host/path
+rules used by the admin link validator. WhatsApp remains in the public contact
+object, not `sameAs`; disabled, unsupported, or invalid persisted links are
+omitted. `currency` uses the single `config/store.php` EGP setting shared with
+checkout and new order creation.
+
+`policies.returns` and `policies.shipping` are references only. Each appears
+only when its corresponding content page record exists and uses the confirmed
+canonical mapping: `returns-policy` → `/return-policy` and
+`shipping-policy` → `/shipping-policy`. Its absolute `url` is present only
+when `canonicalBaseUrl` is configured. The API does not derive refund timing,
+fees, shipping speed, or other merchant policy terms from page prose. Missing
+page records produce `null` references.
+
+Product `seller` is generated from the same identity resolver and has the same
+`organizationId`, localized `name`, origin `url`, and public `logo` as this
+endpoint's `organization`; the storefront can reuse it rather than constructing
+a conflicting merchant. The frontend remains responsible for translating
+these fields to JSON-LD types and for adding the final HTML script tag.
 
 ## 7. Category listing
 

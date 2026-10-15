@@ -188,6 +188,11 @@ final class SeoMetadataService
         return $text !== '' ? $text : null;
     }
 
+    public function cleanPublicText(mixed $value): ?string
+    {
+        return $this->cleanText($value);
+    }
+
     private function truncate(?string $value, int $length): ?string
     {
         return $value === null ? null : mb_substr($value, 0, $length, 'UTF-8');

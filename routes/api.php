@@ -29,6 +29,7 @@ use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Controllers\Api\StoreContactController;
+use App\Http\Controllers\Api\StoreStructuredDataController;
 use App\Http\Controllers\Api\StoreSocialLinkController;
 use App\Http\Middleware\SetApiLocale;
 use Illuminate\Support\Facades\Route;
@@ -46,6 +47,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('shipping-areas', [ShippingAreaController::class, 'index']);
     Route::get('store/contact', [StoreContactController::class, 'showPublic']);
     Route::get('store/social-links', [StoreSocialLinkController::class, 'publicIndex']);
+    Route::get('store/structured-data', [StoreStructuredDataController::class, 'show']);
     Route::get('content-pages/{slug}', [ContentPageController::class, 'publicShow']);
     Route::post('checkout/quote', [CheckoutQuoteController::class, 'store']);
     Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:guest-orders');
