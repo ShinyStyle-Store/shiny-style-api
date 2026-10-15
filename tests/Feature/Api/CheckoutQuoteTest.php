@@ -27,7 +27,7 @@ class CheckoutQuoteTest extends TestCase
             ]);
 
         $response->assertOk()
-            ->assertJsonPath('data.currency', 'EGP')
+            ->assertJsonPath('data.currency', config('store.currency'))
             ->assertJsonPath('data.items.0.product_name', 'منتج عربي')
             ->assertJsonPath('data.items.0.unit_price', '700.00')
             ->assertJsonPath('data.items.0.line_total', '1400.00')

@@ -39,6 +39,7 @@ class OrderCreationTest extends TestCase
 
         $this->assertDatabaseHas('orders', [
             'customer_phone' => '01110007513',
+            'currency' => config('store.currency'),
             'subtotal' => '1400.00',
             'shipping_fee' => '70.00',
             'total' => '1470.00',

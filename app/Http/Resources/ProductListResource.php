@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\SellableItem;
+use App\Models\Category;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Collection;
@@ -33,11 +34,9 @@ class ProductListResource extends JsonResource
         ];
     }
 
-    protected function primaryCategory()
+    protected function primaryCategory(): ?Category
     {
-        return $this->categories->first(
-            fn ($category): bool => (bool) ($category->pivot?->is_primary ?? false),
-        ) ?? $this->categories->first();
+        return $this->resource->primaryCategory($this->categories);
     }
 
     protected function publicSellableItems(): Collection

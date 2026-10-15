@@ -318,15 +318,116 @@ class SeoPublicPayloadTest extends TestCase
             'value_json' => $defaultImage->getKey(),
         ]);
 
-        $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
+        $response = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.image', Storage::disk('public')->url($variantImage->path))
             ->assertJsonPath('data.seo.openGraph.image', Storage::disk('public')->url($variantImage->path));
+        $this->assertContains(
+            Storage::disk('public')->url($variantImage->path),
+            $response->json('data.structuredData.product.images'),
+        );
+        $this->assertSame(
+            $variant->sku,
+            $response->json('data.structuredData.product.offer.sku'),
+        );
 
         $product->seoRecords()->where('locale', 'en')->update(['og_image_id' => $defaultImage->getKey()]);
         $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.seo.openGraph.image', Storage::disk('public')->url($defaultImage->path));
+    }
+
+    public function test_structured_product_excludes_superseded_variants_and_optional_unsourced_claims(): void
+    {
+        $product = $this->product();
+        $historicalVariant = $product->sellableItems()->firstOrFail();
+        $historicalVariant->update([
+            'status' => 'inactive',
+            'is_default' => false,
+            'stock_quantity' => 0,
+        ]);
+        $historicalVariant->superseded_at = now();
+        $historicalVariant->save();
+        $supersededAtBeforeGet = DB::table('sellable_items')
+            ->where('id', $historicalVariant->getKey())
+            ->value('superseded_at');
+        $this->assertNotNull($supersededAtBeforeGet);
+        $currentVariant = SellableItem::query()->create([
+            'product_id' => $product->getKey(),
+            'sku' => 'CURRENT-SEO-SKU',
+            'price' => '125.50',
+            'stock_quantity' => 3,
+            'reserved_quantity' => 1,
+            'status' => 'active',
+            'is_default' => true,
+        ]);
+
+        $response = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.structuredData.product.productId', (string) $product->getKey())
+            ->assertJsonPath('data.structuredData.product.displayVariantId', (string) $currentVariant->getKey())
+            ->assertJsonPath('data.structuredData.product.offer.sellableItemId', (string) $currentVariant->getKey())
+            ->assertJsonPath('data.structuredData.product.offer.sku', 'CURRENT-SEO-SKU')
+            ->assertJsonPath('data.structuredData.product.offer.price', 125.5)
+            ->assertJsonPath('data.structuredData.product.offer.priceCurrency', config('store.currency'))
+            ->assertJsonPath('data.structuredData.product.offer.availability', 'InStock')
+            ->assertJsonCount(1, 'data.structuredData.product.variants');
+
+        $structuredProduct = $response->json('data.structuredData.product');
+        $this->assertNotSame((string) $product->getKey(), $structuredProduct['offer']['sku']);
+        $this->assertArrayNotHasKey('brand', $structuredProduct);
+        $this->assertArrayNotHasKey('gtin', $structuredProduct);
+        $this->assertArrayNotHasKey('mpn', $structuredProduct);
+        $this->assertArrayNotHasKey('aggregateOffer', $structuredProduct);
+        $supersededAtAfterGet = DB::table('sellable_items')
+            ->where('id', $historicalVariant->getKey())
+            ->value('superseded_at');
+        $this->assertSame($supersededAtBeforeGet, $supersededAtAfterGet);
+        $historicalVariant->refresh();
+        $this->assertModelExists($historicalVariant);
+        $this->assertNotNull($historicalVariant->superseded_at);
+        $this->assertNull($historicalVariant->deleted_at);
+        $this->assertSame(
+            [(string) $currentVariant->getKey()],
+            array_column($structuredProduct['variants'], 'id'),
+        );
+    }
+
+    public function test_product_structured_breadcrumbs_follow_the_existing_primary_category_and_localize_names(): void
+    {
+        $product = $this->product();
+        $primaryCategory = $product->categories()->firstOrFail();
+        $parent = Category::query()->create([
+            'slug' => 'seo-breadcrumb-parent',
+            'name_ar' => 'الأب',
+            'name_en' => 'Parent',
+            'status' => 'active',
+        ]);
+        $primaryCategory->update(['parent_id' => $parent->getKey()]);
+        $secondaryCategory = Category::query()->create([
+            'slug' => 'seo-secondary-category',
+            'name_ar' => 'ثانوي',
+            'name_en' => 'Secondary',
+            'status' => 'active',
+            'sort_order' => -1,
+        ]);
+        $product->categories()->attach($secondaryCategory, ['is_primary' => false]);
+
+        $english = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk();
+        $english->assertJsonPath('data.structuredData.breadcrumbs.0.name', 'Parent')
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.path', '/category/seo-breadcrumb-parent')
+            ->assertJsonPath('data.structuredData.breadcrumbs.1.path', '/category/'.$primaryCategory->slug)
+            ->assertJsonPath('data.structuredData.breadcrumbs.2.path', '/products/'.$product->slug);
+
+        $arabic = $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk();
+        $arabic->assertJsonPath('data.structuredData.breadcrumbs.0.name', 'الأب')
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.path', '/category/seo-breadcrumb-parent');
+        $this->assertSame($primaryCategory->slug, $english->json('data.category.slug'));
     }
 
     public function test_product_media_attachment_timestamps_contribute_to_last_significant_modified_at(): void
@@ -370,11 +471,18 @@ class SeoPublicPayloadTest extends TestCase
     public function test_category_noindex_does_not_hide_it_and_category_lists_keep_their_existing_shape(): void
     {
         config(['seo.indexing_allowed' => true]);
+        $parent = Category::query()->create([
+            'slug' => 'seo-empty-category-parent',
+            'name_ar' => 'القسم الأب',
+            'name_en' => 'Parent category',
+            'status' => 'active',
+        ]);
         $category = Category::query()->create([
             'slug' => 'seo-empty-category',
             'name_ar' => 'قسم فارغ',
             'name_en' => 'Empty category',
             'status' => 'active',
+            'parent_id' => $parent->getKey(),
         ]);
         $category->seoRecords()->create([
             'locale' => 'en',
@@ -386,7 +494,17 @@ class SeoPublicPayloadTest extends TestCase
             ->assertJsonPath('data.seo.title', 'Empty category')
             ->assertJsonPath('data.seo.canonicalPath', '/category/'.$category->slug)
             ->assertJsonPath('data.seo.robots.index', false)
-            ->assertJsonPath('data.seo.indexable', false);
+            ->assertJsonPath('data.seo.indexable', false)
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.position', 1)
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.entityType', 'category')
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.id', (string) $parent->getKey())
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.name', 'Parent category')
+            ->assertJsonPath('data.structuredData.breadcrumbs.0.path', '/category/'.$parent->slug)
+            ->assertJsonPath('data.structuredData.breadcrumbs.1.position', 2)
+            ->assertJsonPath('data.structuredData.breadcrumbs.1.id', (string) $category->getKey())
+            ->assertJsonPath('data.structuredData.breadcrumbs.1.name', 'Empty category')
+            ->assertJsonPath('data.structuredData.breadcrumbs.1.path', '/category/'.$category->slug)
+            ->assertJsonCount(2, 'data.structuredData.breadcrumbs');
 
         $list = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/categories')->assertOk();
         $this->assertArrayNotHasKey('seo', $list->json('data.0'));

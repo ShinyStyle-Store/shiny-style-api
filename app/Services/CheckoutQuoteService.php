@@ -103,7 +103,7 @@ class CheckoutQuoteService
         $shippingFee = ExactMoney::toMinorUnits((string) $shippingArea->shipping_fee);
 
         return [
-            'currency' => 'EGP',
+            'currency' => config('store.currency'),
             'items' => $lines,
             'subtotal' => ExactMoney::formatMinorUnits($subtotal),
             'shipping_fee' => ExactMoney::formatMinorUnits($shippingFee),

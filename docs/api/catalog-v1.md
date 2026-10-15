@@ -260,6 +260,103 @@ quantity will still be available when the order is submitted.
 The endpoint returns `404` when the product is missing, inactive, unpublished,
 has no active variant, or has no active category.
 
+### Structured data source payload
+
+Product detail adds `structuredData.product` and `structuredData.breadcrumbs`;
+category detail adds `structuredData.breadcrumbs`. These are typed source data
+for the frontend. The API does not return JSON-LD or HTML. Existing `seo`,
+`sellableItems`, `gallery`, and category `breadcrumbs` remain available.
+
+Example product payload (values depend on the requested locale and current
+catalog state):
+
+```json
+{
+  "structuredData": {
+    "product": {
+      "productId": "42",
+      "name": "Soft Sofa Throw Blanket",
+      "description": "A soft throw blanket.",
+      "images": ["https://cdn.example/image.jpg"],
+      "canonicalPath": "/products/soft-sofa-throw-blanket",
+      "displayVariantId": "81",
+      "offer": {
+        "sellableItemId": "81",
+        "sku": "THROW-BEIGE-M",
+        "offerId": null,
+        "offerApplied": false,
+        "price": 650,
+        "priceCurrency": "EGP",
+        "availability": "InStock"
+      },
+      "variants": [
+        {
+          "id": "81",
+          "sku": "THROW-BEIGE-M",
+          "offerId": null,
+          "offerApplied": false,
+          "price": 650,
+          "originalPrice": 750,
+          "priceCurrency": "EGP",
+          "availability": "InStock",
+          "inStock": true,
+          "images": ["https://cdn.example/image.jpg"],
+          "optionValues": {"color": "beige", "size": "medium"}
+        }
+      ],
+      "variationAttributes": [],
+      "productGroup": null
+    },
+    "breadcrumbs": [
+      {"position": 1, "entityType": "category", "id": "7", "name": "Home Textiles", "path": "/category/home-textiles"},
+      {"position": 2, "entityType": "product", "id": "42", "name": "Soft Sofa Throw Blanket", "path": "/products/soft-sofa-throw-blanket"}
+    ]
+  }
+}
+```
+
+`productId` and variant IDs are catalog identifiers; an ID is never substituted
+for a missing SKU. Names and descriptions follow the existing requested-locale
+fallback. Images are public media URLs from the selected variant and product
+gallery, de-duplicated; each variant's own images are also included in its
+variant entry. `canonicalPath` comes from the existing SEO resolver and is a
+logical path without locale or domain. The frontend adds its configured locale
+and canonical origin.
+
+`offer` describes only the currently displayed variant. Its SKU is the actual
+SellableItem SKU, its price and offer fields come from the existing
+`OfferPricingService` result, and availability uses the existing
+`availableQuantity()` calculation (stock minus reservations). `priceCurrency`
+comes from the single store currency setting in `config/store.php` (`EGP`),
+also used when creating new checkout quotes and orders. Existing order,
+payment, and refund currency fields are historical transaction snapshots; this
+setting does not rewrite them. The orders table's EGP default remains a schema
+default, while runtime commerce and structured data use the config source.
+
+`variants` contains current public sellable items only; inactive, archived,
+soft-deleted, and superseded variants are excluded. Pricing, SKU, availability,
+and variant image remain attached to their own variant. `productGroup` is
+present only when multiple current variants and complete option assignments
+provide a reliable group and `variesBy` relationship. It uses the product ID
+as `productGroupId`, never as a SKU. Regardless of grouping, the `offer` stays
+the single displayed variant offer. No `AggregateOffer` is inferred for a set
+of variants.
+
+Breadcrumb entries use the actual visible category hierarchy, localized names,
+and `/category/{slug}` paths. Product breadcrumbs follow the API's existing
+primary-category choice, then append the product using its resolved canonical
+path. Category detail breadcrumbs contain the visible root-to-category path.
+No path is reconstructed from URL text. `structuredData.breadcrumbs` uses
+1-based positions and carries `entityType`, catalog `id`, localized `name`,
+and locale-free logical `path` for each entry.
+
+The payload deliberately omits brand, GTIN, MPN, ratings, reviews, seller
+identity, shipping details, and return policy because no authoritative public
+source for these values is currently wired to the catalog response. The
+frontend should map these fields to the appropriate Schema.org types and emit
+JSON-LD in page HTML; it must not fill missing values with guesses or accept
+free-form JSON-LD from admin input.
+
 ## 7. Category listing
 
 ```http
