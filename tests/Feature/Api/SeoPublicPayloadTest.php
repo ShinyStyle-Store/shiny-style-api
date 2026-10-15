@@ -10,7 +10,11 @@ use App\Models\Product;
 use App\Models\SeoRecord;
 use App\Models\SeoSetting;
 use App\Models\SellableItem;
+use App\Models\User;
 use App\Services\SeoEligibilityService;
+use App\Services\SeoLastSignificantModifiedAtService;
+use App\Services\SeoMetadataService;
+use App\Services\SeoSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -131,6 +135,80 @@ class SeoPublicPayloadTest extends TestCase
             ->assertJsonPath('data.seo.availableLocales', ['ar'])
             ->assertJsonPath('data.seo.robots.index', false)
             ->assertJsonPath('data.seo.indexable', false);
+    }
+
+    public function test_store_name_does_not_advance_last_modified_when_default_title_is_used(): void
+    {
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        $this->seoSetting('default_seo_title', 'en', 'Default title');
+        $storeName = $this->seoSetting('store_name', 'en', 'Store name');
+
+        $before = $this->resolvedServiceTitle($product, 'en');
+        $this->travelTo(now()->addMinute());
+        $storeName->value_json = 'Updated store name';
+        $storeName->save();
+        $after = $this->resolvedServiceTitle($product, 'en');
+
+        $this->assertSame('Default title', $before['title']);
+        $this->assertSame($before['title'], $after['title']);
+        $this->assertSame($before['lastModifiedAt'], $after['lastModifiedAt']);
+    }
+
+    public function test_store_name_advances_last_modified_when_it_is_the_title_fallback(): void
+    {
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        $storeName = $this->seoSetting('store_name', 'en', 'Store name');
+        $before = $this->resolvedServiceTitle($product, 'en');
+
+        $this->travelTo(now()->addMinute());
+        $changedAt = now()->toISOString();
+        $storeName->value_json = 'Updated store name';
+        $storeName->save();
+        $after = $this->resolvedServiceTitle($product, 'en');
+
+        $this->assertSame('Store name', $before['title']);
+        $this->assertSame('Updated store name', $after['title']);
+        $this->assertSame($changedAt, $after['lastModifiedAt']);
+    }
+
+    public function test_clearing_default_title_tracks_transition_to_store_name(): void
+    {
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        $this->seoSetting('default_seo_title', 'en', 'Default title');
+        $this->seoSetting('store_name', 'en', 'Store name');
+        $before = $this->resolvedServiceTitle($product, 'en');
+
+        $this->travelTo(now()->addMinute());
+        $changedAt = now()->toISOString();
+        app(SeoSettingsService::class)->update([
+            ['key' => 'default_seo_title', 'locale' => 'en', 'value' => null],
+        ], User::factory()->create());
+        $after = $this->resolvedServiceTitle($product, 'en');
+
+        $this->assertSame('Default title', $before['title']);
+        $this->assertSame('Store name', $after['title']);
+        $this->assertSame($changedAt, $after['lastModifiedAt']);
+    }
+
+    public function test_other_locale_title_settings_do_not_advance_requested_locale_last_modified(): void
+    {
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        $this->seoSetting('default_seo_title', 'en', 'English default');
+        $arabicTitle = $this->seoSetting('default_seo_title', 'ar', 'عنوان افتراضي');
+        $before = $this->resolvedServiceTitle($product, 'en');
+
+        $this->travelTo(now()->addMinute());
+        $arabicTitle->value_json = 'عنوان معدل';
+        $arabicTitle->save();
+        $after = $this->resolvedServiceTitle($product, 'en');
+
+        $this->assertSame('English default', $before['title']);
+        $this->assertSame($before['title'], $after['title']);
+        $this->assertSame($before['lastModifiedAt'], $after['lastModifiedAt']);
     }
 
     public function test_last_significant_modified_at_is_locale_specific_and_get_does_not_write(): void
@@ -448,6 +526,29 @@ class SeoPublicPayloadTest extends TestCase
         ]);
 
         return $product;
+    }
+
+    private function seoSetting(string $key, string $locale, string $value): SeoSetting
+    {
+        return SeoSetting::query()->create([
+            'key' => $key,
+            'locale' => $locale,
+            'value_json' => $value,
+        ]);
+    }
+
+    /** @return array{title: ?string, lastModifiedAt: ?string} */
+    private function resolvedServiceTitle(Product $product, string $locale): array
+    {
+        $settings = SeoSetting::query()->get();
+
+        return [
+            'title' => app(SeoMetadataService::class)
+                ->build($product, [], null, $settings, $locale)['title'],
+            'lastModifiedAt' => app(SeoLastSignificantModifiedAtService::class)
+                ->resolve($product, $locale, [], null, $settings)
+                ?->toISOString(),
+        ];
     }
 
     private function image(string $path): MediaAsset

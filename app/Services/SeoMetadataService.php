@@ -25,17 +25,10 @@ final class SeoMetadataService
         Collection $settings,
         string $locale,
     ): array {
-        $name = $presentation['name'] ?? $presentation['title'] ?? null;
         $sourceDescription = $presentation['description'] ?? $presentation['body'] ?? null;
-        $customTitle = $this->cleanText($record?->meta_title);
         $customDescription = $this->cleanText($record?->meta_description);
-        $defaultTitle = $this->settingValue($settings, 'default_seo_title', $locale);
-        $storeName = $this->settingValue($settings, 'store_name', $locale);
         $defaultDescription = $this->settingValue($settings, 'default_meta_description', $locale);
-        $title = $customTitle
-            ?? $this->truncate($this->cleanText($name), 180)
-            ?? $this->truncate($this->cleanText($defaultTitle), 180)
-            ?? $this->truncate($this->cleanText($storeName), 180);
+        $title = $this->resolveTitle($presentation, $record, $settings, $locale)['title'];
         $description = $customDescription
             ?? $this->truncate($this->cleanText($sourceDescription), 160)
             ?? $this->cleanText($defaultDescription);
@@ -53,6 +46,44 @@ final class SeoMetadataService
                 'image' => $this->openGraphImage($entity, $presentation, $record, $settings),
             ],
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $presentation
+     * @param Collection<int, mixed> $settings
+     * @return array{title: ?string, settingKeys: list<string>}
+     */
+    public function resolveTitle(
+        array $presentation,
+        ?SeoRecord $record,
+        Collection $settings,
+        string $locale,
+    ): array {
+        $customTitle = $this->cleanText($record?->meta_title);
+        if ($customTitle !== null) {
+            return ['title' => $customTitle, 'settingKeys' => []];
+        }
+
+        $name = $presentation['name'] ?? $presentation['title'] ?? null;
+        $contentTitle = $this->truncate($this->cleanText($name), 180);
+        if ($contentTitle !== null) {
+            return ['title' => $contentTitle, 'settingKeys' => []];
+        }
+
+        $defaultTitle = $this->truncate(
+            $this->cleanText($this->settingValue($settings, 'default_seo_title', $locale)),
+            180,
+        );
+        if ($defaultTitle !== null) {
+            return ['title' => $defaultTitle, 'settingKeys' => ['defaultSeoTitle']];
+        }
+
+        $storeName = $this->truncate(
+            $this->cleanText($this->settingValue($settings, 'store_name', $locale)),
+            180,
+        );
+
+        return ['title' => $storeName, 'settingKeys' => ['defaultSeoTitle', 'storeName']];
     }
 
     private function canonicalPath(Model $entity, ?string $customPath): ?string

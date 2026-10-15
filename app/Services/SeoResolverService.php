@@ -38,7 +38,7 @@ final class SeoResolverService
         $resolved['indexable'] = $eligibility['indexable'];
         $resolved['availableLocales'] = $availableLocales;
         $resolved['lastSignificantModifiedAt'] = $this->lastModified
-            ->resolve($entity, $locale, $presentation, $seoRecord)
+            ->resolve($entity, $locale, $presentation, $seoRecord, $settings)
             ?->toISOString();
 
         return $resolved;

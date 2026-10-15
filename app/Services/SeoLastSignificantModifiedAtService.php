@@ -10,17 +10,21 @@ use App\Support\SeoSettingCatalog;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /** Resolves the latest known change that can affect one public SEO detail response. */
 final class SeoLastSignificantModifiedAtService
 {
+    public function __construct(private readonly SeoMetadataService $metadata) {}
+
     /** @param array<string, mixed> $presentation */
     public function resolve(
         Model $entity,
         string $locale,
         array $presentation,
         ?SeoRecord $record,
+        Collection $settings,
     ): ?CarbonImmutable {
         $sources = [];
         $this->addColumns($sources, DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey()), [
@@ -52,7 +56,7 @@ final class SeoLastSignificantModifiedAtService
             ]);
         }
 
-        $this->addSettingsSources($sources, $entity, $locale, $presentation, $record);
+        $this->addSettingsSources($sources, $entity, $locale, $presentation, $record, $settings);
 
         if ($sources === []) {
             return null;
@@ -230,16 +234,19 @@ final class SeoLastSignificantModifiedAtService
         string $locale,
         array $presentation,
         ?SeoRecord $record,
+        Collection $settings,
     ): void {
         $keys = ['supportedLocales'];
         if ($record?->robots_index === null || $record?->robots_follow === null) {
             $keys[] = 'defaultRobotsPolicy';
         }
-        if (($record?->meta_title === null || trim($record->meta_title) === '')
-            && empty($presentation['name']) && empty($presentation['title'])) {
-            $keys[] = 'defaultSeoTitle';
-            $keys[] = 'storeName';
-        }
+        $titleResolution = $this->metadata->resolveTitle(
+            $presentation,
+            $record,
+            $settings,
+            $locale,
+        );
+        $keys = array_merge($keys, $titleResolution['settingKeys']);
         if (($record?->meta_description === null || trim($record->meta_description) === '')
             && empty($presentation['description']) && empty($presentation['body'])) {
             $keys[] = 'defaultMetaDescription';
