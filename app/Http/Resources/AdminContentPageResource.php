@@ -10,6 +10,7 @@ class AdminContentPageResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
+            'id' => $this->resource->exists ? $this->getKey() : null,
             'slug' => $this->slug,
             'titleAr' => $this->title_ar,
             'titleEn' => $this->title_en,

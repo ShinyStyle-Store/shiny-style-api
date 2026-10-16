@@ -9,7 +9,6 @@ use App\Models\SeoSetting;
 use App\Support\SeoCanonicalPath;
 use App\Support\SeoSitemapCursor;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Storage;
 
 final class SeoSitemapItemsService
 {
@@ -119,6 +118,31 @@ final class SeoSitemapItemsService
             'items' => $items,
             'nextCursor' => $exhausted ? null : SeoSitemapCursor::encode($type, $lastId),
         ];
+    }
+
+    /** @return array{distinctEntities: int, byLocale: array{ar: int, en: int}, totalLocaleUrls: int} */
+    public function eligibleSummary(string $type): array
+    {
+        $summary = [
+            'distinctEntities' => 0,
+            'byLocale' => ['ar' => 0, 'en' => 0],
+            'totalLocaleUrls' => 0,
+        ];
+        $cursor = null;
+
+        do {
+            $page = $this->page($type, $cursor, self::MAX_LIMIT);
+            foreach ($page['items'] as $item) {
+                $summary['distinctEntities']++;
+                foreach ($item['eligibleLocales'] as $locale) {
+                    $summary['byLocale'][$locale]++;
+                    $summary['totalLocaleUrls']++;
+                }
+            }
+            $cursor = $page['nextCursor'];
+        } while ($cursor !== null);
+
+        return $summary;
     }
 
     /** @param list<int> $visibleCategoryIds @return Collection<int, Product|Category|ContentPage> */
@@ -263,19 +287,17 @@ final class SeoSitemapItemsService
         return [
             'name' => $this->localizedValue($product->name_ar, $product->name_en, $locale),
             'description' => $this->localizedValue($product->description_ar, $product->description_en, $locale),
-            'image' => $asset === null ? null : Storage::disk($asset->disk)->url($asset->path),
+            'imageAsset' => $asset,
         ];
     }
 
     /** @return array<string, mixed> */
     private function categoryPresentation(Category $category, string $locale): array
     {
-        $cover = CategoryCoverPresenter::forPublic($category);
-
         return [
             'name' => $this->localizedValue($category->name_ar, $category->name_en, $locale),
             'description' => $this->localizedValue($category->description_ar, $category->description_en, $locale),
-            'image' => $cover['url'] ?? null,
+            'imageAsset' => CategoryCoverPresenter::loadedCoverAsset($category),
         ];
     }
 

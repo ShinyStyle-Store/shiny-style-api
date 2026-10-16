@@ -41,6 +41,7 @@ class CategoryResource extends JsonResource
                     'name' => $name,
                     'description' => $description,
                     'image' => $coverImage['url'] ?? null,
+                    'imageAsset' => CategoryCoverPresenter::loadedCoverAsset($this->resource),
                 ]),
                 'breadcrumbs' => $breadcrumbs,
                 'structuredData' => [

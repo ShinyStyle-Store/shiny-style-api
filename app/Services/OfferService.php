@@ -26,6 +26,15 @@ final class OfferService
         return DB::transaction(function () use ($data): Offer {
             $offer = Offer::query()->create($this->offerAttributes($data));
             $this->replaceProductsAndValidate($offer, $data['product_ids'] ?? []);
+            if ($this->hasPublicProducts($data['product_ids'] ?? [])) {
+                app(SeoRevalidationService::class)->afterCommitForTarget(
+                    'offer',
+                    (string) $offer->getKey(),
+                    'created',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'metaFeed'],
+                );
+            }
 
             return $offer->load('products');
         });
@@ -39,10 +48,24 @@ final class OfferService
             $productIds = array_key_exists('product_ids', $data)
                 ? array_map('intval', $data['product_ids'])
                 : $currentProductIds;
+            sort($currentProductIds);
+            sort($productIds);
 
             $locked->fill($this->offerAttributes($data));
+            $offerChanged = $locked->isDirty();
             $locked->save();
+            $productsChanged = $productIds !== $currentProductIds;
             $this->replaceProductsAndValidate($locked, $productIds, $currentProductIds);
+            if (($offerChanged || $productsChanged)
+                && $this->hasPublicProducts(array_values(array_unique([...$productIds, ...$currentProductIds])))) {
+                app(SeoRevalidationService::class)->afterCommitForTarget(
+                    'offer',
+                    (string) $locked->getKey(),
+                    'updated',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'metaFeed'],
+                );
+            }
 
             return $locked->load('products');
         });
@@ -111,6 +134,21 @@ final class OfferService
             ...array_diff($productIds, $previousProductIds),
             ...array_diff($previousProductIds, $productIds),
         ]));
-        app(SeoSignificantModificationService::class)->markProducts($changedProductIds);
+        app(SeoSignificantModificationService::class)->markProducts($changedProductIds, notify: false);
+    }
+
+    /** @param list<int> $productIds */
+    private function hasPublicProducts(array $productIds): bool
+    {
+        if ($productIds === []) {
+            return false;
+        }
+
+        $visibleCategoryIds = app(CategoryHierarchyService::class)->effectiveVisibleIds();
+
+        return Product::query()
+            ->visible($visibleCategoryIds)
+            ->whereIn('id', $productIds)
+            ->exists();
     }
 }

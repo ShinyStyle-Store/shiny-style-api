@@ -12,6 +12,7 @@ use App\Models\SocialLink;
 use App\Models\StoreContact;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class StoreStructuredDataApiTest extends TestCase
@@ -187,7 +188,7 @@ class StoreStructuredDataApiTest extends TestCase
         config(['filesystems.disks.test-invalid-url' => [
             'driver' => 'local',
             'root' => storage_path('framework/testing/disks/invalid-logo-url'),
-            'url' => 'http://127.0.0.1:8000/media',
+            'url' => 'ftp://cdn.example.com/media',
             'visibility' => 'public',
         ]]);
         $invalidUrlLogo = $this->image('test-invalid-url', 'logo.webp');
@@ -201,6 +202,24 @@ class StoreStructuredDataApiTest extends TestCase
         $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/store/structured-data')
             ->assertOk()
             ->assertJsonPath('data.organization.logo', null);
+    }
+
+    public function test_public_disk_accepts_a_local_url_when_its_visibility_is_explicitly_public(): void
+    {
+        config(['filesystems.disks.test-public-local' => [
+            'driver' => 'local',
+            'root' => storage_path('framework/testing/disks/public-local-url'),
+            'url' => 'http://127.0.0.1:8000/media',
+            'visibility' => 'public',
+        ]]);
+        $logo = $this->image('test-public-local', 'logos/store.webp');
+        $this->setting('store_name', 'en', 'Local public store');
+        $this->setting('canonical_base_url', '', 'https://merchant.example.com');
+        $this->setting('store_logo_id', '', $logo->getKey());
+
+        $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/store/structured-data')
+            ->assertOk()
+            ->assertJsonPath('data.organization.logo', Storage::disk('test-public-local')->url($logo->path));
     }
 
     public function test_product_seller_uses_the_same_identity_as_the_public_store_profile(): void

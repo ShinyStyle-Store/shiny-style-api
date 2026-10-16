@@ -17,7 +17,7 @@ class CategoryHierarchyService
     ): CategoryVisibilitySnapshot
     {
         $columns = [
-            'id', 'parent_id', 'status', 'deleted_at', 'created_at', 'updated_at',
+            'id', 'parent_id', 'slug', 'status', 'deleted_at', 'created_at', 'updated_at',
             'seo_last_significant_modified_at',
         ];
 

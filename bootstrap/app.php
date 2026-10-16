@@ -21,6 +21,10 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyMinute()
             ->withoutOverlapping()
             ->onOneServer();
+        $schedule->command('seo:revalidation-time-boundaries')
+            ->everyMinute()
+            ->withoutOverlapping(2)
+            ->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(ValidateCategoryMethodSpoof::class);

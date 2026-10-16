@@ -35,8 +35,25 @@ final class SeoSettingsService
     public function update(array $settings, User $actor): Collection
     {
         return DB::transaction(function () use ($settings, $actor): Collection {
+            $changedLocales = [];
             foreach ($settings as $setting) {
-                $this->updateOne($setting, $actor);
+                if ($this->updateOne($setting, $actor)) {
+                    $locale = $setting['locale'];
+                    $changedLocales = array_merge(
+                        $changedLocales,
+                        $locale === '' ? ['ar', 'en'] : [$locale],
+                    );
+                }
+            }
+
+            if ($changedLocales !== []) {
+                app(SeoRevalidationService::class)->afterCommitForTarget(
+                    'store',
+                    'store',
+                    'updated',
+                    array_values(array_unique($changedLocales)),
+                    ['catalog', 'content', 'store', 'sitemap', 'redirects', 'metaFeed'],
+                );
             }
 
             return $this->all();
@@ -44,7 +61,7 @@ final class SeoSettingsService
     }
 
     /** @param array{key: string, locale: string, value: mixed} $setting */
-    private function updateOne(array $setting, User $actor): void
+    private function updateOne(array $setting, User $actor): bool
     {
         $query = SeoSetting::query()
             ->where('key', $setting['key'])
@@ -55,7 +72,7 @@ final class SeoSettingsService
 
         if ($setting['value'] === null) {
             if ($existing === null) {
-                return;
+                return false;
             }
 
             $before = ['key' => $apiKey, 'locale' => $locale, 'value' => $existing->value_json];
@@ -63,11 +80,11 @@ final class SeoSettingsService
             $existing->delete();
             $this->audits->record((int) $actor->getKey(), 'seo_setting', $targetId, 'delete', $before, null);
 
-            return;
+            return true;
         }
 
         if ($existing !== null && $existing->value_json === $setting['value']) {
-            return;
+            return false;
         }
 
         $creating = $existing === null;
@@ -85,7 +102,7 @@ final class SeoSettingsService
         }
 
         if (! $creating && $existing->value_json === $setting['value']) {
-            return;
+            return false;
         }
 
         $before = $creating
@@ -107,5 +124,7 @@ final class SeoSettingsService
             $before,
             $after,
         );
+
+        return true;
     }
 }

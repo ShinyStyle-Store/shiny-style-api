@@ -14,14 +14,14 @@ use InvalidArgumentException;
 /** Writes timestamps for public changes that no surviving source row can describe. */
 final class SeoSignificantModificationService
 {
-    public function mark(Model $entity, ?CarbonImmutable $at = null, ?string $locale = null): void
+    public function mark(Model $entity, ?CarbonImmutable $at = null, ?string $locale = null, bool $notify = true): void
     {
         if (! $entity instanceof Product && ! $entity instanceof Category && ! $entity instanceof ContentPage) {
             throw new InvalidArgumentException('Unsupported SEO significant modification target.');
         }
 
         if ($locale !== null) {
-            $this->markLocales($entity, [$locale], $at);
+            $this->markLocales($entity, [$locale], $at, $notify);
 
             return;
         }
@@ -29,10 +29,14 @@ final class SeoSignificantModificationService
         DB::table($entity->getTable())
             ->where($entity->getKeyName(), $entity->getKey())
             ->update(['seo_last_significant_modified_at' => ($at ?? CarbonImmutable::now('UTC'))->utc()->toDateTimeString()]);
+
+        if ($notify) {
+            $this->notifyEntity($entity, ['ar', 'en']);
+        }
     }
 
     /** @param list<string> $locales */
-    public function markLocales(Model $entity, array $locales, ?CarbonImmutable $at = null): void
+    public function markLocales(Model $entity, array $locales, ?CarbonImmutable $at = null, bool $notify = true): void
     {
         if (! $entity instanceof Product && ! $entity instanceof Category && ! $entity instanceof ContentPage) {
             throw new InvalidArgumentException('Unsupported SEO significant modification target.');
@@ -45,11 +49,14 @@ final class SeoSignificantModificationService
         }
         if ($values !== []) {
             DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey())->update($values);
+            if ($notify) {
+                $this->notifyEntity($entity, array_values(array_unique($locales)));
+            }
         }
     }
 
     /** @param list<int> $productIds */
-    public function markProducts(array $productIds, ?CarbonImmutable $at = null): void
+    public function markProducts(array $productIds, ?CarbonImmutable $at = null, bool $notify = true): void
     {
         $ids = array_values(array_unique(array_filter(array_map('intval', $productIds), static fn (int $id): bool => $id > 0)));
         if ($ids === []) {
@@ -59,6 +66,19 @@ final class SeoSignificantModificationService
         DB::table('products')->whereIn('id', $ids)->update([
             'seo_last_significant_modified_at' => ($at ?? CarbonImmutable::now('UTC'))->utc()->toDateTimeString(),
         ]);
+
+        if ($notify) {
+            $visibleCategoryIds = app(CategoryHierarchyService::class)->effectiveVisibleIds();
+            $visibleProductIds = Product::query()
+                ->visible($visibleCategoryIds)
+                ->whereIn('id', $ids)
+                ->pluck('id')
+                ->map(fn ($id): int => (int) $id)
+                ->all();
+            foreach (Product::query()->whereIn('id', $visibleProductIds)->get() as $product) {
+                $this->notifyEntity($product, ['ar', 'en'], knownPublic: true);
+            }
+        }
     }
 
     public function markInventoryAvailabilityTransition(SellableItem $item, int $previousAvailableQuantity): void
@@ -83,7 +103,7 @@ final class SeoSignificantModificationService
     }
 
     /** @param list<int> $categoryIds */
-    public function markCategories(array $categoryIds, ?CarbonImmutable $at = null): void
+    public function markCategories(array $categoryIds, ?CarbonImmutable $at = null, bool $notify = true): void
     {
         $ids = array_values(array_unique(array_filter(array_map('intval', $categoryIds), static fn (int $id): bool => $id > 0)));
         if ($ids === []) {
@@ -93,6 +113,16 @@ final class SeoSignificantModificationService
         DB::table('categories')->whereIn('id', $ids)->update([
             'seo_last_significant_modified_at' => ($at ?? CarbonImmutable::now('UTC'))->utc()->toDateTimeString(),
         ]);
+
+        if ($notify) {
+            $visibleIds = array_fill_keys(
+                app(CategoryHierarchyService::class)->visibilitySnapshot()->visibleIds(),
+                true,
+            );
+            foreach (Category::query()->whereIn('id', array_intersect($ids, array_keys($visibleIds)))->get() as $category) {
+                $this->notifyEntity($category, ['ar', 'en'], knownPublic: true);
+            }
+        }
     }
 
     /** @param list<array{type: string, id: int, locale: string}> $targets */
@@ -127,5 +157,43 @@ final class SeoSignificantModificationService
         }
 
         return $locale;
+    }
+
+    /** @param list<string> $locales */
+    private function notifyEntity(Model $entity, array $locales, bool $knownPublic = false): void
+    {
+        $scopes = match (true) {
+            $entity instanceof Product => ['catalog', 'sitemap', 'metaFeed'],
+            $entity instanceof Category => ['catalog', 'sitemap'],
+            $entity instanceof ContentPage => ['content', 'sitemap'],
+            default => [],
+        };
+
+        if ($scopes !== [] && ($knownPublic || $this->isPubliclyVisible($entity))) {
+            app(SeoRevalidationService::class)->afterCommitForEntity(
+                $entity,
+                'updated',
+                $locales,
+                $scopes,
+            );
+        }
+    }
+
+    private function isPubliclyVisible(Model $entity): bool
+    {
+        return match (true) {
+            $entity instanceof Product => Product::query()
+                ->visible(app(CategoryHierarchyService::class)->effectiveVisibleIds())
+                ->whereKey($entity->getKey())
+                ->exists(),
+            $entity instanceof Category => app(CategoryHierarchyService::class)
+                ->visibilitySnapshot()
+                ->contains($entity),
+            $entity instanceof ContentPage => ContentPage::query()
+                ->whereKey($entity->getKey())
+                ->whereIn('slug', config('content.page_slugs', []))
+                ->exists(),
+            default => false,
+        };
     }
 }

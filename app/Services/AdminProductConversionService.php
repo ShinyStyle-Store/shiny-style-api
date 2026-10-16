@@ -154,6 +154,7 @@ final class AdminProductConversionService
                     abort(404);
                 }
                 $this->assertSourceCanBeConverted($lockedProduct, $source, $items, $options, $pivots);
+                $wasPublic = $this->isProductPubliclyVisible($lockedProduct);
 
                 $currentToken = $this->contextToken($lockedProduct, $items, $options, $values, $pivots);
                 if (! hash_equals($currentToken, (string) $data['context_token'])) {
@@ -226,6 +227,16 @@ final class AdminProductConversionService
                 $record->result = $response;
                 $record->save();
 
+                if ($wasPublic || $this->isProductPubliclyVisible($lockedProduct)) {
+                    app(SeoSignificantModificationService::class)->mark($lockedProduct, notify: false);
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $lockedProduct,
+                        'updated',
+                        ['ar', 'en'],
+                        ['catalog', 'sitemap', 'metaFeed'],
+                    );
+                }
+
                 return ['data' => $response, 'replayed' => false];
             });
         } catch (QueryException $exception) {
@@ -269,6 +280,16 @@ final class AdminProductConversionService
             ->all();
 
         return [$items, $options, $values, $pivots];
+    }
+
+    private function isProductPubliclyVisible(Product $product): bool
+    {
+        $visibleCategoryIds = app(CategoryHierarchyService::class)->effectiveVisibleIds();
+
+        return Product::query()
+            ->visible($visibleCategoryIds)
+            ->whereKey($product->getKey())
+            ->exists();
     }
 
     /** @param Collection<int, SellableItem> $items @param \Illuminate\Support\Collection<int, ProductOption> $options @param list<array{sellable_item_id: int, product_option_value_id: int}> $pivots */

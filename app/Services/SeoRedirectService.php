@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 
 final class SeoRedirectService
 {
@@ -44,6 +45,7 @@ final class SeoRedirectService
 
     /**
      * @param list<string> $locales
+     * @return list<string> Paths affected by redirects and their destinations.
      */
     public function recordProductSlugChange(
         Product $product,
@@ -51,14 +53,68 @@ final class SeoRedirectService
         array $locales,
         bool $wasPublic,
         ?User $actor,
-    ): void {
+    ): array {
         if ($oldSlug === (string) $product->slug) {
-            return;
+            return [];
         }
+
+        return $this->recordEntitySlugChange(
+            $product,
+            'product',
+            $oldSlug,
+            $locales,
+            $wasPublic,
+            $wasPublic && $this->isProductPubliclyVisible((int) $product->getKey()),
+            $actor,
+        );
+    }
+
+    /**
+     * @param list<string> $locales
+     * @return list<string> Paths affected by redirects and their destinations.
+     */
+    public function recordCategorySlugChange(
+        Category $category,
+        string $oldSlug,
+        array $locales,
+        bool $wasPublic,
+        bool $isPublicAfterUpdate,
+        ?User $actor,
+    ): array {
+        if ($oldSlug === (string) $category->slug) {
+            return [];
+        }
+
+        return $this->recordEntitySlugChange(
+            $category,
+            'category',
+            $oldSlug,
+            $locales,
+            $wasPublic,
+            $isPublicAfterUpdate,
+            $actor,
+        );
+    }
+
+    /**
+     * @param list<string> $locales
+     * @return list<string> Paths affected by redirects and their destinations.
+     */
+    private function recordEntitySlugChange(
+        Model $entity,
+        string $entityType,
+        string $oldSlug,
+        array $locales,
+        bool $wasPublic,
+        bool $isPublicAfterUpdate,
+        ?User $actor,
+    ): array {
+        $entityId = (int) $entity->getKey();
+        $newSlug = (string) $entity->getAttribute('slug');
 
         $scope = $this->currentDomainScope();
         foreach ($locales as $locale) {
-            $newPath = SeoRedirectPath::productPath($locale, (string) $product->slug);
+            $newPath = $this->entityPath($entityType, $locale, $newSlug);
             if ($this->sourcePathExists($newPath)) {
                 throw ValidationException::withMessages([
                     'slug' => 'This slug is reserved by SEO redirect history.',
@@ -67,26 +123,27 @@ final class SeoRedirectService
         }
 
         if (! $wasPublic) {
-            return;
+            return [];
         }
 
         if ($scope === null) {
             throw ValidationException::withMessages([
-                'slug' => 'Configure the canonical store domain before changing the slug of a public product.',
+                'slug' => 'Configure the canonical store domain before changing the slug of a public '.$entityType.'.',
             ]);
         }
 
-        $isPublicAfterUpdate = $this->isProductPubliclyVisible((int) $product->getKey());
         $invalidated = [];
+        $revalidationSourcePaths = [];
+        $revalidationDestinationPaths = [];
         $previousLocalizedPaths = array_map(
-            static fn (string $locale): string => SeoRedirectPath::productPath($locale, $oldSlug),
+            fn (string $locale): string => $this->entityPath($entityType, $locale, $oldSlug),
             $locales,
         );
         $historicalRedirects = SeoRedirect::query()
-            ->where(function (Builder $query) use ($product, $previousLocalizedPaths): void {
-                $query->where(function (Builder $entityQuery) use ($product): void {
-                    $entityQuery->where('entity_type', 'product')
-                        ->where('entity_id', $product->getKey());
+            ->where(function (Builder $query) use ($entityType, $entityId, $previousLocalizedPaths): void {
+                $query->where(function (Builder $entityQuery) use ($entityType, $entityId): void {
+                    $entityQuery->where('entity_type', $entityType)
+                        ->where('entity_id', $entityId);
                 })->orWhereIn('destination_path', $previousLocalizedPaths);
             })
             ->lockForUpdate()
@@ -94,19 +151,20 @@ final class SeoRedirectService
 
         foreach ($historicalRedirects as $redirect) {
             $destination = SeoRedirectPath::parse($redirect->destination_path);
-            if (($destination['entityType'] ?? null) !== 'product'
+            if (($destination['entityType'] ?? null) !== $entityType
                 || ($destination['locale'] ?? null) === null
                 || (! in_array($redirect->destination_path, $previousLocalizedPaths, true)
-                    && ($redirect->entity_type !== 'product' || (int) $redirect->entity_id !== (int) $product->getKey()))) {
+                    && ($redirect->entity_type !== $entityType || (int) $redirect->entity_id !== $entityId))) {
                 continue;
             }
 
-            $newDestination = SeoRedirectPath::productPath($destination['locale'], (string) $product->slug);
+            $newDestination = $this->entityPath($entityType, $destination['locale'], $newSlug);
             if ($redirect->destination_path === $newDestination) {
                 continue;
             }
 
             $before = $this->snapshot($redirect);
+            $previousDestinationPath = $redirect->destination_path;
             $redirect->destination_path = $newDestination;
             $redirect->save();
             $this->audits->record(
@@ -118,20 +176,23 @@ final class SeoRedirectService
                 $this->snapshot($redirect),
             );
             $invalidated[] = [$redirect->domain_scope, $redirect->source_path];
+            $revalidationSourcePaths[] = $redirect->source_path;
+            $revalidationDestinationPaths[] = $previousDestinationPath;
+            $revalidationDestinationPaths[] = $newDestination;
         }
 
         foreach ($locales as $locale) {
-            $sourcePath = SeoRedirectPath::productPath($locale, $oldSlug);
-            $destinationPath = SeoRedirectPath::productPath($locale, (string) $product->slug);
+            $sourcePath = $this->entityPath($entityType, $locale, $oldSlug);
+            $destinationPath = $this->entityPath($entityType, $locale, $newSlug);
             $redirect = SeoRedirect::query()
                 ->forSource($scope, $sourcePath)
                 ->lockForUpdate()
                 ->first();
 
             if ($redirect !== null
-                && ($redirect->entity_type !== 'product' || (int) $redirect->entity_id !== (int) $product->getKey())) {
+                && ($redirect->entity_type !== $entityType || (int) $redirect->entity_id !== $entityId)) {
                 throw ValidationException::withMessages([
-                    'slug' => 'The old product path conflicts with an existing SEO redirect.',
+                    'slug' => 'The old '.$entityType.' path conflicts with an existing SEO redirect.',
                 ]);
             }
 
@@ -146,8 +207,8 @@ final class SeoRedirectService
                 'status_code' => 301,
                 'is_active' => $isPublicAfterUpdate,
                 'reason' => 'slug_change',
-                'entity_type' => 'product',
-                'entity_id' => (int) $product->getKey(),
+                'entity_type' => $entityType,
+                'entity_id' => $entityId,
                 ...($creating ? ['created_by' => $actor?->getKey()] : []),
             ]);
             $redirect->save();
@@ -160,9 +221,25 @@ final class SeoRedirectService
                 $this->snapshot($redirect),
             );
             $invalidated[] = [$scope, $sourcePath];
+            $revalidationSourcePaths[] = $sourcePath;
+            $revalidationDestinationPaths[] = $destinationPath;
         }
 
         $this->forgetAfterCommit($invalidated);
+
+        return array_values(array_unique([
+            ...$revalidationSourcePaths,
+            ...$revalidationDestinationPaths,
+        ]));
+    }
+
+    private function entityPath(string $entityType, string $locale, string $slug): string
+    {
+        return match ($entityType) {
+            'product' => SeoRedirectPath::productPath($locale, $slug),
+            'category' => SeoRedirectPath::categoryPath($locale, $slug),
+            default => throw new InvalidArgumentException('Unsupported SEO redirect entity type.'),
+        };
     }
 
     /** @return array{destinationPath: string, statusCode: int}|null */
@@ -257,6 +334,14 @@ final class SeoRedirectService
             ]);
             $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $redirect->getKey(), 'create', null, $this->snapshot($redirect));
             $this->forgetAfterCommit([[$scope, $sourcePath]]);
+            app(SeoRevalidationService::class)->afterCommitForTarget(
+                'redirect',
+                (string) $redirect->getKey(),
+                'created',
+                ['ar', 'en'],
+                ['redirects', 'sitemap'],
+                [$sourcePath, $destinationPath],
+            );
 
             return $redirect;
         }));
@@ -298,6 +383,19 @@ final class SeoRedirectService
             if ($before !== $this->snapshot($locked)) {
                 $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $locked->getKey(), 'update', $before, $this->snapshot($locked));
                 $this->forgetAfterCommit([[$locked->domain_scope, $locked->source_path]]);
+                app(SeoRevalidationService::class)->afterCommitForTarget(
+                    'redirect',
+                    (string) $locked->getKey(),
+                    'updated',
+                    ['ar', 'en'],
+                    ['redirects', 'sitemap'],
+                    array_values(array_unique([
+                        (string) ($before['sourcePath'] ?? ''),
+                        (string) ($before['destinationPath'] ?? ''),
+                        $locked->source_path,
+                        $locked->destination_path,
+                    ])),
+                );
             }
 
             return $locked;
@@ -317,6 +415,14 @@ final class SeoRedirectService
             $locked->save();
             $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $locked->getKey(), 'delete', $before, $this->snapshot($locked));
             $this->forgetAfterCommit([[$locked->domain_scope, $locked->source_path]]);
+            app(SeoRevalidationService::class)->afterCommitForTarget(
+                'redirect',
+                (string) $locked->getKey(),
+                'deleted',
+                ['ar', 'en'],
+                ['redirects', 'sitemap'],
+                [$locked->source_path, $locked->destination_path],
+            );
 
             return $locked;
         }));

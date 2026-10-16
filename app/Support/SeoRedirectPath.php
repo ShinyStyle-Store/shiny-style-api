@@ -50,4 +50,9 @@ final class SeoRedirectPath
     {
         return '/'.$locale.'/products/'.$slug;
     }
+
+    public static function categoryPath(string $locale, string $slug): string
+    {
+        return '/'.$locale.'/category/'.$slug;
+    }
 }

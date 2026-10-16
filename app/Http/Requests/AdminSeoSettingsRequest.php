@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\MediaAsset;
+use App\Services\SeoPublicImageService;
 use App\Support\SeoSettingCatalog;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -138,11 +139,8 @@ class AdminSeoSettingsRequest extends FormRequest
     {
         return filter_var($value, FILTER_VALIDATE_INT) !== false
             && (int) $value > 0
-            && MediaAsset::query()
-                ->whereKey((int) $value)
-                ->where('media_type', 'image')
-                ->whereNull('deleted_at')
-                ->exists();
+            && app(SeoPublicImageService::class)
+                ->url(MediaAsset::query()->find((int) $value)) !== null;
     }
 
     private function isHttpsOrigin(mixed $value): bool

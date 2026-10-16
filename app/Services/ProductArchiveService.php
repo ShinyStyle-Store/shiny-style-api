@@ -14,9 +14,19 @@ class ProductArchiveService
     {
         DB::transaction(function () use ($product): void {
             $locked = Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+            $wasPublic = $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
             $locked->status = 'inactive';
             $locked->save();
             $locked->delete();
+
+            if ($wasPublic) {
+                app(SeoRevalidationService::class)->afterCommitForEntity(
+                    $locked,
+                    'archived',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'metaFeed', 'redirects'],
+                );
+            }
         });
     }
 

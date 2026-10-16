@@ -137,7 +137,7 @@ class SeoPublicPayloadTest extends TestCase
             ->assertJsonPath('data.seo.indexable', false);
     }
 
-    public function test_store_name_does_not_advance_last_modified_when_default_title_is_used(): void
+    public function test_store_name_advances_last_modified_when_seller_uses_it_even_if_default_title_stays_stable(): void
     {
         $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
         $product = $this->product();
@@ -145,14 +145,151 @@ class SeoPublicPayloadTest extends TestCase
         $storeName = $this->seoSetting('store_name', 'en', 'Store name');
 
         $before = $this->resolvedServiceTitle($product, 'en');
+        $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()->assertJsonPath('data.structuredData.product.seller.name', 'Store name');
         $this->travelTo(now()->addMinute());
+        $changedAt = now()->toISOString();
         $storeName->value_json = 'Updated store name';
         $storeName->save();
         $after = $this->resolvedServiceTitle($product, 'en');
+        $response = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()->assertJsonPath('data.structuredData.product.seller.name', 'Updated store name');
 
         $this->assertSame('Default title', $before['title']);
         $this->assertSame($before['title'], $after['title']);
-        $this->assertSame($before['lastModifiedAt'], $after['lastModifiedAt']);
+        $this->assertSame($changedAt, $after['lastModifiedAt']);
+        $this->assertSame($changedAt, $response->json('data.seo.lastSignificantModifiedAt'));
+    }
+
+    public function test_private_metadata_image_uses_public_fallback_without_writing_on_get(): void
+    {
+        config(['seo.indexing_allowed' => true]);
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        config(['filesystems.disks.test-private' => [
+            'driver' => 'local',
+            'root' => storage_path('framework/testing/disks/private-seo-images'),
+            'url' => 'https://cdn.example.com/private',
+            'visibility' => 'private',
+        ]]);
+        $product = $this->product();
+        $privateImage = MediaAsset::query()->create([
+            'disk' => 'test-private', 'path' => 'private.webp', 'media_type' => 'image',
+            'mime_type' => 'image/webp', 'size_bytes' => 10,
+        ]);
+        $publicFallback = $this->image('seo-public-fallback.webp');
+        $product->seoRecords()->create([
+            'locale' => 'en', 'og_image_id' => $privateImage->getKey(),
+        ]);
+        $fallbackSetting = SeoSetting::query()->create([
+            'key' => 'default_og_image_id', 'locale' => '', 'value_json' => $publicFallback->getKey(),
+        ]);
+        $before = $this->snapshotSeoReadTables();
+
+        $first = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $second = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+
+        $this->assertSame(Storage::disk('public')->url($publicFallback->path), $first->json('data.seo.openGraph.image'));
+        $this->assertSame($first->json('data.seo.openGraph.image'), $second->json('data.seo.openGraph.image'));
+        $this->assertSame($before, $this->snapshotSeoReadTables());
+
+        $replacementFallback = $this->image('seo-public-fallback-replacement.webp');
+        $this->travelTo(now()->addMinute());
+        $changedAt = now()->toISOString();
+        $fallbackSetting->value_json = $replacementFallback->getKey();
+        $fallbackSetting->save();
+        $updated = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+
+        $this->assertSame(
+            Storage::disk('public')->url($replacementFallback->path),
+            $updated->json('data.seo.openGraph.image'),
+        );
+        $this->assertSame($changedAt, $updated->json('data.seo.lastSignificantModifiedAt'));
+    }
+
+    public function test_cleaned_empty_description_tracks_default_description_and_its_changes(): void
+    {
+        config(['seo.indexing_allowed' => true]);
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product(['description_en' => '<p>&nbsp;</p>']);
+        $defaultDescription = $this->seoSetting('default_meta_description', 'en', 'Initial default description');
+
+        $before = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk();
+        $this->travelTo(now()->addMinute());
+        $changedAt = now()->toISOString();
+        $defaultDescription->value_json = 'Changed default description';
+        $defaultDescription->save();
+        $after = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk();
+
+        $this->assertSame('Initial default description', $before->json('data.seo.description'));
+        $this->assertSame('Changed default description', $after->json('data.seo.description'));
+        $this->assertSame($changedAt, $after->json('data.seo.lastSignificantModifiedAt'));
+    }
+
+    public function test_product_seller_identity_dependencies_follow_used_locale_and_ignore_unused_origin(): void
+    {
+        config(['seo.indexing_allowed' => true]);
+        $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
+        $product = $this->product();
+        SeoSetting::query()->create([
+            'key' => 'canonical_base_url', 'locale' => '', 'value_json' => 'https://shop.example',
+        ]);
+
+        $withoutSeller = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $beforeUnusedChange = $withoutSeller->json('data.seo.lastSignificantModifiedAt');
+        $origin = SeoSetting::query()->where('key', 'canonical_base_url')->firstOrFail();
+        $this->travelTo(now()->addMinute());
+        $origin->value_json = 'https://new-shop.example';
+        $origin->save();
+        $afterUnusedChange = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+
+        $this->assertNull($withoutSeller->json('data.structuredData.product.seller'));
+        $this->assertSame($beforeUnusedChange, $afterUnusedChange->json('data.seo.lastSignificantModifiedAt'));
+
+        $storeName = $this->seoSetting('store_name', 'en', 'English store');
+        $this->travelTo(now()->addMinute());
+        $storeName->value_json = 'Updated English store';
+        $storeName->save();
+        $withSeller = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $this->assertSame('Updated English store', $withSeller->json('data.structuredData.product.seller.name'));
+        $this->assertSame(now()->toISOString(), $withSeller->json('data.seo.lastSignificantModifiedAt'));
+
+        $this->travelTo(now()->addMinute());
+        $changedOriginAt = now()->toISOString();
+        $origin->value_json = 'https://seller-identity.example';
+        $origin->save();
+        $withUpdatedOrigin = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $this->assertSame('https://seller-identity.example', $withUpdatedOrigin->json('data.structuredData.product.seller.url'));
+        $this->assertSame($changedOriginAt, $withUpdatedOrigin->json('data.seo.lastSignificantModifiedAt'));
+
+        $this->travelTo(now()->addMinute());
+        $changedLogoAt = now()->toISOString();
+        $logo = $this->image('seller-logo.webp');
+        SeoSetting::query()->create([
+            'key' => 'store_logo_id', 'locale' => '', 'value_json' => $logo->getKey(),
+        ]);
+        $withUpdatedLogo = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $this->assertSame(Storage::disk('public')->url($logo->path), $withUpdatedLogo->json('data.structuredData.product.seller.logo'));
+        $this->assertSame($changedLogoAt, $withUpdatedLogo->json('data.seo.lastSignificantModifiedAt'));
+
+        $englishDate = $withUpdatedLogo->json('data.seo.lastSignificantModifiedAt');
+        $arabicName = $this->seoSetting('store_name', 'ar', 'متجر عربي');
+        $this->travelTo(now()->addMinute());
+        $arabicName->value_json = 'متجر عربي محدث';
+        $arabicName->save();
+        $afterOtherLocaleChange = $this->withHeader('Accept-Language', 'en')
+            ->getJson('/api/v1/products/'.$product->slug)->assertOk();
+
+        $this->assertSame($englishDate, $afterOtherLocaleChange->json('data.seo.lastSignificantModifiedAt'));
     }
 
     public function test_store_name_advances_last_modified_when_it_is_the_title_fallback(): void
@@ -737,5 +874,19 @@ class SeoPublicPayloadTest extends TestCase
             'mime_type' => 'image/jpeg',
             'size_bytes' => 100,
         ]);
+    }
+
+    /** @return array<string, array<int, array<string, mixed>>> */
+    private function snapshotSeoReadTables(): array
+    {
+        $tables = ['seo_records', 'seo_settings', 'seo_audits', 'products', 'media_assets'];
+        $snapshot = [];
+        foreach ($tables as $table) {
+            $snapshot[$table] = DB::table($table)->orderBy('id')->get()->map(
+                static fn (object $row): array => (array) $row,
+            )->all();
+        }
+
+        return $snapshot;
     }
 }

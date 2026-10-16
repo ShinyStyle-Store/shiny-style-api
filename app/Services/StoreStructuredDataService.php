@@ -15,8 +15,6 @@ use App\Support\SeoSettingCatalog;
 use App\Support\SocialLinkUrl;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Storage;
-use Throwable;
 
 final class StoreStructuredDataService
 {
@@ -25,6 +23,7 @@ final class StoreStructuredDataService
     public function __construct(
         private readonly SeoSettingsService $settings,
         private readonly SeoMetadataService $metadata,
+        private readonly SeoPublicImageService $images,
         private readonly StoreContactService $contacts,
         private readonly ContentPageService $contentPages,
         private readonly SeoStructuredDataService $structuredData,
@@ -105,41 +104,7 @@ final class StoreStructuredDataService
             ->whereNull('deleted_at')
             ->first();
 
-        if (! $asset instanceof MediaAsset || ! $this->isPublicDisk($asset->disk)) {
-            return null;
-        }
-
-        try {
-            $url = Storage::disk($asset->disk)->url($asset->path);
-        } catch (Throwable) {
-            return null;
-        }
-        if (! is_string($url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
-            return null;
-        }
-
-        $parts = parse_url($url);
-
-        return is_array($parts)
-            && in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
-            && is_string($parts['host'] ?? null)
-            && $parts['host'] !== ''
-            && SeoCanonicalOrigin::isPublicHost($parts['host'])
-            && ! isset($parts['user'])
-            && ! isset($parts['pass'])
-                ? $url
-                : null;
-    }
-
-    private function isPublicDisk(string $disk): bool
-    {
-        $configuration = config("filesystems.disks.{$disk}", []);
-        if (! is_array($configuration)) {
-            return false;
-        }
-
-        return ($configuration['visibility'] ?? null) === 'public'
-            || ($configuration['driver'] ?? null) === 'cloudinary';
+        return $this->images->url($asset);
     }
 
     private function publicGoogleMapsUrl(mixed $value): ?string

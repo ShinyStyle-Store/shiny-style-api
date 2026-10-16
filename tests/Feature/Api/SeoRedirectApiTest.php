@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Api;
 
+use App\Jobs\SendSeoRevalidation;
 use App\Models\AdminMembership;
 use App\Models\Category;
 use App\Models\Product;
@@ -9,8 +10,11 @@ use App\Models\SeoRedirect;
 use App\Models\SeoSetting;
 use App\Models\SellableItem;
 use App\Models\User;
+use App\Services\SeoRedirectService;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -83,6 +87,268 @@ class SeoRedirectApiTest extends TestCase
             'target_id' => $product->getKey(),
             'action' => 'update',
         ]);
+    }
+
+    public function test_public_category_slug_changes_create_locale_redirects_flatten_history_and_revalidate_paths(): void
+    {
+        config([
+            'seo_revalidation.enabled' => true,
+            'seo_revalidation.queue_connection' => 'database',
+            'seo_revalidation.queue' => 'seo-revalidation',
+            'queue.connections.database.driver' => 'database',
+        ]);
+        Queue::fake([SendSeoRevalidation::class]);
+        $category = Category::query()->create([
+            'slug' => 'redirect-category-old-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Category',
+            'status' => 'active',
+        ]);
+        $oldSlug = $category->slug;
+        $firstSlug = $oldSlug.'-first';
+        $finalSlug = $oldSlug.'-final';
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->resolve('/'.$locale.'/category/'.$oldSlug)->assertJsonPath('data', null);
+        }
+
+        $this->patchCategorySlug($category, $firstSlug)->assertOk();
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->assertDatabaseHas('seo_redirects', [
+                'domain_scope' => 'shop.example.com',
+                'source_path' => '/'.$locale.'/category/'.$oldSlug,
+                'destination_path' => '/'.$locale.'/category/'.$firstSlug,
+                'entity_type' => 'category',
+                'entity_id' => $category->getKey(),
+                'is_active' => true,
+                'reason' => 'slug_change',
+            ]);
+        }
+
+        Queue::assertPushed(SendSeoRevalidation::class, function (SendSeoRevalidation $job) use ($oldSlug, $firstSlug, $category): bool {
+            $event = json_decode($job->rawBody, true);
+
+            return $event['entityType'] === 'category'
+                && $event['entityId'] === (string) $category->getKey()
+                && $event['reason'] === 'slug_changed'
+                && $event['paths'] === [
+                    '/ar/category/'.$oldSlug,
+                    '/en/category/'.$oldSlug,
+                    '/ar/category/'.$firstSlug,
+                    '/en/category/'.$firstSlug,
+                ];
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->resolve('/'.$locale.'/category/'.$oldSlug)
+                ->assertJsonPath('data.destinationPath', '/'.$locale.'/category/'.$firstSlug);
+            $this->resolve('/'.$locale.'/category/'.$firstSlug)->assertJsonPath('data', null);
+            $this->assertDatabaseMissing('seo_redirects', [
+                'source_path' => '/'.$locale.'/category/'.$firstSlug,
+            ]);
+        }
+
+        $this->patchCategorySlug($category->fresh(), $finalSlug)->assertOk();
+
+        $this->assertDatabaseCount('seo_redirects', 4);
+        foreach (['ar', 'en'] as $locale) {
+            $this->assertDatabaseHas('seo_redirects', [
+                'source_path' => '/'.$locale.'/category/'.$oldSlug,
+                'destination_path' => '/'.$locale.'/category/'.$finalSlug,
+            ]);
+            $this->assertDatabaseHas('seo_redirects', [
+                'source_path' => '/'.$locale.'/category/'.$firstSlug,
+                'destination_path' => '/'.$locale.'/category/'.$finalSlug,
+            ]);
+            $this->resolve('/'.$locale.'/category/'.$oldSlug)
+                ->assertJsonPath('data.destinationPath', '/'.$locale.'/category/'.$finalSlug);
+            $this->resolve('/'.$locale.'/category/'.$firstSlug)
+                ->assertJsonPath('data.destinationPath', '/'.$locale.'/category/'.$finalSlug);
+        }
+
+        Queue::assertPushed(
+            SendSeoRevalidation::class,
+            function (SendSeoRevalidation $job) use ($oldSlug, $firstSlug, $finalSlug, $category): bool {
+                $event = json_decode($job->rawBody, true);
+                $expectedPaths = [
+                    '/ar/category/'.$oldSlug,
+                    '/en/category/'.$oldSlug,
+                    '/ar/category/'.$firstSlug,
+                    '/en/category/'.$firstSlug,
+                    '/ar/category/'.$finalSlug,
+                    '/en/category/'.$finalSlug,
+                ];
+
+                return $event['entityType'] === 'category'
+                    && $event['entityId'] === (string) $category->getKey()
+                    && $event['reason'] === 'slug_changed'
+                    && array_diff($expectedPaths, $event['paths']) === [];
+            },
+        );
+
+        $this->assertDatabaseHas('seo_audits', [
+            'target_type' => 'category',
+            'target_id' => $category->getKey(),
+            'action' => 'update',
+        ]);
+        $this->patchCategorySlug($category->fresh(), $oldSlug)
+            ->assertUnprocessable()->assertJsonValidationErrors('slug');
+        $this->assertSame($finalSlug, $category->fresh()->slug);
+        $this->assertDatabaseCount('seo_redirects', 4);
+    }
+
+    public function test_nonpublic_category_slug_changes_and_public_category_noops_do_not_create_redirects(): void
+    {
+        $inactive = Category::query()->create([
+            'slug' => 'redirect-inactive-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف غير نشط',
+            'name_en' => 'Inactive category',
+            'status' => 'inactive',
+        ]);
+        $this->patchCategorySlug($inactive, $inactive->slug.'-new')->assertOk();
+        $this->assertDatabaseCount('seo_redirects', 0);
+
+        $hiddenParent = Category::query()->create([
+            'slug' => 'redirect-hidden-parent-'.Str::lower(Str::random(6)),
+            'name_ar' => 'أب مخفي',
+            'name_en' => 'Hidden parent',
+            'status' => 'inactive',
+        ]);
+        $child = Category::query()->create([
+            'parent_id' => $hiddenParent->getKey(),
+            'slug' => 'redirect-hidden-child-'.Str::lower(Str::random(6)),
+            'name_ar' => 'ابن مخفي',
+            'name_en' => 'Hidden child',
+            'status' => 'active',
+        ]);
+        $this->patchCategorySlug($child, $child->slug.'-new')->assertOk();
+        $this->assertDatabaseCount('seo_redirects', 0);
+
+        $public = Category::query()->create([
+            'slug' => 'redirect-noop-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف عام',
+            'name_en' => 'Public category',
+            'status' => 'active',
+        ]);
+        $this->patchCategorySlug($public, $public->slug)->assertOk();
+        $this->assertDatabaseCount('seo_redirects', 0);
+    }
+
+    public function test_category_slug_update_rolls_back_when_old_source_conflicts(): void
+    {
+        config(['cache.default' => 'array']);
+        $category = Category::query()->create([
+            'slug' => 'redirect-category-conflict-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Category',
+            'status' => 'active',
+        ]);
+        $oldSlug = $category->slug;
+        $sourcePath = '/en/category/'.$oldSlug;
+        SeoRedirect::query()->create([
+            'domain_scope' => 'shop.example.com',
+            'source_path' => $sourcePath,
+            'source_hash' => hash('sha256', $sourcePath),
+            'destination_path' => '/ar/category/existing-target',
+            'status_code' => 301,
+            'is_active' => false,
+            'reason' => 'manual',
+            'entity_type' => 'category',
+            'entity_id' => 999999,
+        ]);
+
+        $cachedSourcePath = '/ar/category/'.$oldSlug;
+        $this->resolve($cachedSourcePath)->assertJsonPath('data', null);
+        $cacheKey = 'seo-redirect:'.hash('sha256', 'shop.example.com').':'.hash('sha256', $cachedSourcePath);
+        $this->assertTrue(Cache::has($cacheKey));
+
+        $this->patchCategorySlug($category, $oldSlug.'-new')
+            ->assertUnprocessable()->assertJsonValidationErrors('slug');
+
+        $this->assertSame($oldSlug, $category->fresh()->slug);
+        $this->assertDatabaseMissing('seo_redirects', [
+            'source_path' => $cachedSourcePath,
+        ]);
+        $this->assertTrue(Cache::has($cacheKey));
+        $this->assertDatabaseCount('seo_redirects', 1);
+        $this->assertDatabaseCount('seo_audits', 0);
+    }
+
+    public function test_category_slug_rollback_keeps_redirect_cache_until_a_commit(): void
+    {
+        config(['cache.default' => 'array']);
+        $category = Category::query()->create([
+            'slug' => 'redirect-category-rollback-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Category',
+            'status' => 'active',
+        ]);
+        $oldSlug = $category->slug;
+        $sourcePath = '/ar/category/'.$oldSlug;
+        $this->resolve($sourcePath)->assertJsonPath('data', null);
+        $cacheKey = 'seo-redirect:'.hash('sha256', 'shop.example.com').':'.hash('sha256', $sourcePath);
+        $this->assertTrue(Cache::has($cacheKey));
+
+        try {
+            DB::transaction(function () use ($category, $oldSlug): void {
+                $category->slug = $oldSlug.'-temporary';
+                $category->save();
+                app(SeoRedirectService::class)->recordCategorySlugChange(
+                    $category,
+                    $oldSlug,
+                    ['ar', 'en'],
+                    true,
+                    true,
+                    null,
+                );
+
+                throw new \RuntimeException('Force rollback after scheduling cache invalidation.');
+            });
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Force rollback after scheduling cache invalidation.', $exception->getMessage());
+        }
+
+        $this->assertSame($oldSlug, $category->fresh()->slug);
+        $this->assertDatabaseCount('seo_redirects', 0);
+        $this->assertTrue(Cache::has($cacheKey));
+    }
+
+    public function test_category_redirect_resolver_rechecks_visibility_and_allows_noindex_destinations(): void
+    {
+        $public = Category::query()->create([
+            'slug' => 'redirect-category-noindex-'.Str::lower(Str::random(6)),
+            'name_ar' => 'تصنيف',
+            'name_en' => 'Category',
+            'status' => 'active',
+        ]);
+        $public->seoRecords()->create(['locale' => 'en', 'robots_index' => false]);
+        $noindexSource = '/en/category/noindex-alias-'.Str::lower(Str::random(6));
+        $this->createCategoryRedirect($noindexSource, $public, 'en');
+
+        $this->resolve($noindexSource)
+            ->assertJsonPath('data.destinationPath', '/en/category/'.$public->slug);
+
+        $public->update(['status' => 'inactive']);
+        $this->resolve($noindexSource)->assertJsonPath('data', null);
+
+        $hiddenParent = Category::query()->create([
+            'slug' => 'redirect-category-hidden-parent-'.Str::lower(Str::random(6)),
+            'name_ar' => 'أب مخفي',
+            'name_en' => 'Hidden parent',
+            'status' => 'inactive',
+        ]);
+        $child = Category::query()->create([
+            'parent_id' => $hiddenParent->getKey(),
+            'slug' => 'redirect-category-hidden-child-'.Str::lower(Str::random(6)),
+            'name_ar' => 'ابن مخفي',
+            'name_en' => 'Hidden child',
+            'status' => 'active',
+        ]);
+        $hiddenSource = '/ar/category/hidden-alias-'.Str::lower(Str::random(6));
+        $this->createCategoryRedirect($hiddenSource, $child, 'ar');
+
+        $this->resolve($hiddenSource)->assertJsonPath('data', null);
     }
 
     public function test_draft_slug_changes_do_not_create_redirects_and_repeated_slug_updates_do_not_duplicate_them(): void
@@ -280,6 +546,29 @@ class SeoRedirectApiTest extends TestCase
 
         return $this->withToken($this->adminToken)
             ->patchJson('/api/v1/admin/products/'.$product->getKey(), ['slug' => $slug]);
+    }
+
+    private function patchCategorySlug(Category $category, string $slug): \Illuminate\Testing\TestResponse
+    {
+        $this->app['auth']->forgetGuards();
+
+        return $this->withToken($this->adminToken)
+            ->patchJson('/api/v1/admin/categories/'.$category->getKey(), ['slug' => $slug]);
+    }
+
+    private function createCategoryRedirect(string $sourcePath, Category $destination, string $locale): SeoRedirect
+    {
+        return SeoRedirect::query()->create([
+            'domain_scope' => 'shop.example.com',
+            'source_path' => $sourcePath,
+            'source_hash' => hash('sha256', $sourcePath),
+            'destination_path' => '/'.$locale.'/category/'.$destination->slug,
+            'status_code' => 301,
+            'is_active' => true,
+            'reason' => 'manual',
+            'entity_type' => 'category',
+            'entity_id' => $destination->getKey(),
+        ]);
     }
 
     private function product(string $status, string $slug): Product

@@ -8,12 +8,14 @@ use App\Models\MediaAsset;
 use App\Models\Product;
 use App\Models\SeoRecord;
 use App\Support\SeoCanonicalPath;
+use App\Support\SeoSettingCatalog;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Storage;
 
 final class SeoMetadataService
 {
+    public function __construct(private readonly SeoPublicImageService $publicImages) {}
+
     /** @param array<string, mixed> $presentation
      *  @param Collection<int, mixed> $settings
      *  @return array{title: ?string, description: ?string, canonicalPath: ?string, robots: array{index: bool, follow: bool}, openGraph: array{title: ?string, description: ?string, image: ?string}}
@@ -25,15 +27,11 @@ final class SeoMetadataService
         Collection $settings,
         string $locale,
     ): array {
-        $sourceDescription = $presentation['description'] ?? $presentation['body'] ?? null;
-        $customDescription = $this->cleanText($record?->meta_description);
-        $defaultDescription = $this->settingValue($settings, 'default_meta_description', $locale);
         $title = $this->resolveTitle($presentation, $record, $settings, $locale)['title'];
-        $description = $customDescription
-            ?? $this->truncate($this->cleanText($sourceDescription), 160)
-            ?? $this->cleanText($defaultDescription);
+        $description = $this->resolveDescription($presentation, $record, $settings, $locale);
         $ogTitle = $this->cleanText($record?->og_title) ?? $title;
         $ogDescription = $this->cleanText($record?->og_description) ?? $description;
+        $openGraphImage = $this->resolveOpenGraphImage($entity, $presentation, $record, $settings);
 
         return [
             'title' => $title,
@@ -43,8 +41,79 @@ final class SeoMetadataService
             'openGraph' => [
                 'title' => $ogTitle,
                 'description' => $ogDescription,
-                'image' => $this->openGraphImage($entity, $presentation, $record, $settings),
+                'image' => $openGraphImage['image'],
             ],
+        ];
+    }
+
+    /**
+     * @param array{canonicalPath: string, titleSetting: string, descriptionSetting: string, robotsSetting: string, imageSetting: string} $page
+     * @param Collection<int, mixed> $settings
+     * @return array{
+     *     seo: array{title: ?string, description: ?string, canonicalPath: string, robots: array{index: bool, follow: bool}, openGraph: array{title: ?string, description: ?string, image: ?string}},
+     *     settingKeys: list<string>,
+     *     assetIds: list<int>
+     * }
+     */
+    public function buildFixedPage(
+        array $page,
+        Collection $settings,
+        string $locale,
+    ): array {
+        $pageTitle = $this->truncate(
+            $this->cleanText($this->settingValue($settings, $page['titleSetting'], $locale)),
+            180,
+        );
+        $titleFallback = $this->resolveTitle([], null, $settings, $locale);
+        $title = $pageTitle ?? $titleFallback['title'];
+
+        $pageDescription = $this->cleanText(
+            $this->settingValue($settings, $page['descriptionSetting'], $locale),
+        );
+        $descriptionFallback = $this->resolveDescriptionWithDependencies([], null, $settings, $locale);
+        $description = $pageDescription ?? $descriptionFallback['description'];
+
+        $pageRobots = $this->settingValue($settings, $page['robotsSetting']);
+        $defaultRobots = $this->robots(null, $settings);
+        $robots = $defaultRobots;
+        $settingKeys = [$page['titleSetting'], $page['descriptionSetting'], $page['robotsSetting']];
+        if ($pageTitle === null) {
+            $settingKeys = [...$settingKeys, ...$titleFallback['settingKeys']];
+        }
+        if ($pageDescription === null && $descriptionFallback['usesDefaultMetaDescription']) {
+            $settingKeys[] = 'defaultMetaDescription';
+        }
+
+        if (is_array($pageRobots)) {
+            foreach (['index', 'follow'] as $directive) {
+                if (is_bool($pageRobots[$directive] ?? null)) {
+                    $robots[$directive] = $pageRobots[$directive];
+                } else {
+                    $settingKeys[] = 'defaultRobotsPolicy';
+                }
+            }
+        } else {
+            $settingKeys[] = 'defaultRobotsPolicy';
+        }
+
+        $image = $this->resolveFixedPageImage($page['imageSetting'], $settings);
+        $settingKeys = [...$settingKeys, ...$image['settingKeys']];
+        $settingKeys = array_values(array_unique($settingKeys));
+
+        return [
+            'seo' => [
+                'title' => $title,
+                'description' => $description,
+                'canonicalPath' => $page['canonicalPath'],
+                'robots' => $robots,
+                'openGraph' => [
+                    'title' => $title,
+                    'description' => $description,
+                    'image' => $image['image'],
+                ],
+            ],
+            'settingKeys' => $settingKeys,
+            'assetIds' => $image['assetIds'],
         ];
     }
 
@@ -54,6 +123,41 @@ final class SeoMetadataService
         return [
             'canonicalPath' => $this->canonicalPath($entity, $record?->canonical_path),
             'robots' => $this->robots($record, $settings),
+        ];
+    }
+
+    /** @param array<string, mixed> $presentation
+     *  @param Collection<int, mixed> $settings
+     */
+    public function resolveDescription(
+        array $presentation,
+        ?SeoRecord $record,
+        Collection $settings,
+        string $locale,
+    ): ?string {
+        return $this->resolveDescriptionWithDependencies($presentation, $record, $settings, $locale)['description'];
+    }
+
+    /** @param array<string, mixed> $presentation
+     *  @param Collection<int, mixed> $settings
+     *  @return array{description: ?string, usesDefaultMetaDescription: bool}
+     */
+    public function resolveDescriptionWithDependencies(
+        array $presentation,
+        ?SeoRecord $record,
+        Collection $settings,
+        string $locale,
+    ): array {
+        $customDescription = $this->cleanText($record?->meta_description);
+        $sourceDescription = $presentation['description'] ?? $presentation['body'] ?? null;
+        $contentDescription = $this->truncate($this->cleanText($sourceDescription), 160);
+        $usesDefaultMetaDescription = $customDescription === null && $contentDescription === null;
+
+        return [
+            'description' => $customDescription
+                ?? $contentDescription
+                ?? $this->cleanText($this->settingValue($settings, 'default_meta_description', $locale)),
+            'usesDefaultMetaDescription' => $usesDefaultMetaDescription,
         ];
     }
 
@@ -128,58 +232,129 @@ final class SeoMetadataService
         ];
     }
 
-    /** @param array<string, mixed> $presentation */
-    private function openGraphImage(
+    /** @param array<string, mixed> $presentation
+     *  @param Collection<int, mixed> $settings
+     *  @return array{image: ?string, settingKeys: list<string>, assetIds: list<int>}
+     */
+    public function resolveOpenGraphImage(
         Model $entity,
         array $presentation,
         ?SeoRecord $record,
         Collection $settings,
-    ): ?string {
+    ): array {
         $customImage = $record?->ogImage;
-        if ($customImage instanceof MediaAsset && $customImage->media_type === 'image' && ! $customImage->trashed()) {
-            return $this->mediaUrl($customImage);
+        $customImageUrl = $customImage instanceof MediaAsset ? $this->publicImages->url($customImage) : null;
+        if ($customImageUrl !== null) {
+            return ['image' => $customImageUrl, 'settingKeys' => [], 'assetIds' => [(int) $customImage->getKey()]];
         }
 
-        $contentImage = $presentation['image'] ?? null;
-        if (is_string($contentImage) && $contentImage !== '') {
-            return $contentImage;
+        $contentImageAsset = $presentation['imageAsset'] ?? null;
+        $contentImageUrl = $contentImageAsset instanceof MediaAsset
+            ? $this->publicImages->url($contentImageAsset)
+            : null;
+        if ($contentImageUrl !== null) {
+            return [
+                'image' => $contentImageUrl,
+                'settingKeys' => [],
+                'assetIds' => [(int) $contentImageAsset->getKey()],
+            ];
         }
 
-        $imageIds = array_filter([
-            $this->settingValue($settings, 'default_og_image_id'),
-            $entity instanceof ContentPage ? $this->settingValue($settings, 'store_logo_id') : null,
-        ], static fn (mixed $id): bool => filter_var($id, FILTER_VALIDATE_INT) !== false);
-
-        if ($imageIds === []) {
-            return null;
+        $fallbacks = [[
+            'key' => 'defaultOgImageId',
+            'id' => $this->settingValue($settings, 'default_og_image_id'),
+        ]];
+        if ($entity instanceof ContentPage) {
+            $fallbacks[] = [
+                'key' => 'storeLogoId',
+                'id' => $this->settingValue($settings, 'store_logo_id'),
+            ];
         }
+        $imageIds = array_values(array_filter(array_column($fallbacks, 'id'), static fn (mixed $id): bool =>
+            filter_var($id, FILTER_VALIDATE_INT) !== false));
+        $images = MediaAsset::query()->whereIn('id', $imageIds)->get()->keyBy(
+            static fn (MediaAsset $asset): int => (int) $asset->getKey(),
+        );
+        $usedSettingKeys = [];
+        $usedAssetIds = [];
+        foreach ($fallbacks as $fallback) {
+            $imageId = $fallback['id'];
+            if (filter_var($imageId, FILTER_VALIDATE_INT) === false) {
+                $usedSettingKeys[] = $fallback['key'];
+                continue;
+            }
 
-        $images = MediaAsset::query()
-            ->whereIn('id', $imageIds)
-            ->where('media_type', 'image')
-            ->get()
-            ->keyBy(fn (MediaAsset $asset): int => (int) $asset->getKey());
-
-        $image = null;
-        foreach ($imageIds as $imageId) {
+            $usedSettingKeys[] = $fallback['key'];
             $candidate = $images->get((int) $imageId);
-            if ($candidate instanceof MediaAsset) {
-                $image = $candidate;
-                break;
+            $candidateUrl = $candidate instanceof MediaAsset ? $this->publicImages->url($candidate) : null;
+            if ($candidateUrl !== null) {
+                $usedAssetIds[] = (int) $candidate->getKey();
+
+                return [
+                    'image' => $candidateUrl,
+                    'settingKeys' => $usedSettingKeys,
+                    'assetIds' => $usedAssetIds,
+                ];
             }
         }
 
-        return $image instanceof MediaAsset ? $this->mediaUrl($image) : null;
+        return ['image' => null, 'settingKeys' => $usedSettingKeys, 'assetIds' => $usedAssetIds];
     }
 
-    private function mediaUrl(MediaAsset $asset): string
+    /** @param Collection<int, mixed> $settings
+     *  @return array{image: ?string, settingKeys: list<string>, assetIds: list<int>}
+     */
+    private function resolveFixedPageImage(string $pageSetting, Collection $settings): array
     {
-        return Storage::disk($asset->disk)->url($asset->path);
+        $pageAssetId = $this->settingValue($settings, $pageSetting);
+        $pageAsset = $this->assetForSetting($pageAssetId);
+        $pageImageUrl = $pageAsset instanceof MediaAsset ? $this->publicImages->url($pageAsset) : null;
+        $pageImageAssetId = $this->assetId($pageAssetId);
+        $assetIds = $pageImageAssetId === null ? [] : [$pageImageAssetId];
+
+        if ($pageImageUrl !== null) {
+            return ['image' => $pageImageUrl, 'settingKeys' => [$pageSetting], 'assetIds' => $assetIds];
+        }
+
+        $defaultAssetId = $this->settingValue($settings, 'defaultOgImageId');
+        $defaultAsset = $this->assetForSetting($defaultAssetId);
+        $defaultImageUrl = $defaultAsset instanceof MediaAsset ? $this->publicImages->url($defaultAsset) : null;
+        $defaultId = $this->assetId($defaultAssetId);
+        if ($defaultId !== null) {
+            $assetIds[] = $defaultId;
+        }
+
+        return [
+            'image' => $defaultImageUrl,
+            'settingKeys' => [$pageSetting, 'defaultOgImageId'],
+            'assetIds' => array_values(array_unique($assetIds)),
+        ];
+    }
+
+    private function assetForSetting(mixed $assetId): ?MediaAsset
+    {
+        $id = $this->assetId($assetId);
+        if ($id === null) {
+            return null;
+        }
+
+        $asset = MediaAsset::query()->find($id);
+
+        return $asset instanceof MediaAsset ? $asset : null;
+    }
+
+    private function assetId(mixed $assetId): ?int
+    {
+        return filter_var($assetId, FILTER_VALIDATE_INT) !== false && (int) $assetId > 0
+            ? (int) $assetId
+            : null;
     }
 
     private function settingValue(Collection $settings, string $key, ?string $locale = null): mixed
     {
-        return $settings->first(static fn ($setting): bool => $setting->key === $key
+        $databaseKey = SeoSettingCatalog::definition($key)['key'] ?? $key;
+
+        return $settings->first(static fn ($setting): bool => $setting->key === $databaseKey
             && $setting->locale === ($locale ?? ''))?->value_json;
     }
 

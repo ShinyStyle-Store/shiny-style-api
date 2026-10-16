@@ -49,12 +49,25 @@ class ContentPageService
             $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
             $significantChanges = app(SeoSignificantModificationService::class);
             if ($sharedFields !== []) {
-                $significantChanges->mark($page);
+                $significantChanges->mark($page, notify: false);
             }
+            $changedLocales = [];
             foreach ($localizedFields as $locale => $fields) {
                 if (array_intersect($dirtyFields, $fields) !== []) {
-                    $significantChanges->mark($page, locale: $locale);
+                    $significantChanges->mark($page, locale: $locale, notify: false);
+                    $changedLocales[] = $locale;
                 }
+            }
+            if ($sharedFields !== []) {
+                $changedLocales = ['ar', 'en'];
+            }
+            if ($changedLocales !== []) {
+                app(SeoRevalidationService::class)->afterCommitForEntity(
+                    $page,
+                    'updated',
+                    array_values(array_unique($changedLocales)),
+                    ['content', 'sitemap'],
+                );
             }
 
             return $page->refresh();

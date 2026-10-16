@@ -60,9 +60,7 @@ final class AdminProductUpdateService
             ): Product {
                 $locked = Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
                 $oldSlug = (string) $locked->slug;
-                $wasPublic = array_key_exists('slug', $data)
-                    && (string) $data['slug'] !== $oldSlug
-                    && $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
+                $wasPublic = $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
                 $categoriesChanged = false;
                 $affectedCategoryIds = [];
                 if ($hasCategories) {
@@ -80,9 +78,16 @@ final class AdminProductUpdateService
                 $locked->fill($data);
                 $dirtyFields = array_keys($locked->getDirty());
                 $slugChanged = in_array('slug', $dirtyFields, true);
+                $redirectPaths = [];
                 $locked->save();
                 if ($slugChanged) {
-                    $this->redirects->recordProductSlugChange($locked, $oldSlug, ['ar', 'en'], $wasPublic, $createdBy);
+                    $redirectPaths = $this->redirects->recordProductSlugChange(
+                        $locked,
+                        $oldSlug,
+                        ['ar', 'en'],
+                        $wasPublic,
+                        $createdBy,
+                    );
                     app(SeoAuditService::class)->record(
                         $createdBy === null ? null : (int) $createdBy->getKey(),
                         'product',
@@ -176,10 +181,10 @@ final class AdminProductUpdateService
                 }
 
                 if ($categoriesChanged || $mediaChanged) {
-                    app(SeoSignificantModificationService::class)->mark($locked);
+                    app(SeoSignificantModificationService::class)->mark($locked, notify: false);
                 }
                 if ($affectedCategoryIds !== []) {
-                    app(SeoSignificantModificationService::class)->markCategories($affectedCategoryIds);
+                    app(SeoSignificantModificationService::class)->markCategories($affectedCategoryIds, notify: false);
                 }
 
                 $localizedFields = [
@@ -189,12 +194,30 @@ final class AdminProductUpdateService
                 $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
                 $significantChanges = app(SeoSignificantModificationService::class);
                 if ($sharedFields !== []) {
-                    $significantChanges->mark($locked);
+                    $significantChanges->mark($locked, notify: false);
                 }
                 foreach ($localizedFields as $locale => $fields) {
                     if (array_intersect($dirtyFields, $fields) !== []) {
-                        $significantChanges->mark($locked, locale: $locale);
+                        $significantChanges->mark($locked, locale: $locale, notify: false);
                     }
+                }
+
+                $isPublicAfterUpdate = $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
+                if (($dirtyFields !== [] || $categoriesChanged || $mediaChanged) && ($wasPublic || $isPublicAfterUpdate)) {
+                    $reason = $slugChanged
+                        ? 'slug_changed'
+                        : ($wasPublic && ! $isPublicAfterUpdate ? 'unpublished' : (! $wasPublic ? 'published' : 'updated'));
+                    $scopes = ['catalog', 'sitemap', 'metaFeed'];
+                    if ($slugChanged || ($wasPublic && ! $isPublicAfterUpdate)) {
+                        $scopes[] = 'redirects';
+                    }
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $locked,
+                        $reason,
+                        ['ar', 'en'],
+                        $scopes,
+                        $slugChanged && $wasPublic ? $redirectPaths : [],
+                    );
                 }
 
                 return $locked;

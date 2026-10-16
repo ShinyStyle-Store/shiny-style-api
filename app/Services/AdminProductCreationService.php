@@ -66,6 +66,15 @@ final class AdminProductCreationService
                 }
                 $this->assertLifecycle($product);
 
+                if ($this->redirects->isProductPubliclyVisible((int) $product->getKey())) {
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $product,
+                        'created',
+                        ['ar', 'en'],
+                        ['catalog', 'sitemap', 'metaFeed'],
+                    );
+                }
+
                 $images = [];
                 if ($primaryImage !== null) {
                     $images[] = [$primaryImage, true];

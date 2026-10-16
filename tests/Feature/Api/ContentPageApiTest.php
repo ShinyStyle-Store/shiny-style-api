@@ -42,6 +42,7 @@ class ContentPageApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(4, 'data')
             ->assertJsonPath('data.0.slug', 'about-us')
+            ->assertJsonPath('data.0.id', null)
             ->assertJsonPath('data.0.titleAr', null)
             ->assertJsonPath('data.0.bodyEn', null)
             ->assertJsonPath('data.2.slug', 'shipping-policy')
@@ -72,6 +73,29 @@ class ContentPageApiTest extends TestCase
                     'bodyEn' => null,
                 ],
             ]);
+    }
+
+    public function test_admin_content_page_responses_expose_the_persistent_id_without_changing_slug_routes(): void
+    {
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/content-pages/about-us', $this->payload())
+            ->assertOk()
+            ->assertJsonPath('data.slug', 'about-us');
+
+        $page = ContentPage::query()->where('slug', 'about-us')->firstOrFail();
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/about-us')
+            ->assertOk()
+            ->assertJsonPath('data.id', $page->getKey())
+            ->assertJsonPath('data.slug', 'about-us');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $page->getKey())
+            ->assertJsonPath('data.0.slug', 'about-us');
+
+        $this->getJson('/api/v1/content-pages/about-us')->assertOk();
     }
 
     public function test_public_pages_are_not_available_before_first_save_and_unknown_slugs_are_not_found(): void

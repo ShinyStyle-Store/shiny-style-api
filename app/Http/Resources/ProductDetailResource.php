@@ -18,6 +18,10 @@ class ProductDetailResource extends ProductListResource
         $description = $this->localizedValue($this->description_ar, $this->description_en);
         $sellableItems = $this->publicSellableItems();
         $displayVariantId = $productData['displayVariantId'];
+        $displaySellableItem = $sellableItems->first(
+            fn ($item): bool => (string) $item->getKey() === $displayVariantId,
+        );
+        $seoImageAsset = $this->primaryImage($displaySellableItem)?->mediaAsset;
         $activeOptionValueIds = $sellableItems
             ->flatMap(fn ($sellableItem) => $sellableItem->optionValues->modelKeys())
             ->unique();
@@ -28,6 +32,7 @@ class ProductDetailResource extends ProductListResource
         $seo = app(SeoResolverService::class)->resolve($this->resource, true, [
             ...$productData,
             'description' => $description,
+            'imageAsset' => $seoImageAsset,
         ], $settings);
         $storeIdentity = app(StoreStructuredDataService::class)->identity($settings, app()->getLocale());
         $options = $this->options->map(fn ($option): array => [

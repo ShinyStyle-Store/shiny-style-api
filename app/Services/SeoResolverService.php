@@ -7,6 +7,7 @@ use App\Models\SeoRecord;
 use App\Support\SeoSettingCatalog;
 use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
 
 final class SeoResolverService
 {
@@ -48,6 +49,33 @@ final class SeoResolverService
             ?->toISOString();
 
         return $resolved;
+    }
+
+    /** @param Collection<int, mixed>|null $settings @return array<string, mixed> */
+    public function resolvePublicPage(string $pageKey, ?Collection $settings = null): array
+    {
+        $page = SeoSettingCatalog::PUBLIC_PAGES[$pageKey] ?? null;
+        if ($page === null) {
+            throw new InvalidArgumentException('Unsupported public SEO page.');
+        }
+
+        $settings ??= $this->settings->all();
+        $locale = app()->getLocale();
+        $resolvedPage = $this->metadata->buildFixedPage($page, $settings, $locale);
+        $seo = $resolvedPage['seo'];
+        $configuredLocales = $this->settingValue($settings, 'supported_locales');
+        $availableLocales = is_array($configuredLocales) && array_is_list($configuredLocales)
+            ? array_values(array_intersect(['ar', 'en'], $configuredLocales))
+            : ['ar', 'en'];
+        $eligibility = $this->eligibility->resolve(true, $locale, $availableLocales, $seo['robots']);
+        $seo['robots'] = $eligibility['robots'];
+        $seo['indexable'] = $eligibility['indexable'];
+        $seo['availableLocales'] = $availableLocales;
+        $seo['lastSignificantModifiedAt'] = $this->lastModified
+            ->resolveFixedPage($resolvedPage['settingKeys'], $resolvedPage['assetIds'], $locale)
+            ?->toISOString();
+
+        return $seo;
     }
 
     /** @param list<string> $supportedLocales

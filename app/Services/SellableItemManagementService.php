@@ -33,6 +33,17 @@ class SellableItemManagementService
             $item->optionValues()->sync($valueIds);
             $this->assertReadyIfRequired($lockedProduct);
 
+            if ($item->status === 'active' && $item->superseded_at === null
+                && $this->isProductPubliclyVisible($lockedProduct)) {
+                app(SeoSignificantModificationService::class)->mark($lockedProduct, notify: false);
+                app(SeoRevalidationService::class)->afterCommitForEntity(
+                    $lockedProduct,
+                    'updated',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'metaFeed'],
+                );
+            }
+
             return $item;
         });
     }
@@ -52,6 +63,8 @@ class SellableItemManagementService
                 ? array_map('intval', $data['option_value_ids'])
                 : $previousValueIds;
             $previousAvailable = $locked->availableQuantity();
+            $itemWasPublic = $locked->status === 'active' && $locked->superseded_at === null;
+            $productWasPublic = $this->isProductPubliclyVisible($lockedProduct);
 
             if ($hasValues || ($data['status'] ?? $locked->status) === 'active') {
                 $this->assertCombination($lockedProduct, $valueIds, $locked->getKey());
@@ -73,13 +86,27 @@ class SellableItemManagementService
             }
             $publicFieldsChanged = array_intersect(
                 array_keys($locked->getChanges()),
-                ['sku', 'price', 'original_price', 'status', 'is_default'],
+                ['sku', 'price', 'original_price', 'status', 'is_default', 'sort_order'],
             ) !== [];
             $selectionChanged = $hasValues
                 && $previousValueIds !== collect($valueIds)->map(fn (int $id): int => $id)->sort()->values()->all();
             $availabilityChanged = ($previousAvailable > 0) !== ($locked->availableQuantity() > 0);
-            if ($publicFieldsChanged || $selectionChanged || $availabilityChanged) {
-                app(SeoSignificantModificationService::class)->mark($lockedProduct);
+            $itemIsPublic = $locked->status === 'active' && $locked->superseded_at === null;
+            if (($publicFieldsChanged || $selectionChanged || $availabilityChanged)
+                && ($itemWasPublic || $itemIsPublic)) {
+                $productIsPublic = $this->isProductPubliclyVisible($lockedProduct);
+                app(SeoSignificantModificationService::class)->mark($lockedProduct, notify: false);
+                if ($productWasPublic || $productIsPublic) {
+                    $reason = $productWasPublic && ! $productIsPublic
+                        ? 'unpublished'
+                        : (! $productWasPublic ? 'published' : 'updated');
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $lockedProduct,
+                        $reason,
+                        ['ar', 'en'],
+                        ['catalog', 'sitemap', 'metaFeed'],
+                    );
+                }
             }
             if ($hasValues || array_key_exists('status', $data) || array_key_exists('is_default', $data)) {
                 $this->assertReadyIfRequired($lockedProduct);
@@ -100,8 +127,21 @@ class SellableItemManagementService
             if ((int) $locked->reserved_quantity > 0) {
                 return 'variant_has_reservations';
             }
+            $wasPublic = $locked->status === 'active'
+                && $locked->superseded_at === null
+                && $this->isProductPubliclyVisible($lockedProduct);
             $locked->delete();
             $this->assertReadyIfRequired($lockedProduct);
+
+            if ($wasPublic) {
+                app(SeoSignificantModificationService::class)->mark($lockedProduct, notify: false);
+                app(SeoRevalidationService::class)->afterCommitForEntity(
+                    $lockedProduct,
+                    'updated',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'metaFeed'],
+                );
+            }
 
             return null;
         });
@@ -129,7 +169,6 @@ class SellableItemManagementService
             }
             $item->status = 'inactive';
             $item->restore();
-            app(SeoSignificantModificationService::class)->mark($lockedProduct);
             $this->assertReadyIfRequired($lockedProduct);
 
             return $item;
@@ -191,6 +230,16 @@ class SellableItemManagementService
         if (app(ProductReadinessService::class)->isRequired($product)) {
             app(ProductReadinessService::class)->assertReady($product);
         }
+    }
+
+    private function isProductPubliclyVisible(Product $product): bool
+    {
+        $visibleCategoryIds = app(CategoryHierarchyService::class)->effectiveVisibleIds();
+
+        return Product::query()
+            ->visible($visibleCategoryIds)
+            ->whereKey($product->getKey())
+            ->exists();
     }
 
     private function combinationKey(array $valueIds): string

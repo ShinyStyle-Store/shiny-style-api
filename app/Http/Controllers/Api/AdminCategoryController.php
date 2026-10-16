@@ -11,7 +11,9 @@ use App\Models\Category;
 use App\Services\CategoryArchiveService;
 use App\Services\CategoryCoverService;
 use App\Services\CategoryHierarchyService;
+use App\Services\SeoAuditService;
 use App\Services\SeoRedirectService;
+use App\Services\SeoRevalidationService;
 use App\Services\SeoSignificantModificationService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -138,6 +140,7 @@ class AdminCategoryController extends Controller
         $validated = $request->validated();
         $image = $validated['cover_image'] ?? null;
         $remove = $request->boolean('remove_cover_image');
+        $actor = $request->user();
         unset($validated['_method'], $validated['cover_image'], $validated['remove_cover_image']);
         if (array_key_exists('parent_id', $validated)) {
             $preflightParent = $validated['parent_id'] === null
@@ -161,10 +164,12 @@ class AdminCategoryController extends Controller
         try {
             $transaction = fn (): Category => DB::transaction(function () use (
                 $category, $validated, $hierarchy, $covers, $asset, $remove,
-                $redirects,
+                $redirects, $actor,
             ): Category {
                 $locked = Category::query()->whereKey($category->getKey())->lockForUpdate()->firstOrFail();
                 $previousParentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
+                $oldSlug = (string) $locked->slug;
+                $wasPublic = $hierarchy->visibilitySnapshot()->contains($locked);
 
                 if (array_key_exists('parent_id', $validated)) {
                     $parent = $validated['parent_id'] === null
@@ -188,19 +193,40 @@ class AdminCategoryController extends Controller
 
                 $locked->fill($validated);
                 $dirtyFields = array_keys($locked->getDirty());
-                if (in_array('slug', $dirtyFields, true)
+                $slugChanged = in_array('slug', $dirtyFields, true);
+                $redirectPaths = [];
+                if ($slugChanged
                     && $redirects->slugPathIsReserved('category', (string) $locked->slug)) {
                     throw ValidationException::withMessages([
                         'slug' => 'This slug is reserved by SEO redirect history.',
                     ]);
                 }
                 $locked->save();
+                $isPublicAfterUpdate = $hierarchy->visibilitySnapshot()->contains($locked);
                 if (array_intersect($dirtyFields, ['slug', 'status', 'parent_id']) !== []
-                    && $hierarchy->visibilitySnapshot()->contains($locked)
+                    && $isPublicAfterUpdate
                     && $redirects->slugPathIsReserved('category', (string) $locked->slug)) {
                     throw ValidationException::withMessages([
                         'slug' => 'This category path is reserved by SEO redirect history.',
                     ]);
+                }
+                if ($slugChanged) {
+                    $redirectPaths = $redirects->recordCategorySlugChange(
+                        $locked,
+                        $oldSlug,
+                        ['ar', 'en'],
+                        $wasPublic,
+                        $isPublicAfterUpdate,
+                        $actor,
+                    );
+                    app(SeoAuditService::class)->record(
+                        $actor === null ? null : (int) $actor->getKey(),
+                        'category',
+                        (int) $locked->getKey(),
+                        'update',
+                        ['slug' => $oldSlug],
+                        ['slug' => (string) $locked->slug],
+                    );
                 }
 
                 $localizedFields = [
@@ -210,11 +236,11 @@ class AdminCategoryController extends Controller
                 $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
                 $significantChanges = app(SeoSignificantModificationService::class);
                 if ($sharedFields !== []) {
-                    $significantChanges->mark($locked);
+                    $significantChanges->mark($locked, notify: false);
                 }
                 foreach ($localizedFields as $locale => $fields) {
                     if (array_intersect($dirtyFields, $fields) !== []) {
-                        $significantChanges->mark($locked, locale: $locale);
+                        $significantChanges->mark($locked, locale: $locale, notify: false);
                     }
                 }
 
@@ -222,12 +248,35 @@ class AdminCategoryController extends Controller
                 if ($previousParentId !== $nextParentId) {
                     app(SeoSignificantModificationService::class)->markCategories(
                         array_values(array_filter([$previousParentId, $nextParentId])),
+                        notify: false,
                     );
                 }
 
+                $mediaChanged = false;
                 if ($asset !== null || $remove) {
                     $formerAssetIds = $covers->changeInTransaction($locked, $asset, $remove);
                     $covers->cleanupFormerAssetsAfterCommit($formerAssetIds);
+                    $mediaChanged = $asset !== null || $formerAssetIds !== [];
+                    if ($mediaChanged) {
+                        app(SeoSignificantModificationService::class)->mark($locked, notify: false);
+                    }
+                }
+
+                if (($dirtyFields !== [] || $mediaChanged) && ($wasPublic || $isPublicAfterUpdate)) {
+                    $reason = $slugChanged
+                        ? 'slug_changed'
+                        : ($wasPublic && ! $isPublicAfterUpdate ? 'unpublished' : (! $wasPublic ? 'published' : 'updated'));
+                    $scopes = ['catalog', 'sitemap'];
+                    if ($slugChanged || ($wasPublic && ! $isPublicAfterUpdate)) {
+                        $scopes[] = 'redirects';
+                    }
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $locked,
+                        $reason,
+                        ['ar', 'en'],
+                        $scopes,
+                        $slugChanged && $wasPublic ? $redirectPaths : [],
+                    );
                 }
 
                 return $locked;
