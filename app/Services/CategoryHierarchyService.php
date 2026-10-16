@@ -11,10 +11,13 @@ use Illuminate\Support\Facades\DB;
 class CategoryHierarchyService
 {
     /** Build a single category hierarchy and status snapshot for visibility checks. */
-    public function visibilitySnapshot(bool $includePresentationData = false): CategoryVisibilitySnapshot
+    public function visibilitySnapshot(
+        bool $includePresentationData = false,
+        bool $includeCoverImages = true,
+    ): CategoryVisibilitySnapshot
     {
         $columns = [
-            'id', 'parent_id', 'status', 'deleted_at', 'created_at', 'updated_at',
+            'id', 'parent_id', 'slug', 'status', 'deleted_at', 'created_at', 'updated_at',
             'seo_last_significant_modified_at',
         ];
 
@@ -27,7 +30,7 @@ class CategoryHierarchyService
         }
 
         $query = Category::withTrashed();
-        if ($includePresentationData) {
+        if ($includePresentationData && $includeCoverImages) {
             $query->with('coverImageAttachment.mediaAsset');
         }
         $rows = $query->get($columns);

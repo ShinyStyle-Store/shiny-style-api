@@ -10,11 +10,16 @@ use Illuminate\Support\Facades\DB;
 
 class CategoryArchiveService
 {
+    public function __construct(private readonly SeoRedirectService $redirects) {}
+
     public function archive(Category $category): ?string
     {
         return DB::transaction(function () use ($category): ?string {
             $locked = Category::query()->whereKey($category->getKey())->lockForUpdate()->firstOrFail();
             $parentId = $locked->parent_id === null ? null : (int) $locked->parent_id;
+            $wasPublic = app(CategoryHierarchyService::class)
+                ->visibilitySnapshot()
+                ->contains($locked);
 
             if ($locked->children()->exists()) {
                 return 'category_has_children';
@@ -27,7 +32,15 @@ class CategoryArchiveService
             $locked->status = 'inactive';
             $locked->save();
             $locked->delete();
-            app(SeoSignificantModificationService::class)->mark($locked);
+            app(SeoSignificantModificationService::class)->mark($locked, notify: false);
+            if ($wasPublic) {
+                app(SeoRevalidationService::class)->afterCommitForEntity(
+                    $locked,
+                    'archived',
+                    ['ar', 'en'],
+                    ['catalog', 'sitemap', 'redirects'],
+                );
+            }
             if ($parentId !== null) {
                 app(SeoSignificantModificationService::class)->markCategories([$parentId]);
             }
@@ -39,7 +52,7 @@ class CategoryArchiveService
     public function restore(int $categoryId, CategoryHierarchyService $hierarchy): Category|string
     {
         try {
-            return DB::transaction(function () use ($categoryId, $hierarchy): Category|string {
+            $transaction = fn (): Category|string => DB::transaction(function () use ($categoryId, $hierarchy): Category|string {
                 $category = Category::withTrashed()
                     ->whereKey($categoryId)
                     ->lockForUpdate()
@@ -51,6 +64,9 @@ class CategoryArchiveService
 
                 if (! $category->trashed()) {
                     return 'category_not_archived';
+                }
+                if ($this->redirects->slugPathIsReserved('category', (string) $category->slug)) {
+                    return 'category_redirect_conflict';
                 }
 
                 $parent = null;
@@ -69,13 +85,15 @@ class CategoryArchiveService
 
                 $category->status = 'inactive';
                 $category->restore();
-                app(SeoSignificantModificationService::class)->mark($category);
+                app(SeoSignificantModificationService::class)->mark($category, notify: false);
                 if ($category->parent_id !== null) {
                     app(SeoSignificantModificationService::class)->markCategories([(int) $category->parent_id]);
                 }
 
                 return $category;
             });
+
+            return $this->redirects->withMutationLock($transaction);
         } catch (QueryException $exception) {
             if ($this->isSlugConflict($exception)) {
                 return 'category_slug_conflict';

@@ -50,7 +50,9 @@ class ProductOffersPresentationTest extends TestCase
             ->assertJsonPath('data.sellableItems.0.price', 585)
             ->assertJsonPath('data.sellableItems.0.originalPrice', 650)
             ->assertJsonPath('data.sellableItems.0.offerId', (string) $offer->id)
-            ->assertJsonPath('data.sellableItems.0.discountPercentage', 10);
+            ->assertJsonPath('data.sellableItems.0.discountPercentage', 10)
+            ->assertJsonPath('data.structuredData.product.offer.price', 585)
+            ->assertJsonPath('data.structuredData.product.offer.priceCurrency', config('store.currency'));
     }
 
     public function test_offer_price_uses_the_available_display_variant_when_default_is_unavailable(): void
@@ -70,10 +72,23 @@ class ProductOffersPresentationTest extends TestCase
         $this->assertSame(180, $listing['originalPrice']);
         $this->assertTrue($listing['offerApplied']);
 
-        $this->getJson('/api/v1/products/'.$product->slug)
+        $detail = $this->getJson('/api/v1/products/'.$product->slug)
             ->assertOk()
             ->assertJsonPath('data.displayVariantId', (string) $available->getKey())
-            ->assertJsonPath('data.price', 162);
+            ->assertJsonPath('data.price', 162)
+            ->assertJsonPath('data.structuredData.product.displayVariantId', (string) $available->getKey())
+            ->assertJsonPath('data.structuredData.product.offer.sellableItemId', (string) $available->getKey())
+            ->assertJsonPath('data.structuredData.product.offer.sku', $available->sku)
+            ->assertJsonPath('data.structuredData.product.offer.price', 162)
+            ->assertJsonPath('data.structuredData.product.offer.priceCurrency', config('store.currency'))
+            ->assertJsonPath('data.structuredData.product.offer.availability', 'InStock')
+            ->assertJsonPath('data.structuredData.product.productGroup.productGroupId', (string) $product->getKey());
+
+        $structuredVariants = collect($detail->json('data.structuredData.product.variants'));
+        $displayedVariant = $structuredVariants->firstWhere('id', (string) $available->getKey());
+        $this->assertNotNull($displayedVariant);
+        $this->assertSame($detail->json('data.price'), $displayedVariant['price']);
+        $this->assertSame($detail->json('data.structuredData.product.offer.sku'), $displayedVariant['sku']);
     }
 
     public function test_non_offered_product_preserves_existing_comparison_price_contract(): void
@@ -85,7 +100,10 @@ class ProductOffersPresentationTest extends TestCase
             ->assertJsonPath('data.originalPrice', 9500)
             ->assertJsonPath('data.offerApplied', false)
             ->assertJsonPath('data.offerId', null)
-            ->assertJsonPath('data.discountPercentage', null);
+            ->assertJsonPath('data.discountPercentage', null)
+            ->assertJsonPath('data.structuredData.product.offer.price', 8500)
+            ->assertJsonPath('data.structuredData.product.offer.priceCurrency', config('store.currency'))
+            ->assertJsonPath('data.structuredData.product.productGroup', null);
     }
 
     public function test_offers_section_and_home_offers_include_each_visible_product_once(): void
@@ -126,7 +144,7 @@ class ProductOffersPresentationTest extends TestCase
     public function test_out_of_stock_active_variants_remain_visible_but_are_not_marked_in_stock(): void
     {
         $product = Product::query()->where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
-        $product->sellableItems()->update(['stock_quantity' => 0]);
+        $product->sellableItems()->update(['stock_quantity' => 2, 'reserved_quantity' => 2]);
         $this->offer($product, '10.00');
 
         $this->getJson('/api/v1/products/sections/offers')
@@ -134,6 +152,37 @@ class ProductOffersPresentationTest extends TestCase
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.inStock', false)
             ->assertJsonPath('data.0.price', 585);
+
+        $detail = $this->getJson('/api/v1/products/'.$product->slug)->assertOk();
+        $detail->assertJsonPath('data.structuredData.product.offer.availability', 'OutOfStock')
+            ->assertJsonPath('data.structuredData.product.offer.price', $detail->json('data.price'));
+        $this->assertArrayNotHasKey('aggregateOffer', $detail->json('data.structuredData.product'));
+    }
+
+    public function test_structured_offer_uses_the_current_offer_window_without_changing_variant_selection(): void
+    {
+        $product = Product::query()->where('slug', 'soft-sofa-throw-blanket')->firstOrFail();
+        $offer = $this->offer($product, '10.00', '2026-01-10T12:05:00Z', '2026-01-10T12:10:00Z');
+        $displayVariantId = $product->sellableItems()->where('is_default', true)->value('id');
+
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.structuredData.product.displayVariantId', (string) $displayVariantId)
+            ->assertJsonPath('data.structuredData.product.offer.price', 650);
+
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-01-10T12:05:00Z'));
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.structuredData.product.displayVariantId', (string) $displayVariantId)
+            ->assertJsonPath('data.structuredData.product.offer.price', 585)
+            ->assertJsonPath('data.structuredData.product.offer.offerId', (string) $offer->getKey());
+
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-01-10T12:10:00Z'));
+        $this->getJson('/api/v1/products/'.$product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.structuredData.product.displayVariantId', (string) $displayVariantId)
+            ->assertJsonPath('data.structuredData.product.offer.price', 650)
+            ->assertJsonPath('data.structuredData.product.offer.offerId', null);
     }
 
     public function test_disabled_and_unpublished_products_do_not_enter_offers_section(): void

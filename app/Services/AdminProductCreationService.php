@@ -19,6 +19,7 @@ final class AdminProductCreationService
     public function __construct(
         private readonly AdminMediaManagementService $media,
         private readonly MediaService $mediaFiles,
+        private readonly SeoRedirectService $redirects,
     ) {}
 
     /**
@@ -42,7 +43,7 @@ final class AdminProductCreationService
         $createdAssets = [];
 
         try {
-            return DB::transaction(function () use (
+            $transaction = fn (): Product => DB::transaction(function () use (
                 $data,
                 $categoryIds,
                 $primaryCategoryId,
@@ -52,12 +53,27 @@ final class AdminProductCreationService
                 &$createdAttachments,
                 &$createdAssets,
             ): Product {
+                if ($this->redirects->slugPathIsReserved('product', (string) $data['slug'])) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'slug' => 'This slug is reserved by SEO redirect history.',
+                    ]);
+                }
+
                 $this->assertCategoriesAvailable($categoryIds);
                 $product = Product::create($data);
                 if ($categoryIds !== null) {
                     $this->syncCategories($product, $categoryIds, $primaryCategoryId);
                 }
                 $this->assertLifecycle($product);
+
+                if ($this->redirects->isProductPubliclyVisible((int) $product->getKey())) {
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $product,
+                        'created',
+                        ['ar', 'en'],
+                        ['catalog', 'sitemap', 'metaFeed'],
+                    );
+                }
 
                 $images = [];
                 if ($primaryImage !== null) {
@@ -87,6 +103,8 @@ final class AdminProductCreationService
 
                 return $product;
             });
+
+            return $this->redirects->withMutationLock($transaction);
         } catch (Throwable $exception) {
             $this->cleanup($createdAttachments, $createdAssets);
 

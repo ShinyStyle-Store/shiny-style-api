@@ -29,7 +29,18 @@ class StoreContactService
                 ->lockForUpdate()
                 ->firstOrFail();
             $contact->fill($data);
+            $changed = $contact->isDirty(array_keys($data));
             $contact->save();
+
+            if ($changed) {
+                app(SeoRevalidationService::class)->afterCommitForTarget(
+                    'store',
+                    'store',
+                    'updated',
+                    ['ar', 'en'],
+                    ['store'],
+                );
+            }
 
             return $contact->refresh();
         });

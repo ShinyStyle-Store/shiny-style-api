@@ -8,6 +8,7 @@ use App\Models\Category;
 use App\Models\MediaAsset;
 use App\Models\Product;
 use App\Models\RefundRecord;
+use App\Models\SeoSetting;
 use App\Models\User;
 use App\Services\MediaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -132,6 +133,44 @@ class MediaServiceTest extends TestCase
         Storage::disk('media-test')->assertMissing($asset->path);
         $this->assertDatabaseMissing('media_assets', ['id' => $asset->id]);
         $this->assertTrue($service->deleteOrphanedAsset((int) $asset->id));
+    }
+
+    public function test_seo_referenced_images_are_not_considered_orphans_or_deleted(): void
+    {
+        $this->fakeMediaDisk();
+        $service = app(MediaService::class);
+        $settings = [
+            'default_og_image_id' => $service->uploadImage($this->image('default-og.png', 'png')),
+            'store_logo_id' => $service->uploadImage($this->image('store-logo.png', 'png')),
+        ];
+
+        foreach ($settings as $key => $asset) {
+            SeoSetting::query()->create([
+                'key' => $key,
+                'locale' => '',
+                'value_json' => $asset->getKey(),
+            ]);
+
+            $this->assertFalse($service->isOrphaned($asset));
+            $this->assertFalse($service->deleteOrphanedAsset($asset));
+            $this->assertDatabaseHas('media_assets', ['id' => $asset->getKey()]);
+            Storage::disk('media-test')->assertExists($asset->path);
+        }
+
+        $customImage = $service->uploadImage($this->image('custom-og.png', 'png'));
+        $product = $this->product('seo-image-reference');
+        $seoRecord = $product->seoRecords()->create([
+            'locale' => 'en',
+            'og_image_id' => $customImage->getKey(),
+        ]);
+
+        $this->assertSame($product->getMorphClass(), $seoRecord->seoable_type);
+        $this->assertSame($product->getKey(), $seoRecord->seoable_id);
+        $this->assertTrue($seoRecord->seoable->is($product));
+        $this->assertFalse($service->isOrphaned($customImage));
+        $this->assertFalse($service->deleteOrphanedAsset($customImage));
+        $this->assertDatabaseHas('media_assets', ['id' => $customImage->getKey()]);
+        Storage::disk('media-test')->assertExists($customImage->path);
     }
 
     public function test_permanently_deleting_an_asset_cascades_to_attachments(): void

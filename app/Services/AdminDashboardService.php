@@ -48,7 +48,7 @@ final class AdminDashboardService
         })->values()->all();
 
         $currencyCount = count($currencyTotals);
-        $currency = $currencyCount === 1 ? $currencyTotals[0]['currency'] : ($currencyCount === 0 ? 'EGP' : null);
+        $currency = $currencyCount === 1 ? $currencyTotals[0]['currency'] : ($currencyCount === 0 ? config('store.currency') : null);
         $deliveredCount = array_sum(array_column($currencyTotals, 'delivered_orders'));
 
         $activeProducts = Product::query()->active()->count();

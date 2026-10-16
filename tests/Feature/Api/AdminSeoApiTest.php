@@ -5,6 +5,7 @@ namespace Tests\Feature\Api;
 use App\Models\AdminMembership;
 use App\Models\Category;
 use App\Models\ContentPage;
+use App\Models\MediaAsset;
 use App\Models\Product;
 use App\Models\SeoSetting;
 use App\Models\User;
@@ -89,7 +90,7 @@ class AdminSeoApiTest extends TestCase
         ])->assertOk();
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/content_page/'.$page->id, [
-            'locale' => 'en', 'metaTitle' => 'About us',
+            'locale' => 'en', 'canonicalPath' => '/about',
         ])->assertOk();
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/'.rawurlencode(Product::class).'/1', [
@@ -107,7 +108,84 @@ class AdminSeoApiTest extends TestCase
             'seoable_type' => 'category', 'seoable_id' => $category->id, 'canonical_path' => '/category/seo-category',
         ]);
         $this->assertDatabaseHas('seo_records', [
-            'seoable_type' => 'content_page', 'seoable_id' => $page->id,
+            'seoable_type' => 'content_page', 'seoable_id' => $page->id, 'canonical_path' => '/about',
+        ]);
+    }
+
+    public function test_content_page_seo_is_locale_specific_and_independent_from_content_saves(): void
+    {
+        $page = ContentPage::query()->create([
+            'slug' => 'about-us',
+            'title_ar' => 'عنوان الصفحة',
+            'title_en' => 'Page title',
+            'body_ar' => 'محتوى الصفحة',
+            'body_en' => 'Page content',
+        ]);
+        $seoUrl = '/api/v1/admin/seo/content_page/'.$page->getKey();
+
+        $this->withToken($this->adminToken)->putJson($seoUrl, [
+            'locale' => 'ar',
+            'metaTitle' => 'عنوان SEO عربي',
+        ])->assertOk()->assertJsonPath('data.locale', 'ar');
+        $this->assertDatabaseHas('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'ar',
+            'meta_title' => 'عنوان SEO عربي',
+        ]);
+        $this->assertDatabaseMissing('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'en',
+        ]);
+        $this->assertDatabaseHas('content_pages', [
+            'id' => $page->getKey(),
+            'title_ar' => 'عنوان الصفحة',
+            'title_en' => 'Page title',
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->putJson($seoUrl, [
+            'locale' => 'en',
+            'metaTitle' => 'English SEO title',
+        ])->assertOk()->assertJsonPath('data.locale', 'en');
+        $this->assertDatabaseHas('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'ar',
+            'meta_title' => 'عنوان SEO عربي',
+        ]);
+        $this->assertDatabaseHas('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'en',
+            'meta_title' => 'English SEO title',
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/content-pages/about-us', [
+            'titleAr' => 'عنوان محتوى جديد',
+            'titleEn' => 'New content title',
+            'bodyAr' => 'محتوى عربي جديد',
+            'bodyEn' => 'New English content',
+        ])->assertOk()->assertJsonPath('data.id', $page->getKey());
+
+        $this->assertDatabaseHas('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'ar',
+            'meta_title' => 'عنوان SEO عربي',
+        ]);
+        $this->assertDatabaseHas('seo_records', [
+            'seoable_type' => 'content_page',
+            'seoable_id' => $page->getKey(),
+            'locale' => 'en',
+            'meta_title' => 'English SEO title',
+        ]);
+        $this->assertDatabaseHas('content_pages', [
+            'id' => $page->getKey(),
+            'title_ar' => 'عنوان محتوى جديد',
+            'title_en' => 'New content title',
         ]);
     }
 
@@ -146,6 +224,35 @@ class AdminSeoApiTest extends TestCase
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/seo/history?unexpected=1')
             ->assertUnprocessable()->assertJsonValidationErrors('unexpected');
+    }
+
+    public function test_seo_images_must_be_public_when_saved(): void
+    {
+        config(['filesystems.disks.test-private-seo' => [
+            'driver' => 'local',
+            'root' => storage_path('framework/testing/disks/private-seo-admin'),
+            'url' => 'https://cdn.example.com/private-seo',
+            'visibility' => 'private',
+        ]]);
+        $product = $this->product();
+        $privateImage = MediaAsset::query()->create([
+            'disk' => 'test-private-seo',
+            'path' => 'private.webp',
+            'media_type' => 'image',
+            'mime_type' => 'image/webp',
+            'size_bytes' => 10,
+        ]);
+
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/product/'.$product->id, [
+            'locale' => 'en', 'openGraph' => ['imageId' => $privateImage->getKey()],
+        ])->assertUnprocessable()->assertJsonValidationErrors('openGraph.imageId');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/settings', ['settings' => [
+            ['key' => 'storeLogoId', 'value' => $privateImage->getKey()],
+        ]])->assertUnprocessable()->assertJsonValidationErrors('settings.0.value');
+
+        $this->assertDatabaseCount('seo_records', 0);
+        $this->assertDatabaseCount('seo_settings', 0);
     }
 
     private function product(): Product

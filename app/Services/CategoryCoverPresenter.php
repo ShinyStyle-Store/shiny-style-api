@@ -34,6 +34,13 @@ final class CategoryCoverPresenter
         ];
     }
 
+    public static function loadedCoverAsset(Category $category): ?MediaAsset
+    {
+        $cover = self::loadedCover($category);
+
+        return $cover[1] ?? null;
+    }
+
     public static function forAdmin(Category $category): ?array
     {
         $cover = self::loadedCover($category);

@@ -20,4 +20,5 @@ return [
             'hosts' => ['wa.me', 'api.whatsapp.com'],
         ],
     ],
+    'currency' => 'EGP',
 ];

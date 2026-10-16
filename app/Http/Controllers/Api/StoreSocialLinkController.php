@@ -7,6 +7,7 @@ use App\Http\Requests\SocialLinkRequest;
 use App\Http\Resources\AdminSocialLinkResource;
 use App\Http\Resources\SocialLinkResource;
 use App\Models\SocialLink;
+use App\Services\StoreSocialLinkService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -25,10 +26,10 @@ class StoreSocialLinkController extends Controller
         return SocialLinkResource::collection(SocialLink::query()->enabled()->ordered()->get());
     }
 
-    public function store(SocialLinkRequest $request): JsonResponse
+    public function store(SocialLinkRequest $request, StoreSocialLinkService $links): JsonResponse
     {
         try {
-            $link = SocialLink::query()->create($request->validated());
+            $link = $links->create($request->validated());
         } catch (QueryException $exception) {
             $this->convertDuplicatePlatform($exception);
             throw $exception;
@@ -37,10 +38,14 @@ class StoreSocialLinkController extends Controller
         return (new AdminSocialLinkResource($link))->response()->setStatusCode(201);
     }
 
-    public function update(SocialLinkRequest $request, SocialLink $socialLink): AdminSocialLinkResource
+    public function update(
+        SocialLinkRequest $request,
+        SocialLink $socialLink,
+        StoreSocialLinkService $links,
+    ): AdminSocialLinkResource
     {
         try {
-            $socialLink->update($request->validated());
+            $socialLink = $links->update($socialLink, $request->validated());
         } catch (QueryException $exception) {
             $this->convertDuplicatePlatform($exception);
             throw $exception;
@@ -49,9 +54,9 @@ class StoreSocialLinkController extends Controller
         return new AdminSocialLinkResource($socialLink->refresh());
     }
 
-    public function destroy(SocialLink $socialLink): Response
+    public function destroy(SocialLink $socialLink, StoreSocialLinkService $links): Response
     {
-        $socialLink->delete();
+        $links->delete($socialLink);
 
         return response()->noContent();
     }

@@ -20,6 +20,7 @@ final class AdminProductUpdateService
     public function __construct(
         private readonly AdminMediaManagementService $media,
         private readonly MediaService $mediaFiles,
+        private readonly SeoRedirectService $redirects,
     ) {}
 
     /**
@@ -40,9 +41,15 @@ final class AdminProductUpdateService
         $removedAssetIds = [];
 
         try {
-            $updated = DB::transaction(function () use (
+            $mayChangeSlug = array_key_exists('slug', $data) && (string) $data['slug'] !== (string) $product->slug;
+            $mayAffectPublicRoute = $mayChangeSlug
+                || $hasCategories
+                || array_key_exists('status', $data)
+                || array_key_exists('published_at', $data);
+            $transaction = fn (): Product => DB::transaction(function () use (
                 $product,
                 $data,
+                $mayAffectPublicRoute,
                 $hasCategories,
                 $categoryIds,
                 $primaryCategoryId,
@@ -52,6 +59,8 @@ final class AdminProductUpdateService
                 &$removedAssetIds,
             ): Product {
                 $locked = Product::query()->whereKey($product->getKey())->lockForUpdate()->firstOrFail();
+                $oldSlug = (string) $locked->slug;
+                $wasPublic = $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
                 $categoriesChanged = false;
                 $affectedCategoryIds = [];
                 if ($hasCategories) {
@@ -68,7 +77,26 @@ final class AdminProductUpdateService
 
                 $locked->fill($data);
                 $dirtyFields = array_keys($locked->getDirty());
+                $slugChanged = in_array('slug', $dirtyFields, true);
+                $redirectPaths = [];
                 $locked->save();
+                if ($slugChanged) {
+                    $redirectPaths = $this->redirects->recordProductSlugChange(
+                        $locked,
+                        $oldSlug,
+                        ['ar', 'en'],
+                        $wasPublic,
+                        $createdBy,
+                    );
+                    app(SeoAuditService::class)->record(
+                        $createdBy === null ? null : (int) $createdBy->getKey(),
+                        'product',
+                        (int) $locked->getKey(),
+                        'update',
+                        ['slug' => $oldSlug],
+                        ['slug' => (string) $locked->slug],
+                    );
+                }
                 $mediaChanged = false;
                 if ($hasCategories || array_key_exists('status', $data) || array_key_exists('published_at', $data)) {
                     $this->assertLifecycle(
@@ -144,11 +172,19 @@ final class AdminProductUpdateService
                     $mediaChanged = $finalIds !== $originalIds;
                 }
 
+                if ($mayAffectPublicRoute
+                    && $this->redirects->isProductPubliclyVisible((int) $locked->getKey())
+                    && $this->redirects->slugPathIsReserved('product', (string) $locked->slug)) {
+                    throw ValidationException::withMessages([
+                        'slug' => 'This product path is reserved by SEO redirect history.',
+                    ]);
+                }
+
                 if ($categoriesChanged || $mediaChanged) {
-                    app(SeoSignificantModificationService::class)->mark($locked);
+                    app(SeoSignificantModificationService::class)->mark($locked, notify: false);
                 }
                 if ($affectedCategoryIds !== []) {
-                    app(SeoSignificantModificationService::class)->markCategories($affectedCategoryIds);
+                    app(SeoSignificantModificationService::class)->markCategories($affectedCategoryIds, notify: false);
                 }
 
                 $localizedFields = [
@@ -158,16 +194,37 @@ final class AdminProductUpdateService
                 $sharedFields = array_diff($dirtyFields, ...array_values($localizedFields));
                 $significantChanges = app(SeoSignificantModificationService::class);
                 if ($sharedFields !== []) {
-                    $significantChanges->mark($locked);
+                    $significantChanges->mark($locked, notify: false);
                 }
                 foreach ($localizedFields as $locale => $fields) {
                     if (array_intersect($dirtyFields, $fields) !== []) {
-                        $significantChanges->mark($locked, locale: $locale);
+                        $significantChanges->mark($locked, locale: $locale, notify: false);
                     }
+                }
+
+                $isPublicAfterUpdate = $this->redirects->isProductPubliclyVisible((int) $locked->getKey());
+                if (($dirtyFields !== [] || $categoriesChanged || $mediaChanged) && ($wasPublic || $isPublicAfterUpdate)) {
+                    $reason = $slugChanged
+                        ? 'slug_changed'
+                        : ($wasPublic && ! $isPublicAfterUpdate ? 'unpublished' : (! $wasPublic ? 'published' : 'updated'));
+                    $scopes = ['catalog', 'sitemap', 'metaFeed'];
+                    if ($slugChanged || ($wasPublic && ! $isPublicAfterUpdate)) {
+                        $scopes[] = 'redirects';
+                    }
+                    app(SeoRevalidationService::class)->afterCommitForEntity(
+                        $locked,
+                        $reason,
+                        ['ar', 'en'],
+                        $scopes,
+                        $slugChanged && $wasPublic ? $redirectPaths : [],
+                    );
                 }
 
                 return $locked;
             });
+            $updated = $mayAffectPublicRoute
+                ? $this->redirects->withMutationLock($transaction)
+                : $transaction();
         } catch (Throwable $exception) {
             $this->cleanupCreatedFiles($createdFiles);
 

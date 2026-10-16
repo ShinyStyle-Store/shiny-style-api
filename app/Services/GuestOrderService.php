@@ -220,7 +220,7 @@ class GuestOrderService
             'shipping_address' => $data['shipping']['address'],
             'shipping_landmark' => $data['shipping']['landmark'] ?? null,
             'customer_note' => $data['order_note'] ?? null,
-            'currency' => 'EGP',
+            'currency' => config('store.currency'),
             'subtotal' => ExactMoney::formatMinorUnits($subtotal),
             'shipping_fee' => ExactMoney::formatMinorUnits($shippingFee),
             'total' => ExactMoney::formatMinorUnits(ExactMoney::add($subtotal, $shippingFee)),

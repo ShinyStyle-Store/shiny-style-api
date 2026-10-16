@@ -10,49 +10,58 @@ use App\Support\SeoSettingCatalog;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /** Resolves the latest known change that can affect one public SEO detail response. */
 final class SeoLastSignificantModifiedAtService
 {
+    /** @var array<int, list<object>> */
+    private array $productOffers = [];
+
+    /** @var array<string, array{organizationId: ?string, name: ?string, url: ?string, logo: ?string}> */
+    private array $storeIdentities = [];
+
+    public function __construct(
+        private readonly SeoMetadataService $metadata,
+        private readonly StoreStructuredDataService $storeStructuredData,
+    ) {}
+
+    /** @param iterable<Product> $products */
+    public function prepareProductBatch(iterable $products): void
+    {
+        $productIds = [];
+        foreach ($products as $product) {
+            $productIds[] = (int) $product->getKey();
+            $this->productOffers[(int) $product->getKey()] = [];
+        }
+
+        if ($productIds === []) {
+            return;
+        }
+
+        $offers = DB::table('offer_product')
+            ->join('offers', 'offers.id', '=', 'offer_product.offer_id')
+            ->whereIn('offer_product.product_id', array_unique($productIds))
+            ->get([
+                'offer_product.product_id', 'offers.created_at', 'offers.updated_at',
+                'offers.starts_at', 'offers.ends_at', 'offers.is_enabled',
+            ]);
+
+        foreach ($offers as $offer) {
+            $this->productOffers[(int) $offer->product_id][] = $offer;
+        }
+    }
+
     /** @param array<string, mixed> $presentation */
     public function resolve(
         Model $entity,
         string $locale,
         array $presentation,
         ?SeoRecord $record,
+        Collection $settings,
     ): ?CarbonImmutable {
-        $sources = [];
-        $this->addColumns($sources, DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey()), [
-            'created_at', 'seo_last_significant_modified_at',
-            ...($entity instanceof ContentPage || $entity instanceof Category || $entity instanceof Product
-                ? ['seo_last_significant_modified_at_'.$locale]
-                : []),
-        ]);
-        $this->addColumns($sources, DB::table('seo_records')
-            ->where('seoable_type', $entity->getMorphClass())
-            ->where('seoable_id', $entity->getKey())
-            ->where('locale', $locale), ['created_at', 'updated_at']);
-
-        if ($entity instanceof Product) {
-            $this->addProductSources($sources, $entity, $locale);
-        } elseif ($entity instanceof Category) {
-            $this->addCategorySources($sources, $entity, $locale);
-        } elseif (! $entity instanceof ContentPage) {
-            return null;
-        }
-
-        $imageIds = $this->imageSettingIds($entity, $record, $presentation);
-        if ($record?->og_image_id !== null) {
-            $imageIds[] = (int) $record->og_image_id;
-        }
-        if ($imageIds !== []) {
-            $this->addColumns($sources, DB::table('media_assets')->whereIn('id', array_unique($imageIds)), [
-                'created_at', 'updated_at', 'deleted_at',
-            ]);
-        }
-
-        $this->addSettingsSources($sources, $entity, $locale, $presentation, $record);
+        $sources = $this->sources($entity, $locale, $presentation, $record, $settings);
 
         if ($sources === []) {
             return null;
@@ -72,6 +81,187 @@ final class SeoLastSignificantModifiedAtService
         }
 
         return CarbonImmutable::parse($latest, 'UTC')->utc();
+    }
+
+    /**
+     * @param list<string> $settingKeys
+     * @param list<int> $assetIds
+     */
+    public function resolveFixedPage(array $settingKeys, array $assetIds, string $locale): ?CarbonImmutable
+    {
+        $definitions = collect($settingKeys)
+            ->map(static fn (string $key): ?array => SeoSettingCatalog::definition($key) === null
+                ? null
+                : ['apiKey' => $key, ...SeoSettingCatalog::definition($key)])
+            ->filter()
+            ->values();
+        $databaseKeys = $definitions->pluck('key')->all();
+        $dates = [];
+
+        if ($databaseKeys !== []) {
+            $settingDate = DB::table('seo_settings')
+                ->whereIn('key', $databaseKeys)
+                ->whereIn('locale', ['', $locale])
+                ->max('updated_at');
+            if (is_string($settingDate)) {
+                $dates[] = $settingDate;
+            }
+
+            $auditDate = DB::table('seo_audits')
+                ->where('target_type', 'seo_setting')
+                ->where(function (Builder $query) use ($definitions, $locale): void {
+                    foreach ($definitions as $definition) {
+                        $settingLocale = $definition['localized'] ? $locale : null;
+                        foreach (['before_json', 'after_json'] as $snapshot) {
+                            $query->orWhere(function (Builder $entry) use ($definition, $settingLocale, $snapshot): void {
+                                $entry->where($snapshot.'->key', $definition['apiKey']);
+                                if ($settingLocale === null) {
+                                    $entry->whereNull($snapshot.'->locale');
+                                } else {
+                                    $entry->where($snapshot.'->locale', $settingLocale);
+                                }
+                            });
+                        }
+                    }
+                })
+                ->max('created_at');
+            if (is_string($auditDate)) {
+                $dates[] = $auditDate;
+            }
+        }
+
+        if ($assetIds !== []) {
+            $assets = DB::table('media_assets')->whereIn('id', array_values(array_unique($assetIds)))
+                ->get(['created_at', 'updated_at', 'deleted_at']);
+            foreach ($assets as $asset) {
+                array_push($dates, $asset->created_at, $asset->updated_at, $asset->deleted_at);
+            }
+        }
+
+        $now = CarbonImmutable::now('UTC');
+        $validDates = collect($dates)
+            ->filter(static fn (mixed $date): bool => is_string($date) && trim($date) !== '')
+            ->map(static fn (string $date): CarbonImmutable => CarbonImmutable::parse($date, 'UTC')->utc())
+            ->filter(static fn (CarbonImmutable $date): bool => $date->lessThanOrEqualTo($now));
+        $latest = null;
+        foreach ($validDates as $date) {
+            if ($latest === null || $date->greaterThan($latest)) {
+                $latest = $date;
+            }
+        }
+
+        return $latest;
+    }
+
+    /**
+     * @param list<array{entity: Model, locale: string, presentation: array<string, mixed>, record: ?SeoRecord}> $entries
+     * @return array<int, ?CarbonImmutable>
+     */
+    public function resolveMany(array $entries, Collection $settings): array
+    {
+        if ($entries === []) {
+            return [];
+        }
+
+        $combined = null;
+        foreach ($entries as $index => $entry) {
+            $sources = $this->sources(
+                $entry['entity'],
+                $entry['locale'],
+                $entry['presentation'],
+                $entry['record'],
+                $settings,
+            );
+            if ($sources === []) {
+                continue;
+            }
+
+            $entityQuery = array_shift($sources);
+            foreach ($sources as $source) {
+                $entityQuery->unionAll($source);
+            }
+
+            $keyedQuery = DB::query()
+                ->fromSub($entityQuery, 'seo_entity_dates')
+                ->selectRaw('? AS entity_key, changed_at', [$index]);
+            if ($combined === null) {
+                $combined = $keyedQuery;
+            } else {
+                $combined->unionAll($keyedQuery);
+            }
+        }
+
+        $results = array_fill(0, count($entries), null);
+        if ($combined === null) {
+            return $results;
+        }
+
+        $dates = DB::query()
+            ->fromSub($combined, 'seo_change_dates')
+            ->where('changed_at', '<=', CarbonImmutable::now('UTC')->toDateTimeString())
+            ->selectRaw('entity_key, MAX(changed_at) AS changed_at')
+            ->groupBy('entity_key')
+            ->get();
+
+        foreach ($dates as $date) {
+            if (is_string($date->changed_at) && trim($date->changed_at) !== '') {
+                $results[(int) $date->entity_key] = CarbonImmutable::parse($date->changed_at, 'UTC')->utc();
+            }
+        }
+
+        return $results;
+    }
+
+    /** @param array<string, mixed> $presentation @return list<Builder> */
+    private function sources(
+        Model $entity,
+        string $locale,
+        array $presentation,
+        ?SeoRecord $record,
+        Collection $settings,
+    ): array {
+        $sources = [];
+        $this->addColumns($sources, DB::table($entity->getTable())->where($entity->getKeyName(), $entity->getKey()), [
+            'created_at', 'seo_last_significant_modified_at',
+            ...($entity instanceof ContentPage || $entity instanceof Category || $entity instanceof Product
+                ? ['seo_last_significant_modified_at_'.$locale]
+                : []),
+        ]);
+        $this->addColumns($sources, DB::table('seo_records')
+            ->where('seoable_type', $entity->getMorphClass())
+            ->where('seoable_id', $entity->getKey())
+            ->where('locale', $locale), ['created_at', 'updated_at']);
+
+        if ($entity instanceof Product) {
+            $this->addProductSources($sources, $entity, $locale);
+        } elseif ($entity instanceof Category) {
+            $this->addCategorySources($sources, $entity, $locale);
+        } elseif (! $entity instanceof ContentPage) {
+            return [];
+        }
+
+        $imageResolution = $this->metadata->resolveOpenGraphImage($entity, $presentation, $record, $settings);
+        $imageIds = $imageResolution['assetIds'];
+        if ($record?->og_image_id !== null) {
+            $imageIds[] = (int) $record->og_image_id;
+        }
+        if ($imageIds !== []) {
+            $this->addColumns($sources, DB::table('media_assets')->whereIn('id', array_unique($imageIds)), [
+                'created_at', 'updated_at', 'deleted_at',
+            ]);
+        }
+
+        $this->addSettingsSources(
+            $sources,
+            $entity,
+            $locale,
+            $presentation,
+            $record,
+            $settings,
+            $imageResolution,
+        );
+
+        return $sources;
     }
 
     /** @param list<Builder> $sources @param list<string> $columns */
@@ -138,10 +328,13 @@ final class SeoLastSignificantModifiedAtService
             }
         }
 
-        $offers = DB::table('offers')
-            ->join('offer_product', 'offer_product.offer_id', '=', 'offers.id')
-            ->where('offer_product.product_id', $productId)
-            ->get(['offers.created_at', 'offers.updated_at', 'offers.starts_at', 'offers.ends_at', 'offers.is_enabled']);
+        $offers = array_key_exists($productId, $this->productOffers)
+            ? $this->productOffers[$productId]
+            : DB::table('offers')
+                ->join('offer_product', 'offer_product.offer_id', '=', 'offers.id')
+                ->where('offer_product.product_id', $productId)
+                ->get(['offers.created_at', 'offers.updated_at', 'offers.starts_at', 'offers.ends_at', 'offers.is_enabled'])
+                ->all();
         foreach ($offers as $offer) {
             foreach (['created_at', 'updated_at'] as $column) {
                 if ($offer->{$column} !== null) {
@@ -197,32 +390,6 @@ final class SeoLastSignificantModifiedAtService
         }
     }
 
-    /** @param array<string, mixed> $presentation @return list<int> */
-    private function imageSettingIds(Model $entity, ?SeoRecord $record, array $presentation): array
-    {
-        if (($presentation['image'] ?? null) !== null && $presentation['image'] !== '') {
-            return [];
-        }
-
-        $ids = [];
-        if ($record?->og_image_id !== null) {
-            $ids[] = (int) $record->og_image_id;
-        }
-
-        $settingKeys = ['default_og_image_id'];
-        if ($entity instanceof ContentPage) {
-            $settingKeys[] = 'store_logo_id';
-        }
-        foreach (DB::table('seo_settings')->whereIn('key', $settingKeys)->pluck('value_json') as $value) {
-            $id = json_decode((string) $value, true);
-            if (filter_var($id, FILTER_VALIDATE_INT) !== false) {
-                $ids[] = (int) $id;
-            }
-        }
-
-        return array_values(array_unique($ids));
-    }
-
     /** @param list<Builder> $sources @param array<string, mixed> $presentation */
     private function addSettingsSources(
         array &$sources,
@@ -230,25 +397,43 @@ final class SeoLastSignificantModifiedAtService
         string $locale,
         array $presentation,
         ?SeoRecord $record,
+        Collection $settings,
+        array $imageResolution,
     ): void {
-        $keys = ['supportedLocales'];
+        $keys = ['supportedLocales', 'storeName'];
+        $storeIdentity = $entity instanceof Product
+            ? $this->storeIdentity($settings, $locale)
+            : null;
+        if ($storeIdentity !== null && $storeIdentity['name'] !== null) {
+            $keys = array_merge($keys, ['canonicalBaseUrl', 'storeLogoId']);
+        }
         if ($record?->robots_index === null || $record?->robots_follow === null) {
             $keys[] = 'defaultRobotsPolicy';
         }
-        if (($record?->meta_title === null || trim($record->meta_title) === '')
-            && empty($presentation['name']) && empty($presentation['title'])) {
-            $keys[] = 'defaultSeoTitle';
-            $keys[] = 'storeName';
-        }
-        if (($record?->meta_description === null || trim($record->meta_description) === '')
-            && empty($presentation['description']) && empty($presentation['body'])) {
+        $titleResolution = $this->metadata->resolveTitle(
+            $presentation,
+            $record,
+            $settings,
+            $locale,
+        );
+        $keys = array_merge($keys, $titleResolution['settingKeys']);
+        $descriptionResolution = $this->metadata->resolveDescriptionWithDependencies(
+            $presentation,
+            $record,
+            $settings,
+            $locale,
+        );
+        if ($descriptionResolution['usesDefaultMetaDescription']) {
             $keys[] = 'defaultMetaDescription';
         }
-        $customImageIsAvailable = $record?->ogImage !== null && ! $record->ogImage->trashed();
-        if (empty($presentation['image']) && ! $customImageIsAvailable) {
-            $keys[] = 'defaultOgImageId';
-            if ($entity instanceof ContentPage) {
-                $keys[] = 'storeLogoId';
+        $keys = array_merge($keys, $imageResolution['settingKeys']);
+        $identityLogoIds = [];
+        if ($storeIdentity !== null && $storeIdentity['name'] !== null) {
+            if ($storeIdentity['logo'] !== null) {
+                $logoId = $this->settingValue($settings, 'storeLogoId');
+                if (filter_var($logoId, FILTER_VALIDATE_INT) !== false) {
+                    $identityLogoIds[] = (int) $logoId;
+                }
             }
         }
         $keys = array_values(array_unique($keys));
@@ -262,6 +447,12 @@ final class SeoLastSignificantModifiedAtService
                 $query->where('locale', '')->orWhere('locale', $locale);
             });
         $this->addColumns($sources, $settings, ['created_at', 'updated_at']);
+
+        if ($identityLogoIds !== []) {
+            $this->addColumns($sources, DB::table('media_assets')->whereIn('id', $identityLogoIds), [
+                'created_at', 'updated_at', 'deleted_at',
+            ]);
+        }
 
         $audits = DB::table('seo_audits')->where('target_type', 'seo_setting')
             ->where(function (Builder $query) use ($keys, $locale): void {
@@ -285,6 +476,34 @@ final class SeoLastSignificantModifiedAtService
         return DB::getDriverName() === 'pgsql'
             ? 'CAST('.$column.' AS TIMESTAMP)'
             : 'datetime('.$column.')';
+    }
+
+    private function settingValue(Collection $settings, string $apiKey): mixed
+    {
+        $definition = SeoSettingCatalog::definition($apiKey);
+        if ($definition === null) {
+            return null;
+        }
+
+        return $settings->first(static fn ($setting): bool => $setting->key === $definition['key']
+            && $setting->locale === '')?->value_json;
+    }
+
+    /** @return array{organizationId: ?string, name: ?string, url: ?string, logo: ?string} */
+    private function storeIdentity(Collection $settings, string $locale): array
+    {
+        $identitySettings = $settings->filter(static fn ($setting): bool => in_array(
+            $setting->key,
+            ['store_name', 'canonical_base_url', 'store_logo_id'],
+            true,
+        ))->map(static fn ($setting): array => [
+            'key' => $setting->key,
+            'locale' => $setting->locale,
+            'value' => $setting->value_json,
+        ])->values()->all();
+        $cacheKey = hash('sha256', serialize([$locale, $identitySettings]));
+
+        return $this->storeIdentities[$cacheKey] ??= $this->storeStructuredData->identity($settings, $locale);
     }
 
     private function timestampLiteral(string $timestamp): Builder

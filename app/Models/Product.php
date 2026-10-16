@@ -132,6 +132,16 @@ class Product extends Model
             ->values();
     }
 
+    public function primaryCategory(Collection $categories): ?Category
+    {
+        $primaryCategory = $categories->first(
+            static fn (Category $category): bool => (bool) ($category->pivot?->is_primary ?? false),
+        );
+        $category = $primaryCategory ?? $categories->first();
+
+        return $category instanceof Category ? $category : null;
+    }
+
     public function displaySellableItem(Collection $sellableItems): ?SellableItem
     {
         $publicSellableItems = $this->publicSellableItems($sellableItems);

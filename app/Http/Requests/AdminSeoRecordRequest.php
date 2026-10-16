@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\MediaAsset;
+use App\Services\SeoPublicImageService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
@@ -99,7 +100,8 @@ class AdminSeoRecordRequest extends FormRequest
 
             foreach (['openGraph.imageId' => $this->input('openGraph.imageId')] as $field => $value) {
                 if ($value !== null && $value !== '' && is_numeric($value)
-                    && ! MediaAsset::query()->whereKey((int) $value)->where('media_type', 'image')->whereNull('deleted_at')->exists()) {
+                    && app(SeoPublicImageService::class)
+                        ->url(MediaAsset::query()->find((int) $value)) === null) {
                     $validator->errors()->add($field, 'The selected media asset must be an available image.');
                 }
             }

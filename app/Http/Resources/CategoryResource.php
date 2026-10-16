@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Services\CategoryCoverPresenter;
 use App\Services\SeoResolverService;
+use App\Services\SeoStructuredDataService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -15,6 +16,13 @@ class CategoryResource extends JsonResource
         $description = $this->localizedValue($this->description_ar, $this->description_en);
         $coverImage = CategoryCoverPresenter::forPublic($this->resource);
         $isDetail = (bool) $this->category_detail;
+        $breadcrumbs = $isDetail
+            ? collect($this->category_breadcrumbs)->map(fn ($category): array => [
+                'id' => $category->getKey(),
+                'name' => $this->localizedValue($category->name_ar, $category->name_en),
+                'slug' => $category->slug,
+            ])->values()->all()
+            : [];
 
         return [
             'id' => $this->getKey(),
@@ -33,12 +41,12 @@ class CategoryResource extends JsonResource
                     'name' => $name,
                     'description' => $description,
                     'image' => $coverImage['url'] ?? null,
+                    'imageAsset' => CategoryCoverPresenter::loadedCoverAsset($this->resource),
                 ]),
-                'breadcrumbs' => collect($this->category_breadcrumbs)->map(fn ($category): array => [
-                    'id' => $category->getKey(),
-                    'name' => $this->localizedValue($category->name_ar, $category->name_en),
-                    'slug' => $category->slug,
-                ])->values()->all(),
+                'breadcrumbs' => $breadcrumbs,
+                'structuredData' => [
+                    'breadcrumbs' => app(SeoStructuredDataService::class)->breadcrumbs($breadcrumbs),
+                ],
                 'children' => collect($this->category_detail_children)->map(fn ($category): array => [
                     'id' => $category->getKey(),
                     'name' => $this->localizedValue($category->name_ar, $category->name_en),

@@ -260,6 +260,286 @@ quantity will still be available when the order is submitted.
 The endpoint returns `404` when the product is missing, inactive, unpublished,
 has no active variant, or has no active category.
 
+### Structured data source payload
+
+Product detail adds `structuredData.product` and `structuredData.breadcrumbs`;
+category detail adds `structuredData.breadcrumbs`. These are typed source data
+for the frontend. The API does not return JSON-LD or HTML. Existing `seo`,
+`sellableItems`, `gallery`, and category `breadcrumbs` remain available.
+
+Example product payload (values depend on the requested locale and current
+catalog state):
+
+```json
+{
+  "structuredData": {
+    "product": {
+      "productId": "42",
+      "name": "Soft Sofa Throw Blanket",
+      "description": "A soft throw blanket.",
+      "images": ["https://cdn.example/image.jpg"],
+      "canonicalPath": "/products/soft-sofa-throw-blanket",
+      "displayVariantId": "81",
+      "offer": {
+        "sellableItemId": "81",
+        "sku": "THROW-BEIGE-M",
+        "offerId": null,
+        "offerApplied": false,
+        "price": 650,
+        "priceCurrency": "EGP",
+        "availability": "InStock"
+      },
+      "variants": [
+        {
+          "id": "81",
+          "sku": "THROW-BEIGE-M",
+          "offerId": null,
+          "offerApplied": false,
+          "price": 650,
+          "originalPrice": 750,
+          "priceCurrency": "EGP",
+          "availability": "InStock",
+          "inStock": true,
+          "images": ["https://cdn.example/image.jpg"],
+          "optionValues": {"color": "beige", "size": "medium"}
+        }
+      ],
+      "variationAttributes": [],
+      "productGroup": null
+    },
+    "breadcrumbs": [
+      {"position": 1, "entityType": "category", "id": "7", "name": "Home Textiles", "path": "/category/home-textiles"},
+      {"position": 2, "entityType": "product", "id": "42", "name": "Soft Sofa Throw Blanket", "path": "/products/soft-sofa-throw-blanket"}
+    ]
+  }
+}
+```
+
+`productId` and variant IDs are catalog identifiers; an ID is never substituted
+for a missing SKU. Names and descriptions follow the existing requested-locale
+fallback. Images are public media URLs from the selected variant and product
+gallery, de-duplicated; each variant's own images are also included in its
+variant entry. `canonicalPath` comes from the existing SEO resolver and is a
+logical path without locale or domain. The frontend adds its configured locale
+and canonical origin.
+
+`offer` describes only the currently displayed variant. Its SKU is the actual
+SellableItem SKU, its price and offer fields come from the existing
+`OfferPricingService` result, and availability uses the existing
+`availableQuantity()` calculation (stock minus reservations). `priceCurrency`
+comes from the single store currency setting in `config/store.php` (`EGP`),
+also used when creating new checkout quotes and orders. Existing order,
+payment, and refund currency fields are historical transaction snapshots; this
+setting does not rewrite them. The orders table's EGP default remains a schema
+default, while runtime commerce and structured data use the config source.
+
+`variants` contains current public sellable items only; inactive, archived,
+soft-deleted, and superseded variants are excluded. Pricing, SKU, availability,
+and variant image remain attached to their own variant. `productGroup` is
+present only when multiple current variants and complete option assignments
+provide a reliable group and `variesBy` relationship. It uses the product ID
+as `productGroupId`, never as a SKU. Regardless of grouping, the `offer` stays
+the single displayed variant offer. No `AggregateOffer` is inferred for a set
+of variants.
+
+Breadcrumb entries use the actual visible category hierarchy, localized names,
+and `/category/{slug}` paths. Product breadcrumbs follow the API's existing
+primary-category choice, then append the product using its resolved canonical
+path. Category detail breadcrumbs contain the visible root-to-category path.
+No path is reconstructed from URL text. `structuredData.breadcrumbs` uses
+1-based positions and carries `entityType`, catalog `id`, localized `name`,
+and locale-free logical `path` for each entry.
+
+The payload deliberately omits brand, GTIN, MPN, ratings, reviews, seller
+shipping details, and return-policy terms because no authoritative source for
+those values is currently wired to the catalog response. When the localized
+`storeName` setting exists, `structuredData.product.seller` contains the same
+organization identity returned below; it is `null` when that locale has no
+usable store name. The frontend should map these source fields to Schema.org
+types and emit JSON-LD in page HTML; it must not fill missing values with
+guesses or accept free-form JSON-LD from admin input.
+
+## SEO redirects
+
+Redirect rows are scoped to the host (and non-default port) from the configured
+global `canonical_base_url` SEO setting. The host is not hard-coded. If that
+setting is absent or invalid, the public resolver safely returns no match and
+manual redirect writes are rejected; changing the slug of a currently public
+product also fails atomically until a valid canonical origin is configured.
+Configure the production HTTPS origin before enabling redirect management.
+Changing that origin selects a new domain scope; existing rows are not copied
+to the new scope automatically, so domain migrations need an explicit redirect
+data plan.
+
+The API stores locale-prefixed logical paths, such as
+`/ar/products/old-slug` and `/en/products/old-slug`. It does not store a full
+URL or issue an HTTP redirect. Product slug changes create 301 history for both
+supported locales when the old product page was publicly visible. Robots
+`noindex` does not make a public URL ineligible for history. Repeated changes
+update earlier product history to the latest path rather than building chains.
+Category and mapped content paths can be managed manually; automatic history
+is currently connected only to product slug updates.
+
+Every source path remains reserved while its row exists, including when the
+row is inactive. This prevents a live product/category path from shadowing
+history or creating a loop. The API does not silently delete old history or
+reuse a reserved slug. Product/category create, update, and restore operations
+validate this reservation. Archiving or deleting a destination does not create
+a redirect; the resolver returns no match whenever its source is live or its
+destination is no longer public. A redirect becomes usable again only if its
+destination is public and its row remains active.
+
+### Public resolver
+
+```http
+GET /api/v1/seo/redirects/resolve?path=%2Fen%2Fproducts%2Fold-slug
+Accept: application/json
+```
+
+Matched response:
+
+```json
+{
+  "data": {
+    "destinationPath": "/en/products/new-slug",
+    "statusCode": 301
+  }
+}
+```
+
+No match is `{"data":null}`. Unsupported, non-normalized, external, or
+unrecognized paths receive `422` validation errors. Supported paths are
+locale-prefixed product, category, and mapped content paths only. The frontend
+should use the returned status code for a permanent redirect on its own
+storefront host, preserving the locale in the path; it must not redirect to the
+API host or assume that a redirect exists when the response is null.
+
+Lookup caches positive and negative results for up to ten minutes without
+requiring cache tags. Writes invalidate their source lookup after the database
+transaction commits. Public visibility is checked again during each resolution,
+so cached rows cannot bypass current product/category/content visibility.
+Changes to the storefront's domain and any future frontend lookup cache or
+Sitemap integration need corresponding cache invalidation wiring; those
+integrations are not part of this API change. The resolver currently has no
+dedicated rate limiter; deployment-level request limits should be considered
+if this endpoint is exposed directly to untrusted traffic.
+
+### Admin redirect management
+
+All management endpoints use the existing `auth:sanctum` and `admin.access`
+middleware. Listing is paginated (`per_page` defaults to 20 and is limited to
+1–100). Creation accepts a mapped, non-live source, a currently public
+internal destination, and status 301 or 308:
+
+```http
+POST /api/v1/admin/redirects
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "sourcePath": "/en/products/legacy-name",
+  "destinationPath": "/en/products/current-name",
+  "statusCode": 301
+}
+```
+
+`PATCH /api/v1/admin/redirects/{id}` can change `destinationPath`,
+`statusCode`, or `isActive`. Activating a row revalidates its internal
+destination and rejects live sources and chains. `DELETE` deactivates the row
+without deleting its audit/history record. Creation, changes, and deactivation
+are written to the existing SEO audit log in the same transaction. The
+database unique key on `(domain_scope, source_hash)` is the final duplicate
+guard, and the exact source text is also checked after hash lookup.
+
+The existing API has no general public API throttle; only selected commerce and
+authentication routes use named limiters. This redirect resolver follows that
+existing convention rather than introducing a new limiter in this change.
+
+### Store and merchant structured data source
+
+```http
+GET /api/v1/store/structured-data
+```
+
+This aggregate public endpoint is an implementation choice so the frontend
+can load the Organization/OnlineStore, WebSite, contact, social profile, EGP,
+and policy reference data from one locale-aware response. It reuses the
+existing SEO settings, public store contact, enabled social links, content
+page service, canonical mapping, and store currency. It exposes only the
+allowlisted public fields; the Admin SEO settings response and contact/social
+administration fields are not returned.
+
+Example when the policy pages exist but store identity and canonical origin
+have not been configured:
+
+```json
+{
+  "data": {
+    "organization": {
+      "organizationId": null,
+      "name": null,
+      "url": null,
+      "logo": null,
+      "contact": {
+        "supportPhone": null,
+        "supportWhatsapp": null,
+        "supportEmail": null,
+        "address": null,
+        "googleMapsUrl": null
+      },
+      "sameAs": []
+    },
+    "website": {
+      "websiteId": null,
+      "name": null,
+      "url": null,
+      "inLanguage": "en",
+      "publisherId": null
+    },
+    "currency": "EGP",
+    "policies": {
+      "returns": {"contentPageSlug": "returns-policy", "path": "/return-policy", "url": null},
+      "shipping": {"contentPageSlug": "shipping-policy", "path": "/shipping-policy", "url": null}
+    }
+  }
+}
+```
+
+`organization.name` and `website.name` come from the `storeName` SEO setting
+for the request locale only. Missing translations stay `null`; they do not
+fall back to a default SEO title or another locale. The logo comes only from
+`storeLogoId`, and is omitted if its image asset is missing/deleted, not an
+image, on a non-publicly served disk, or cannot produce an absolute HTTP(S)
+URL. `defaultOgImageId` is not treated as a store logo. `url` comes only from
+the HTTPS origin in `canonicalBaseUrl`; `APP_URL` and frontend defaults are
+not used as a fallback. `organizationId`, `websiteId`, and
+`website.publisherId` are derived from that configured origin, or `null` when
+the origin is absent or invalid.
+
+`contact` uses the same public fields and localized address as
+`GET /api/v1/store/contact`. `sameAs` contains only enabled Facebook,
+Instagram, and TikTok profile links that still pass the platform host/path
+rules used by the admin link validator. WhatsApp remains in the public contact
+object, not `sameAs`; disabled, unsupported, or invalid persisted links are
+omitted. `currency` uses the single `config/store.php` EGP setting shared with
+checkout and new order creation.
+
+`policies.returns` and `policies.shipping` are references only. Each appears
+only when its corresponding content page record exists and uses the confirmed
+canonical mapping: `returns-policy` → `/return-policy` and
+`shipping-policy` → `/shipping-policy`. Its absolute `url` is present only
+when `canonicalBaseUrl` is configured. The API does not derive refund timing,
+fees, shipping speed, or other merchant policy terms from page prose. Missing
+page records produce `null` references.
+
+Product `seller` is generated from the same identity resolver and has the same
+`organizationId`, localized `name`, origin `url`, and public `logo` as this
+endpoint's `organization`; the storefront can reuse it rather than constructing
+a conflicting merchant. The frontend remains responsible for translating
+these fields to JSON-LD types and for adding the final HTML script tag.
+
 ## 7. Category listing
 
 ```http
@@ -315,6 +595,45 @@ GET /api/v1/categories/{slug}
 This returns category metadata only, with the same fields as category listing.
 It does not embed products. Use `/api/v1/products?category={slug}` to load
 products. Missing, inactive, or deleted categories return `404`.
+
+### Content pages
+
+```http
+GET /api/v1/content-pages/{slug}
+```
+
+The API slug remains the backend content record slug. Public logical
+`seo.canonicalPath` values use the confirmed frontend route mapping below;
+they do not include a locale prefix or domain. The frontend adds both from its
+own routing and canonical-origin configuration.
+
+| Backend slug | `seo.canonicalPath` |
+|---|---|
+| `about-us` | `/about` |
+| `returns-policy` | `/return-policy` |
+| `shipping-policy` | `/shipping-policy` |
+
+For these pages, an admin canonical override is accepted only when it exactly
+matches the mapped path for that record. A missing override uses the mapped
+path. If a stored override no longer matches, the API returns the mapped path
+without changing the stored SEO record during the read. A content page without
+a confirmed mapping returns `null`; the API does not infer a path from its
+backend slug. For example, `privacy-policy` currently has no confirmed public
+mapping.
+
+The page response keeps its localized `title` and `body` fields and includes
+the shared `seo` object. Its `canonicalPath` remains locale-free, for example:
+
+```json
+{
+  "data": {
+    "title": "About us",
+    "seo": {
+      "canonicalPath": "/about"
+    }
+  }
+}
+```
 
 ## 9. Localization shape
 
@@ -474,3 +793,127 @@ The following are not part of the current catalog contract:
 - Admin APIs
 - Payments
 - Notifications
+
+## SEO sitemap eligibility items
+
+`GET /api/v1/seo/sitemap-items` returns bounded batches of public pages that are
+currently eligible for indexing. The API supplies data only; the frontend
+builds and publishes the XML sitemap on its configured store domain.
+
+Query parameters:
+
+| Parameter | Required | Values | Default / limit |
+| --- | --- | --- | --- |
+| `type` | yes | `product`, `category`, `page` | One entity type per traversal |
+| `cursor` | no | opaque cursor returned by this endpoint | Must belong to the same `type` |
+| `limit` | no | integer | 50; maximum 100 |
+
+Example:
+
+```http
+GET /api/v1/seo/sitemap-items?type=product&limit=50
+Accept: application/json
+```
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 42,
+        "entityType": "product",
+        "slug": "linen-shirt",
+        "eligibleLocales": ["ar", "en"],
+        "locales": [
+          {
+            "locale": "ar",
+            "path": "/products/linen-shirt",
+            "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+          },
+          {
+            "locale": "en",
+            "path": "/products/linen-shirt",
+            "lastSignificantModifiedAt": "2026-05-01T12:03:00.000000Z"
+          }
+        ]
+      }
+    ],
+    "nextCursor": "eyJ2IjoxLCJ0eXBlIjoicHJvZHVjdCIsImlkIjo0Mn0"
+  }
+}
+```
+
+`locales` carries the locale-specific canonical path and significant
+modification timestamp. `eligibleLocales` repeats the locale identifiers for
+simple grouping. Paths are logical and locale-free: the frontend prefixes each
+with the matching locale and configured store origin exactly once. Page paths
+use the existing canonical mapping, for example `about-us` maps to `/about`.
+
+For a category, `entityType` is `category` and `path` uses the existing
+`/category/{slug}` canonical. For a content page, `entityType` is `page` and
+`path` uses the confirmed content-page mapping. Items are emitted only when
+public visibility, the deployment indexing switch, supported locale and real
+translation, locale robots policy, and canonical path all allow indexing.
+Sold-out products remain eligible when their other public visibility rules
+pass. Old redirect sources are excluded.
+
+Category and content-page item examples:
+
+```json
+{
+  "id": 9,
+  "entityType": "category",
+  "slug": "summer",
+  "eligibleLocales": ["ar"],
+  "locales": [
+    {
+      "locale": "ar",
+      "path": "/category/summer",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    }
+  ]
+}
+```
+
+```json
+{
+  "id": 3,
+  "entityType": "page",
+  "slug": "about-us",
+  "eligibleLocales": ["ar", "en"],
+  "locales": [
+    {
+      "locale": "ar",
+      "path": "/about",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    },
+    {
+      "locale": "en",
+      "path": "/about",
+      "lastSignificantModifiedAt": "2026-05-01T12:00:00.000000Z"
+    }
+  ]
+}
+```
+
+Continue by passing `nextCursor` unchanged with the same `type` and desired
+`limit`. Stop only when `nextCursor` is `null`. A successful empty result is
+`{"items":[],"nextCursor":null}`. Invalid input or a cursor for another type
+returns the standard Laravel validation error (422); database read failures
+remain errors and are never represented as an empty successful result.
+
+Each request examines at most 200 public candidate records and returns no more
+than 100 eligible items. Significant modification timestamps for the emitted
+locale rows are aggregated in a bounded batch; product offers and redirect
+sources are also loaded by batch. When filtering leaves no item in a batch but more
+candidates remain, the endpoint returns an advancing cursor with an empty
+`items` array. Traversals use stable ascending ID keysets and do not load the
+whole product catalog. They do not provide a database snapshot across multiple
+requests: content, visibility, indexing settings, and timestamps may change
+between batches. The frontend must discard an incomplete traversal after any
+failed batch and must not publish a partial sitemap as complete.
+
+After a successful content or SEO change, frontend sitemap generation and its
+cache should be refreshed through the future commit-level integration point.
+That invalidation integration and XML generation/publication are not part of
+this API endpoint.

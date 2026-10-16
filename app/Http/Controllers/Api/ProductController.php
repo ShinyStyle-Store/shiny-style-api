@@ -113,7 +113,7 @@ class ProductController extends Controller
     public function show(string $slug, CategoryHierarchyService $hierarchy)
     {
         $instant = CarbonImmutable::now()->utc();
-        $visibility = $hierarchy->visibilitySnapshot();
+        $visibility = $hierarchy->visibilitySnapshot(true, false);
         $visibleCategoryIds = $visibility->visibleIds();
         $product = Product::query()
             ->visible($visibleCategoryIds)
@@ -132,6 +132,11 @@ class ProductController extends Controller
         $product->setAttribute(
             'seo_related_categories',
             $visibility->ancestorsAndSelfFor($product->categories->modelKeys()),
+        );
+        $primaryCategory = $product->primaryCategory($product->categories);
+        $product->setAttribute(
+            'seo_product_category_breadcrumbs',
+            $primaryCategory === null ? [] : $visibility->breadcrumbs($primaryCategory),
         );
 
         $this->pricing->attachToProducts(collect([$product]), $instant);
