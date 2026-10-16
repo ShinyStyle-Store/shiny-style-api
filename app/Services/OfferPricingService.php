@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\SellableItem;
 use App\Support\ExactMoney;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -65,10 +66,7 @@ final class OfferPricingService
         $offersByProduct = collect();
 
         if ($eligibleProductIds->isNotEmpty()) {
-            $offers = Offer::query()
-                ->enabled()
-                ->where('starts_at', '<=', $instant)
-                ->where('ends_at', '>', $instant)
+            $offers = $this->qualifyingOffers($instant)
                 ->whereHas('products', fn ($query) => $query->whereIn('products.id', $eligibleProductIds))
                 ->with(['products' => fn ($query) => $query->whereIn('products.id', $eligibleProductIds)])
                 ->orderBy('id')
@@ -114,6 +112,16 @@ final class OfferPricingService
 
             return $this->result($item, $baseMinor, $effectiveMinor, $offer, true, $discountMinor);
         })->values();
+    }
+
+    /**
+     * Return offers that satisfy the shared public pricing window.
+     *
+     * @return Builder<Offer>
+     */
+    public function qualifyingOffers(CarbonImmutable $instant): Builder
+    {
+        return Offer::query()->qualifyingAt($instant);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -37,6 +38,13 @@ class Offer extends Model
     public function scopeEnabled(Builder $query): void
     {
         $query->where('is_enabled', true);
+    }
+
+    public function scopeQualifyingAt(Builder $query, CarbonImmutable $instant): void
+    {
+        $query->enabled()
+            ->where('starts_at', '<=', $instant)
+            ->where('ends_at', '>', $instant);
     }
 
     public function state(): string

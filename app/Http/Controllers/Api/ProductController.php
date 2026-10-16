@@ -3,16 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\ProductCatalogIndexRequest;
 use App\Http\Resources\ProductDetailResource;
 use App\Http\Resources\ProductListResource;
 use App\Models\Category;
 use App\Models\Product;
 use App\Services\CategoryHierarchyService;
+use App\Services\CatalogProductQueryService;
 use App\Services\HomeProductSectionService;
 use App\Services\OfferPricingService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -21,16 +22,13 @@ class ProductController extends Controller
     public function __construct(
         private readonly HomeProductSectionService $sections,
         private readonly OfferPricingService $pricing,
+        private readonly CatalogProductQueryService $catalogQuery,
     ) {}
 
-    public function index(Request $request, CategoryHierarchyService $hierarchy)
+    public function index(ProductCatalogIndexRequest $request, CategoryHierarchyService $hierarchy)
     {
-        $validated = $request->validate([
-            'q' => ['nullable', 'string', 'max:100'],
-            'category' => ['nullable', 'string', 'max:255'],
-            'page' => ['sometimes', 'integer', 'min:1'],
-            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
-        ]);
+        $validated = $request->validated();
+        $instant = CarbonImmutable::now()->utc();
 
         $visibility = $hierarchy->visibilitySnapshot();
         $visibleCategoryIds = $visibility->visibleIds();
@@ -57,11 +55,8 @@ class ProductController extends Controller
             }
         }
 
-        $instant = CarbonImmutable::now()->utc();
-        $products = $query
+        $products = $this->catalogQuery->apply($query, $validated, $instant)
             ->with($this->sections->cardRelations($visibleCategoryIds))
-            ->orderByDesc('published_at')
-            ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 24)
             ->withQueryString();
 

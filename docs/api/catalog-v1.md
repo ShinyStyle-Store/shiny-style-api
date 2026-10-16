@@ -72,22 +72,25 @@ Optional query parameters:
 | Parameter | Constraints | Behavior |
 |---|---|---|
 | `q` | string, maximum 100 characters | Searches Arabic name, English name, and slug. |
-| `category` | string, maximum 255 characters | Filters by direct membership in an active category. |
+| `category` | string, maximum 255 characters | Filters by an active category and its visible descendants. |
 | `page` | integer, minimum 1 | Selects the page. |
 | `per_page` | integer, 1–100 | Controls page size; default is 24. |
+| `sort` | `newest`, `price_asc`, `price_desc` | Sorts by publication or effective displayed price. |
+| `min_price`, `max_price` | non-negative decimal, at most 2 fractional digits | Inclusive bounds on the effective displayed price. |
+| `offer` | `active` | Keeps products with a currently qualifying offer. |
 
 Search is case-insensitive and supports Arabic, English, slug fragments,
 partial matching, and multiple whitespace-separated words. `q` and `category`
 can be combined. Search values should be URL-encoded.
 
-Category filtering uses direct active-category membership. Parent categories do
-not automatically include products attached only to descendants. An unknown,
-inactive, or deleted category produces an empty paginated `200` response. An
-empty category value applies no category filter.
+Category filtering matches an active category and its visible descendants. An
+unknown, inactive, or deleted category produces an empty paginated `200`
+response. An empty category value applies no category filter.
 
 Only visible products are listed: the product must be active and published,
-have an active sellable item, and have an active category. Results are ordered
-by `published_at` descending and then `id` descending.
+have an active sellable item, and have an active category. The default order is
+`published_at` descending and then `id` descending. Price sorts add the same
+publication and ID tie-breakers after effective price.
 
 ### Admin product readiness
 
@@ -139,6 +142,59 @@ active, unarchived variant exists.
 The listing response is Laravel pagination JSON with `data`, `links`, and
 `meta`. `meta` contains the pagination values, including `current_page`,
 `per_page`, `last_page`, and `total`.
+
+Catalog-wide filtering and sorting use only these query parameters:
+
+| Parameter | Accepted values | Default / validation |
+|---|---|---|
+| `q` | text | Optional, at most 100 characters. |
+| `category` | visible category slug | Optional, at most 255 characters; includes visible descendants. |
+| `page` | integer | 1 or greater; default 1. An out-of-range page returns 200 with empty `data` and the requested pagination metadata. |
+| `per_page` | integer | 1–100; default 24. |
+| `sort` | `newest`, `price_asc`, `price_desc` | Default `newest`. |
+| `min_price`, `max_price` | non-negative decimal amount | Up to 10 whole digits and 2 fractional digits; bounds are inclusive and `min_price` cannot exceed `max_price`. |
+| `offer` | `active` | Includes products with an enabled offer whose start is at or before the request instant and whose end is after it. |
+
+Unknown parameters and unsupported values (including `color`, `collection`,
+and `sort=popular`) return the standard Laravel 422 validation response. Price
+filters and price ordering run in the database before pagination. Price means
+the current `price` field shown in each `ProductListResource` card: the API
+selects the display variant by availability/default priority, then applies the
+qualifying product offer. It is not the minimum price across variants, and
+out-of-stock products remain eligible if they pass the existing public
+visibility rules. A request captures one UTC instant for offer selection;
+offer start is inclusive and offer end is exclusive. Multiple qualifying
+offers retain the existing pricing invariant failure instead of silently
+choosing one.
+
+Ordering is deterministic:
+
+- `newest`: `published_at DESC, id DESC`.
+- `price_asc`: effective displayed price ascending, then `published_at DESC, id DESC`.
+- `price_desc`: effective displayed price descending, then `published_at DESC, id DESC`.
+
+For example, the following filtered two-page traversal returns only matches,
+with the filtered `total` repeated on each page:
+
+```http
+GET /api/v1/products?min_price=200.00&max_price=300.00&sort=price_asc&per_page=1&page=1
+```
+
+```json
+{"data":[{"id":"101","slug":"linen-shirt","price":200}],"meta":{"current_page":1,"per_page":1,"total":2,"last_page":2}}
+```
+
+```http
+GET /api/v1/products?min_price=200.00&max_price=300.00&sort=price_asc&per_page=1&page=2
+```
+
+```json
+{"data":[{"id":"102","slug":"cotton-shirt","price":300}],"meta":{"current_page":2,"per_page":1,"total":2,"last_page":2}}
+```
+
+These IDs and records are sanitized response examples, not current catalog
+fixtures. `Accept-Language: ar` and `en` localizes card text but does not
+change eligibility, IDs, or ordering.
 
 ## 5. Featured products
 
