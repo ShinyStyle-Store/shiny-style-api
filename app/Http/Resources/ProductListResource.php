@@ -44,8 +44,16 @@ class ProductListResource extends JsonResource
         return $this->resource->publicSellableItems($this->sellableItems);
     }
 
-    protected function displaySellableItem(Collection $sellableItems)
+    protected function displaySellableItem(Collection $sellableItems): ?SellableItem
     {
+        if (array_key_exists('catalog_display_variant_id', $this->resource->getAttributes())) {
+            $variantId = $this->resource->getAttribute('catalog_display_variant_id');
+
+            return $variantId === null
+                ? null
+                : $sellableItems->first(fn (SellableItem $item): bool => (string) $item->getKey() === (string) $variantId);
+        }
+
         return $this->resource->displaySellableItem($sellableItems);
     }
 

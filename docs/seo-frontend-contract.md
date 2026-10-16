@@ -52,17 +52,20 @@
 | `category` | slug نصي، حتى 255 محرف، nullable | يطابق قسمًا عامًا ويشمل القسم وأحفاده المرئيين. slug غير الموجود/غير المرئي يعطي نتيجة فارغة. |
 | `page` | عدد صحيح ≥ 1 | pagination بعد `q` و`category`. الافتراضي Laravel هو 1. |
 | `per_page` | عدد صحيح 1–100 | pagination بعد الفلاتر. الافتراضي 24. |
+| `sort` | `newest`, `price_asc`, `price_desc` | الافتراضي `newest`. |
+| `min_price`, `max_price` | قيمة عشرية غير سالبة، حتى منزلتين عشريتين | الحدّان شاملان؛ أقصى جزء صحيح 10 أرقام وفق `sellable_items.price decimal(12,2)`؛ `min_price` لا يتجاوز `max_price`. |
+| `offer` | `active` فقط | عرض مفعّل يبدأ عند أو قبل لحظة الطلب وينتهي بعدها. |
 
-الترتيب ثابت: `published_at DESC, id DESC`. مؤهلات visibility تُطبّق على query قبل pagination. لا توجد هنا فلاتر `min_price` أو `max_price` أو `color` أو `offer` أو `collection`، ولا `sort` بمدخلات `price_asc` أو `price_desc` أو `popular`. القيم غير الموجودة في قواعد التحقق لا تُحوّل إلى هذه السلوكيات؛ كود endpoint لا يرفض صراحةً كل query إضافي، لذا لا تعتمد على تمريرها أو على خطأ تحقق لها.
+الـquery parameters المقبولة محصورة في هذه القائمة؛ أي مفتاح أو قيمة غير مدعومة يرجع 422. يشمل ذلك `color` و`collection` و`sort=popular` وقيم `offer` غير `active`. الترتيب الافتراضي `published_at DESC, id DESC`. `price_asc` و`price_desc` يرتبان بالسعر الفعلي المعروض ثم `published_at DESC, id DESC`، فتكون الصفحات مستقرة عند تعادل السعر ووقت النشر. visibility والبحث والقسم والسعر والعرض والترتيب تُطبّق قبل pagination.
 
-`price` في بطاقة المنتج هو السعر المعروض للتنوع الذي اختارته قواعد المنتج، بعد العرض الفعلي إذا انطبق؛ السعر الأصلي/حالة العرض حقول منفصلة. لا يوجد سعر نطاق مستخدم لفلترة القائمة. اختيار تنوع العرض لا يجعل المنتج النافد مخفيًا: توجد تغطية صريحة بأن المنتج المرئي النافد يبقى ظاهرًا ومؤهلًا وفق بقية قواعد SEO.
+معنى السعر مطابق لحقل `price` في `ProductListResource`: التنوع الافتراضي النشط المتاح بعد الحجوزات، وإلا أول تنوع نشط متاح حسب ID، ثم الافتراضي النشط، ثم أول تنوع نشط حسب ID. تُستبعد التنويعات المحذوفة أو `superseded` أو غير النشطة. يطبّق السعر الفعلي بعد العرض المؤهل باستخدام تقريب العملة الحالي إلى أصغر وحدة وبقاعدة النصف إلى الأعلى؛ لا يستخدم أقل سعر بين كل التنويعات ولا `original_price` بدلًا منه. وقت الطلب UTC واحد للفلترة والترتيب وتسعير موارد الصفحة؛ بداية العرض شاملة ونهايته غير شاملة. وجود أكثر من عرض مؤهل للمنتج يبقى خرقًا للـinvariant ويُعامل كفشل، ولا يُختَر عرض اعتباطي. المنتج النافد يظل ظاهرًا إذا استوفى قواعد الظهور الحالية.
 
-Laravel pagination يعيد metadata للنتيجة بعد الفلاتر، ومنها `total`, `last_page`, `current_page`, `per_page`, `from`, `to`. الصفحة خارج النطاق تكون صفحة بيانات فارغة مع metadata الصفحة المطلوبة؛ لم أجد سياسة خاصة لإعادتها كـ404. بعد اكتمال الصفحة قد تكون `from` و`to` فارغتين.
+Laravel pagination يعيد metadata للنتيجة بعد الفلاتر، ومنها `total`, `last_page`, `current_page`, `per_page`, `from`, `to`. الصفحة خارج النطاق تعيد 200 و`data: []` مع metadata الصفحة المطلوبة. إذا لم توجد نتائج مطابقة، تكون الاستجابة 200 ببيانات فارغة وعداد إجمالي صفر.
 
-### مثال توضيحي غير متحقق منه
+### مثال صفحات منقح — توضيحي وغير متحقق منه بالتشغيل
 
 ```http
-GET /api/v1/products?category=blankets&page=2&per_page=24
+GET /api/v1/products?min_price=200.00&max_price=300.00&sort=price_asc&per_page=1&page=1
 Accept-Language: ar
 ```
 
@@ -71,11 +74,11 @@ Accept-Language: ar
   "data": [
     {
       "id": "101",
-      "slug": "winter-blanket",
-      "name": "بطانية شتوية",
-      "category": { "slug": "blankets", "name": "البطانيات" },
+      "slug": "linen-shirt",
+      "name": "القميص الكتاني",
+      "category": { "slug": "shirts", "name": "القمصان" },
       "displayVariantId": "501",
-      "price": 125.5,
+      "price": 200,
       "originalPrice": null,
       "offerApplied": false,
       "offerId": null,
@@ -85,23 +88,23 @@ Accept-Language: ar
       "image": null
     }
   ],
-  "links": { "first": "…", "last": "…", "prev": "…", "next": "…" },
+  "links": { "first": "…", "last": "…", "prev": null, "next": "…" },
   "meta": {
-    "current_page": 2,
-    "from": 25,
-    "last_page": 4,
-    "per_page": 24,
-    "to": 48,
-    "total": 80
+    "current_page": 1,
+    "from": 1,
+    "last_page": 2,
+    "per_page": 1,
+    "to": 1,
+    "total": 2
   }
 }
 ```
 
-نفس slug يُستخدم مع `Accept-Language: en`; الاسم المحلي يتغير، لكن لا يوجد slug إنجليزي منفصل بعقد هذا endpoint.
+تابع بطلب الصفحة الثانية مع query نفسها وتغيير `page=2`؛ يوضح fixture المنقح أن ID `102` بسعر `300` هو الصفحة الثانية، مع `meta.total: 2`. نفس slug يُستخدم مع `Accept-Language: en`; الاسم المحلي يتغير، لكن لا يوجد slug إنجليزي منفصل بعقد هذا endpoint، ولا تتغير IDs أو ترتيب المنتجات. الأمثلة لا تمثل بيانات حية.
 
-**اختبارات مرجعية:** `tests/Feature/Api/ProductApiTest.php`, `tests/Feature/Api/ProductOffersPresentationTest.php`, `tests/Feature/Api/SeoPublicPayloadTest.php::test_zero_stock_does_not_hide_a_visible_product_or_make_it_ineligible`.
+**اختبارات مرجعية:** `tests/Feature/Api/ProductCatalogFilteringTest.php`, `tests/Feature/Api/ProductApiTest.php`, `tests/Feature/Api/ProductOffersPresentationTest.php`, `tests/Feature/Api/SeoPublicPayloadTest.php::test_zero_stock_does_not_hide_a_visible_product_or_make_it_ineligible`. اختبارات catalog الجديدة تغطي الفلاتر والترتيب والـpagination وتطابق السعر والـvariant، لكنها لم تُشغّل في البيئة الحالية.
 
-**النتيجة للفرونت:** إزالة الفلترة المحلية على صفحة واحدة فقط لا تكفي لإنشاء فلاتر الكتالوج المطلوبة. قبل تنفيذ فلاتر السعر/اللون/العروض/المجموعة أو ترتيب `popular`، يلزم قرار وتعريف backend مستقل يشمل معنى السعر ومفتاح كسر التعادل. حد الـ5,000 URL في الفرونت لا ينشئ endpoint أو shard API تلقائيًا.
+**النتيجة للفرونت:** فلاتر `q`, `category`, `min_price`, `max_price`, و`offer=active` والترتيب `newest|price_asc|price_desc` جزء من عقد الباك الحالي. `color`, `collection`, و`popular` تظل خارج هذا العقد وتُرفض كقيم غير مدعومة. حد الـ5,000 URL في الفرونت لا ينشئ endpoint أو shard API تلقائيًا.
 
 ## 2. إعدادات SEO العامة وبيانات المتجر
 
