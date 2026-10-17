@@ -10,6 +10,7 @@ use App\Models\ProductOptionValue;
 use App\Models\SellableItem;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -43,9 +44,14 @@ class AdminProductOptionApiTest extends TestCase
             ['getJson', "/api/v1/admin/products/{$product->id}/options/{$option->id}"],
             ['getJson', "/api/v1/admin/products/{$product->id}/options/{$option->id}/values"],
             ['getJson', "/api/v1/admin/products/{$product->id}/options/{$option->id}/values/{$value->id}"],
+            ['getJson', '/api/v1/admin/catalog/colors'],
         ] as [$method, $uri]) {
             $this->{$method}($uri)->assertUnauthorized();
         }
+
+        $nonAdmin = User::factory()->create(['is_active' => true]);
+        $this->withToken($nonAdmin->createToken('non-admin', ['admin-access'])->plainTextToken)
+            ->getJson('/api/v1/admin/catalog/colors')->assertForbidden();
     }
 
     public function test_create_option_and_numeric_string_value_preserves_localized_editable_fields(): void
@@ -129,6 +135,118 @@ class AdminProductOptionApiTest extends TestCase
             'metadata' => ['hex' => '#fff'],
         ])->assertOk()->assertJsonPath('data.valueEn', 'Large')
             ->assertJsonPath('data.metadata.hex', '#fff');
+    }
+
+    public function test_color_codes_are_canonical_and_reused_translations_must_match(): void
+    {
+        $firstProduct = $this->product('first-color');
+        $secondProduct = $this->product('second-color');
+        $url = "/api/v1/admin/products/{$firstProduct->id}/options";
+
+        $this->withToken($this->adminToken)->postJson($url, [
+            'code' => 'colors', 'name_ar' => 'الألوان', 'name_en' => 'Colors',
+        ])->assertUnprocessable()->assertJsonValidationErrors('code');
+
+        $optionResponse = $this->withToken($this->adminToken)->postJson($url, [
+            'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ])->assertCreated();
+        $colorOption = ProductOption::query()->findOrFail($optionResponse->json('data.id'));
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$firstProduct->id}/options/{$colorOption->id}/values", [
+            'code' => 'navy_blue', 'value_ar' => 'كحلي', 'value_en' => 'Navy blue',
+        ])->assertUnprocessable()->assertJsonValidationErrors('code');
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$firstProduct->id}/options/{$colorOption->id}/values", [
+            'code' => 'navy-blue', 'value_ar' => 'كحلي', 'value_en' => 'Navy blue',
+        ])->assertCreated();
+
+        $secondOption = $this->option($secondProduct, [
+            'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$secondProduct->id}/options/{$secondOption->id}/values", [
+            'code' => 'navy-blue', 'value_ar' => 'أزرق داكن', 'value_en' => 'Dark navy',
+        ])->assertUnprocessable()->assertJsonValidationErrors('code');
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$secondProduct->id}/options/{$secondOption->id}/values", [
+            'code' => 'navy-blue', 'value_ar' => 'كحلي', 'value_en' => 'Navy blue',
+        ])->assertCreated();
+
+        $this->withToken($this->adminToken)->postJson("/api/v1/admin/products/{$firstProduct->id}/options", [
+            'code' => 'sleeve_length', 'name_ar' => 'طول الكم', 'name_en' => 'Sleeve length',
+        ])->assertCreated();
+    }
+
+    public function test_admin_color_suggestions_include_nonpublic_products_and_do_not_write(): void
+    {
+        $draft = $this->product('color-draft');
+        $inactive = $this->product('color-inactive', ['status' => 'inactive']);
+        $draftOption = $this->option($draft, ['code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color']);
+        $inactiveOption = $this->option($inactive, ['code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color']);
+        $this->value($draftOption, ['code' => 'beige', 'value_ar' => 'بيج', 'value_en' => 'Beige']);
+        $this->value($inactiveOption, ['code' => 'grey', 'value_ar' => 'رمادي', 'value_en' => 'Grey']);
+        $before = [
+            'products' => DB::table('products')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'options' => DB::table('product_options')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'values' => DB::table('product_option_values')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'audits' => DB::table('seo_audits')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        ];
+
+        $response = $this->withToken($this->adminToken)->getJson('/api/v1/admin/catalog/colors')
+            ->assertOk()
+            ->assertExactJson(['data' => [
+                ['code' => 'beige', 'nameAr' => 'بيج', 'nameEn' => 'Beige'],
+                ['code' => 'grey', 'nameAr' => 'رمادي', 'nameEn' => 'Grey'],
+            ]]);
+        $this->assertArrayNotHasKey('id', $response->json('data.0'));
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/catalog/colors?unexpected=1')
+            ->assertUnprocessable();
+        $this->assertSame($before, [
+            'products' => DB::table('products')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'options' => DB::table('product_options')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'values' => DB::table('product_option_values')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            'audits' => DB::table('seo_audits')->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        ]);
+    }
+
+    public function test_admin_color_suggestions_report_legacy_translation_conflicts(): void
+    {
+        $firstOption = $this->option($this->product('legacy-color-first'), [
+            'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $secondOption = $this->option($this->product('legacy-color-second'), [
+            'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $this->value($firstOption, ['code' => 'beige', 'value_ar' => 'بيج', 'value_en' => 'Beige']);
+        $this->value($secondOption, ['code' => 'beige', 'value_ar' => 'رملي', 'value_en' => 'Sand']);
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/catalog/colors')
+            ->assertConflict()
+            ->assertJsonPath('message', 'Legacy color records require canonical codes and consistent translations.')
+            ->assertJsonPath('conflicts.0.code', 'beige')
+            ->assertJsonCount(2, 'conflicts.0.translations');
+    }
+
+    public function test_legacy_color_options_and_values_cannot_be_restored_with_noncanonical_codes(): void
+    {
+        $product = $this->product('legacy-color-restore');
+        $alias = $this->option($product, [
+            'code' => 'colors', 'name_ar' => 'الألوان', 'name_en' => 'Colors',
+        ]);
+        $alias->delete();
+        $this->withToken($this->adminToken)
+            ->postJson("/api/v1/admin/products/{$product->id}/options/{$alias->id}/restore")
+            ->assertUnprocessable()->assertJsonValidationErrors('code');
+
+        $color = $this->option($product, [
+            'code' => 'color', 'name_ar' => 'اللون', 'name_en' => 'Color',
+        ]);
+        $legacyValue = $this->value($color, [
+            'code' => 'navy_blue', 'value_ar' => 'كحلي', 'value_en' => 'Navy blue',
+        ]);
+        $legacyValue->delete();
+        $this->withToken($this->adminToken)
+            ->postJson("/api/v1/admin/products/{$product->id}/options/{$color->id}/values/{$legacyValue->id}/restore")
+            ->assertUnprocessable()->assertJsonValidationErrors('code');
     }
 
     public function test_cross_parent_resources_return_not_found(): void

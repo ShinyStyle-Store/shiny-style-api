@@ -21,9 +21,9 @@ use Throwable;
 class MediaService
 {
     /** Store a validated image upload and create its reusable asset record. */
-    public function uploadImage(UploadedFile $file, ?User $createdBy = null): MediaAsset
+    public function uploadImage(UploadedFile $file, ?User $createdBy = null, string $errorField = 'file'): MediaAsset
     {
-        return $this->storeUpload($file, $this->inspectImage($file), $createdBy);
+        return $this->storeUpload($file, $this->inspectImage($file, $errorField), $createdBy);
     }
 
     /** Store a validated video upload and create its reusable asset record. */

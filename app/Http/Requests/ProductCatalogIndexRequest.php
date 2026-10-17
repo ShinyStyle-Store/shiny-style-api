@@ -18,6 +18,7 @@ class ProductCatalogIndexRequest extends FormRequest
         'min_price',
         'max_price',
         'offer',
+        'colors',
     ];
 
     public function authorize(): bool
@@ -42,6 +43,8 @@ class ProductCatalogIndexRequest extends FormRequest
             'min_price' => ['sometimes', 'nullable', 'string', 'regex:/^\d{1,10}(?:\.\d{1,2})?$/'],
             'max_price' => ['sometimes', 'nullable', 'string', 'regex:/^\d{1,10}(?:\.\d{1,2})?$/'],
             'offer' => ['sometimes', 'string', Rule::in(['active'])],
+            'colors' => ['sometimes', 'array', 'max:20'],
+            'colors.*' => ['required', 'string', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', 'distinct:strict'],
         ];
     }
 

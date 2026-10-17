@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\Product;
 use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
+use App\Support\ProductColorRules;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
 class ProductOptionManagementService
@@ -112,6 +114,7 @@ class ProductOptionManagementService
             if (! $option->trashed()) {
                 return 'option_not_archived';
             }
+            $this->assertColorOptionCanBeRestored($option);
             $option->restore();
             app(SeoSignificantModificationService::class)->mark($lockedProduct);
             if (app(ProductReadinessService::class)->isRequired($lockedProduct)) {
@@ -151,6 +154,14 @@ class ProductOptionManagementService
                 ->whereKey($valueId)->lockForUpdate()->firstOrFail();
             if (! $value->trashed()) {
                 return 'value_not_archived';
+            }
+            if (ProductColorRules::isColorOption($option->code, $option->name_ar, $option->name_en)) {
+                $this->assertColorValueIsValid(
+                    (string) $value->code,
+                    (string) $value->value_ar,
+                    (string) $value->value_en,
+                    (int) $value->getKey(),
+                );
             }
             $value->restore();
             app(SeoSignificantModificationService::class)->mark($lockedProduct);
@@ -215,6 +226,39 @@ class ProductOptionManagementService
             throw ValidationException::withMessages([
                 'resource' => 'Archived option resources cannot be modified.',
             ]);
+        }
+    }
+
+    private function assertColorOptionCanBeRestored(ProductOption $option): void
+    {
+        $validator = Validator::make([], []);
+        ProductColorRules::validateOption($validator, $option->code, $option->name_ar, $option->name_en);
+
+        if ($option->code === 'color') {
+            foreach ($option->values()->withTrashed()->get() as $value) {
+                ProductColorRules::validateValue(
+                    $validator,
+                    (string) $value->code,
+                    (string) $value->value_ar,
+                    (string) $value->value_en,
+                    'code',
+                    (int) $value->getKey(),
+                );
+            }
+        }
+
+        if ($validator->errors()->isNotEmpty()) {
+            throw ValidationException::withMessages($validator->errors()->messages());
+        }
+    }
+
+    private function assertColorValueIsValid(string $code, string $valueAr, string $valueEn, int $valueId): void
+    {
+        $validator = Validator::make([], []);
+        ProductColorRules::validateValue($validator, $code, $valueAr, $valueEn, 'code', $valueId);
+
+        if ($validator->errors()->isNotEmpty()) {
+            throw ValidationException::withMessages($validator->errors()->messages());
         }
     }
 

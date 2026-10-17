@@ -21,7 +21,13 @@ final class CatalogProductQueryService
      */
     public function apply(Builder $query, array $filters, CarbonImmutable $instant): Builder
     {
-        $query->addSelect(['catalog_display_variant_id' => $this->displayVariantQuery()]);
+        $colorCodes = $filters['colors'] ?? [];
+        if ($colorCodes !== []) {
+            $query->whereExists($this->eligibleVariantsQuery()
+                ->whereExists($this->colorAssignmentQuery($colorCodes, 'catalog_variant.id'))
+                ->selectRaw('1'));
+        }
+        $query->addSelect(['catalog_display_variant_id' => $this->displayVariantQuery($colorCodes)]);
 
         $sort = $filters['sort'] ?? 'newest';
         $needsPriceProjection = isset($filters['min_price'])
@@ -31,7 +37,7 @@ final class CatalogProductQueryService
 
         if ($needsPriceProjection) {
             $this->assertNoMultipleQualifyingOffers($query, $instant);
-            $query->addSelect(['catalog_effective_price_minor' => $this->effectivePriceQuery($instant)]);
+            $query->addSelect(['catalog_effective_price_minor' => $this->effectivePriceQuery($instant, $colorCodes)]);
         }
 
         if (($filters['offer'] ?? null) === 'active') {
@@ -41,11 +47,11 @@ final class CatalogProductQueryService
         }
 
         if (isset($filters['min_price'])) {
-            $this->whereEffectivePrice($query, '>=', ExactMoney::toMinorUnitInteger($filters['min_price']), $instant);
+            $this->whereEffectivePrice($query, '>=', ExactMoney::toMinorUnitInteger($filters['min_price']), $instant, $colorCodes);
         }
 
         if (isset($filters['max_price'])) {
-            $this->whereEffectivePrice($query, '<=', ExactMoney::toMinorUnitInteger($filters['max_price']), $instant);
+            $this->whereEffectivePrice($query, '<=', ExactMoney::toMinorUnitInteger($filters['max_price']), $instant, $colorCodes);
         }
 
         if ($sort === 'price_asc' || $sort === 'price_desc') {
@@ -58,17 +64,17 @@ final class CatalogProductQueryService
     /**
      * @return \Illuminate\Database\Query\Builder
      */
-    private function displayVariantQuery(): \Illuminate\Database\Query\Builder
+    private function displayVariantQuery(array $colorCodes = []): \Illuminate\Database\Query\Builder
     {
-        return $this->displayVariantSelectionQuery()->select('catalog_variant.id');
+        return $this->displayVariantSelectionQuery($colorCodes)->select('catalog_variant.id');
     }
 
     /**
      * @return \Illuminate\Database\Query\Builder
      */
-    private function effectivePriceQuery(CarbonImmutable $instant): \Illuminate\Database\Query\Builder
+    private function effectivePriceQuery(CarbonImmutable $instant, array $colorCodes = []): \Illuminate\Database\Query\Builder
     {
-        return $this->displayVariantSelectionQuery()->selectRaw(
+        return $this->displayVariantSelectionQuery($colorCodes)->selectRaw(
             'CASE WHEN ('.$this->offerPercentageQuery($instant)->toSql().') IS NULL '
                 .'THEN '.self::baseMinorSql().' '
                 .'ELSE CASE WHEN '.self::baseMinorSql().' > 0 AND ('.self::baseMinorSql().' - '.self::discountMinorSql($this->offerPercentageQuery($instant)->toSql()).') < 1 '
@@ -78,9 +84,9 @@ final class CatalogProductQueryService
 
     }
 
-    private function whereEffectivePrice(Builder $query, string $operator, int $minorUnits, CarbonImmutable $instant): void
+    private function whereEffectivePrice(Builder $query, string $operator, int $minorUnits, CarbonImmutable $instant, array $colorCodes = []): void
     {
-        $price = $this->effectivePriceQuery($instant);
+        $price = $this->effectivePriceQuery($instant, $colorCodes);
         $query->whereRaw('('.$price->toSql().') '.$operator.' ?', [...$price->getBindings(), $minorUnits]);
     }
 
@@ -133,9 +139,15 @@ final class CatalogProductQueryService
     /**
      * @return \Illuminate\Database\Query\Builder
      */
-    private function displayVariantSelectionQuery(): \Illuminate\Database\Query\Builder
+    private function displayVariantSelectionQuery(array $colorCodes = []): \Illuminate\Database\Query\Builder
     {
-        return $this->eligibleVariantsQuery()
+        $query = $this->eligibleVariantsQuery();
+
+        if ($colorCodes !== []) {
+            $query->whereExists($this->colorAssignmentQuery($colorCodes, 'catalog_variant.id'));
+        }
+
+        return $query
             ->orderByRaw(
                 'CASE '
                     .'WHEN catalog_variant.is_default = true AND catalog_variant.stock_quantity > catalog_variant.reserved_quantity THEN 0 '
@@ -145,6 +157,20 @@ final class CatalogProductQueryService
             )
             ->orderBy('catalog_variant.id')
             ->limit(1);
+    }
+
+    /** @param list<string> $colorCodes */
+    private function colorAssignmentQuery(array $colorCodes, string $variantColumn): \Illuminate\Database\Query\Builder
+    {
+        return DB::table('sellable_item_option_values as color_assignments')
+            ->join('product_option_values as color_values', 'color_values.id', '=', 'color_assignments.product_option_value_id')
+            ->join('product_options as color_options', 'color_options.id', '=', 'color_values.product_option_id')
+            ->whereColumn('color_assignments.sellable_item_id', $variantColumn)
+            ->where('color_options.code', 'color')
+            ->whereColumn('color_options.product_id', 'catalog_variant.product_id')
+            ->whereNull('color_options.deleted_at')
+            ->whereNull('color_values.deleted_at')
+            ->whereIn('color_values.code', $colorCodes);
     }
 
     /**

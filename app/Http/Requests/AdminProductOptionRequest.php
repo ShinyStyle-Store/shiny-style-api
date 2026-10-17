@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Models\Product;
 use App\Models\ProductOption;
+use App\Support\ProductColorRules;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
@@ -62,8 +63,32 @@ class AdminProductOptionRequest extends FormRequest
                 $validator->errors()->add('option', 'At least one option field is required.');
             }
 
+            $option = $this->route('option');
             $product = $this->route('product');
-            $productId = $product instanceof Product ? $product->getKey() : (int) $product;
+            $productId = $product instanceof Product ? (int) $product->getKey() : (int) $product;
+            $current = $option instanceof ProductOption
+                ? $option
+                : ProductOption::query()->where('product_id', $productId)->find((int) $option);
+            ProductColorRules::validateOption(
+                $validator,
+                (string) $this->input('code', $current?->code ?? ''),
+                $this->input('name_ar', $current?->name_ar),
+                $this->input('name_en', $current?->name_en),
+            );
+
+            if ($current !== null && $current->code !== 'color' && $this->input('code') === 'color') {
+                foreach ($current->values()->withTrashed()->get() as $value) {
+                    ProductColorRules::validateValue(
+                        $validator,
+                        (string) $value->code,
+                        (string) $value->value_ar,
+                        (string) $value->value_en,
+                        'code',
+                        (int) $value->getKey(),
+                    );
+                }
+            }
+
             $currentOption = $this->route('option');
             $currentOptionId = $currentOption instanceof ProductOption ? $currentOption->getKey() : (int) $currentOption;
 

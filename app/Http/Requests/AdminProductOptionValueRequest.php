@@ -2,7 +2,10 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Product;
+use App\Models\ProductOption;
 use App\Models\ProductOptionValue;
+use App\Support\ProductColorRules;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
@@ -64,6 +67,23 @@ class AdminProductOptionValueRequest extends FormRequest
             $optionId = (int) $this->route('option');
             $currentValue = $this->route('value');
             $currentValueId = $currentValue instanceof ProductOptionValue ? $currentValue->getKey() : (int) $currentValue;
+
+            $product = $this->route('product');
+            $productId = $product instanceof Product ? $product->getKey() : (int) $product;
+            $option = ProductOption::query()->where('product_id', $productId)->find($optionId);
+            if ($option !== null && ProductColorRules::isColorOption($option->code, $option->name_ar, $option->name_en)) {
+                $value = $currentValueId > 0
+                    ? ProductOptionValue::withTrashed()->where('product_option_id', $optionId)->find($currentValueId)
+                    : null;
+                ProductColorRules::validateValue(
+                    $validator,
+                    (string) $this->input('code', $value?->code ?? ''),
+                    (string) $this->input('value_ar', $value?->value_ar ?? ''),
+                    (string) $this->input('value_en', $value?->value_en ?? ''),
+                    'code',
+                    $value?->getKey(),
+                );
+            }
 
             $this->addDuplicateError($validator, 'code', strtolower(trim((string) $this->input('code'))), $optionId, $currentValueId);
             $this->addDuplicateError($validator, 'value_ar', trim((string) $this->input('value_ar')), $optionId, $currentValueId);

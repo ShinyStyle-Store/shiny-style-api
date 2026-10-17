@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AdminAuthController;
 use App\Http\Controllers\Api\AdminBannerController;
 use App\Http\Controllers\Api\AdminCategoryController;
+use App\Http\Controllers\Api\AdminDefaultOgImageController;
 use App\Http\Controllers\Api\AdminDashboardController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOfferController;
@@ -29,6 +30,7 @@ use App\Http\Controllers\Api\PaymentReturnController;
 use App\Http\Controllers\Api\PublicSeoSettingsController;
 use App\Http\Controllers\Api\PaymobWebhookController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\ProductColorController;
 use App\Http\Controllers\Api\ProductSectionController;
 use App\Http\Controllers\Api\ShippingAreaController;
 use App\Http\Controllers\Api\StoreContactController;
@@ -41,6 +43,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     Route::get('products', [ProductController::class, 'index']);
+    Route::get('products/filter-options', [ProductColorController::class, 'publicFilterOptions']);
     Route::get('home/products', [HomeProductController::class, 'products']);
     Route::get('products/sections/{section}', [ProductSectionController::class, 'index'])
         ->whereIn('section', ['featured', 'newest', 'best-selling', 'offers']);
@@ -82,7 +85,9 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('catalog/colors', [ProductColorController::class, 'adminIndex']);
         Route::get('seo/audit', [AdminSeoAuditController::class, 'show']);
+        Route::post('seo/default-og-image', [AdminDefaultOgImageController::class, 'store']);
         Route::get('seo/settings', [AdminSeoController::class, 'settings']);
         Route::put('seo/settings', [AdminSeoController::class, 'updateSettings']);
         Route::get('seo/history', [AdminSeoController::class, 'history']);

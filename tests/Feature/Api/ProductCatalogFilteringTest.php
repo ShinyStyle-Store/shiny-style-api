@@ -2,15 +2,21 @@
 
 namespace Tests\Feature\Api;
 
+use App\Enums\MediaRole;
 use App\Models\Category;
+use App\Models\MediaAsset;
 use App\Models\Offer;
 use App\Models\Product;
+use App\Models\ProductOption;
+use App\Models\ProductOptionValue;
 use App\Models\SellableItem;
 use App\Services\OfferPricingService;
 use App\Support\ExactMoney;
 use Carbon\CarbonImmutable;
 use Database\Seeders\ProductCatalogSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ProductCatalogFilteringTest extends TestCase
@@ -68,6 +74,148 @@ class ProductCatalogFilteringTest extends TestCase
             ->assertJsonCount(0, 'data')
             ->assertJsonPath('meta.total', 2)
             ->assertJsonPath('meta.current_page', 3);
+    }
+
+    public function test_color_filter_uses_matching_variant_for_price_offer_sku_and_out_of_stock_state(): void
+    {
+        $product = $this->createCatalogProduct('color-variant-match', '200.00', $this->instant->subHours(2));
+        $defaultVariant = $product->sellableItems()->firstOrFail();
+        $beige = $this->colorValue($product, 'navy-blue', 'كحلي', 'Navy blue');
+        $grey = ProductOptionValue::query()->where('product_option_id', $beige->product_option_id)
+            ->where('code', 'grey')->first();
+        if ($grey === null) {
+            $grey = ProductOptionValue::query()->create([
+                'product_option_id' => $beige->product_option_id,
+                'code' => 'grey', 'value_ar' => 'رمادي', 'value_en' => 'Grey',
+            ]);
+        }
+        $defaultVariant->optionValues()->attach($grey->getKey());
+        $matchingVariant = $this->addVariant($product, [
+            'sku' => 'COLOR-BEIGE-OUT', 'price' => '45.00', 'stock_quantity' => 0,
+            'reserved_quantity' => 0, 'is_default' => false,
+        ]);
+        $matchingVariant->optionValues()->attach($beige->getKey());
+        $image = MediaAsset::query()->create([
+            'disk' => 'public', 'path' => 'color-filter/beige-variant.jpg',
+            'media_type' => 'image', 'mime_type' => 'image/jpeg', 'size_bytes' => 10,
+        ]);
+        $matchingVariant->mediaAttachments()->create([
+            'media_asset_id' => $image->getKey(), 'role' => MediaRole::VARIANT_IMAGE,
+            'sort_order' => 0, 'is_primary' => true,
+        ]);
+        $this->attachOffer($product, '20.00', $this->instant->subHour(), $this->instant->addHour());
+
+        $response = $this->getJson('/api/v1/products?colors%5B%5D=navy-blue&min_price=36&max_price=36&offer=active')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.displayVariantId', (string) $matchingVariant->getKey())
+            ->assertJsonPath('data.0.sku', 'COLOR-BEIGE-OUT')
+            ->assertJsonPath('data.0.price', 36)
+            ->assertJsonPath('data.0.originalPrice', 45)
+            ->assertJsonPath('data.0.offerApplied', true)
+            ->assertJsonPath('data.0.inStock', false)
+            ->assertJsonPath('data.0.image', Storage::disk('public')->url('color-filter/beige-variant.jpg'));
+        $this->assertSame((string) $product->getKey(), $response->json('data.0.id'));
+
+        $lowerPrice = $this->createCatalogProduct('color-variant-lower-price', '30.00', $this->instant->subHours(3));
+        $lowerPriceVariant = $lowerPrice->sellableItems()->firstOrFail();
+        $lowerPriceVariant->optionValues()->attach(
+            $this->colorValue($lowerPrice, 'navy-blue', 'كحلي', 'Navy blue')->getKey(),
+        );
+        $sorted = $this->getJson('/api/v1/products?colors%5B%5D=navy-blue&sort=price_asc&per_page=10')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 2);
+        $this->assertSame((string) $lowerPrice->getKey(), $sorted->json('data.0.id'));
+        $this->assertSame(30, $sorted->json('data.0.price'));
+        $this->assertSame((string) $matchingVariant->getKey(), $sorted->json('data.1.displayVariantId'));
+        $this->assertSame(36, $sorted->json('data.1.price'));
+    }
+
+    public function test_color_filters_use_or_semantics_before_pagination_and_unknown_codes_return_empty(): void
+    {
+        $beigeProduct = $this->createCatalogProduct('color-filter-beige', '100.00', $this->instant->subHours(3));
+        $greyProduct = $this->createCatalogProduct('color-filter-grey', '110.00', $this->instant->subHours(2));
+        $beigeVariant = $beigeProduct->sellableItems()->firstOrFail();
+        $greyVariant = $greyProduct->sellableItems()->firstOrFail();
+        $beigeVariant->optionValues()->attach($this->colorValue($beigeProduct, 'rose-red', 'أحمر وردي', 'Rose red')->getKey());
+        $greyVariant->optionValues()->attach($this->colorValue($greyProduct, 'forest-green', 'أخضر غامق', 'Forest green')->getKey());
+
+        $first = $this->getJson('/api/v1/products?colors%5B%5D=rose-red&colors%5B%5D=forest-green&sort=newest&per_page=1&page=1')
+            ->assertOk()->assertJsonPath('meta.total', 2)->assertJsonPath('meta.current_page', 1);
+        $second = $this->getJson('/api/v1/products?colors%5B%5D=rose-red&colors%5B%5D=forest-green&sort=newest&per_page=1&page=2')
+            ->assertOk()->assertJsonPath('meta.total', 2)->assertJsonPath('meta.current_page', 2);
+
+        $this->assertSame((string) $greyProduct->getKey(), $first->json('data.0.id'));
+        $this->assertSame((string) $beigeProduct->getKey(), $second->json('data.0.id'));
+        $this->getJson('/api/v1/products?colors%5B%5D=unknown-valid-color')
+            ->assertOk()->assertJsonCount(0, 'data')->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/v1/products?colors%5B%5D=rose-red&colors%5B%5D=rose-red')->assertUnprocessable();
+        $this->getJson('/api/v1/products?colors%5B%5D=not_valid')->assertUnprocessable();
+        $this->getJson('/api/v1/products?colors=rose-red')->assertUnprocessable();
+        $tooManyColors = http_build_query(['colors' => array_map(
+            static fn (int $index): string => 'color-'.$index,
+            range(1, 21),
+        )]);
+        $this->getJson('/api/v1/products?'.$tooManyColors)->assertUnprocessable();
+        $this->getJson('/api/v1/products?colors%5B%5D=rose-red&collection=summer')->assertUnprocessable();
+    }
+
+    public function test_public_color_filter_options_localize_labels_and_exclude_nonvisible_products(): void
+    {
+        $visible = $this->createCatalogProduct('color-options-visible', '100.00', $this->instant->subHours(1));
+        $visibleVariant = $visible->sellableItems()->firstOrFail();
+        $navy = $this->colorValue($visible, 'navy-blue', 'كحلي', 'Navy blue');
+        $visibleVariant->optionValues()->attach($navy->getKey());
+        $secondVisible = $this->createCatalogProduct('color-options-visible-second', '120.00', $this->instant->subHours(1));
+        $secondVisibleVariant = $secondVisible->sellableItems()->firstOrFail();
+        $secondVisibleVariant->optionValues()->attach(
+            $this->colorValue($secondVisible, 'navy-blue', 'كحلي', 'Navy blue')->getKey(),
+        );
+        $orphan = $this->colorValue($visible, 'orphan-purple', 'بنفسجي', 'Purple');
+        $deletedValue = $this->colorValue($visible, 'deleted-rose', 'وردي', 'Rose');
+        $deletedVariant = $this->addVariant($visible, ['is_default' => false]);
+        $deletedVariant->optionValues()->attach($deletedValue->getKey());
+        $deletedValue->delete();
+        $supersededValue = $this->colorValue($visible, 'old-teal', 'أزرق مخضر', 'Teal');
+        $supersededVariant = $this->addVariant($visible, ['is_default' => false]);
+        $supersededVariant->optionValues()->attach($supersededValue->getKey());
+        $supersededVariant->superseded_at = $this->instant;
+        $supersededVariant->save();
+        $hidden = $this->createCatalogProduct('color-options-hidden', '100.00', $this->instant->subHours(1));
+        $hidden->update(['status' => 'inactive']);
+        $hidden->categories()->firstOrFail()->update(['status' => 'inactive']);
+        $hiddenVariant = $hidden->sellableItems()->firstOrFail();
+        $hiddenVariant->optionValues()->attach($this->colorValue($hidden, 'hidden-pink', 'وردي', 'Pink')->getKey());
+
+        $before = [];
+        foreach (['products', 'categories', 'product_options', 'product_option_values', 'seo_records', 'seo_settings', 'seo_audits'] as $table) {
+            $before[$table] = DB::table($table)->orderBy('id')->get()
+                ->map(static fn (object $row): array => (array) $row)
+                ->all();
+        }
+        $arabic = $this->withHeader('Accept-Language', 'ar')->getJson('/api/v1/products/filter-options')->assertOk();
+        $english = $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/products/filter-options')->assertOk();
+
+        $this->assertContains(['code' => 'navy-blue', 'name' => 'كحلي'], $arabic->json('data.colors'));
+        $this->assertContains(['code' => 'navy-blue', 'name' => 'Navy blue'], $english->json('data.colors'));
+        $this->assertSame(1, count(array_filter(
+            $arabic->json('data.colors'),
+            static fn (array $color): bool => $color['code'] === 'navy-blue',
+        )));
+        $this->assertNotContains('hidden-pink', array_column($arabic->json('data.colors'), 'code'));
+        $returnedCodes = array_column($arabic->json('data.colors'), 'code');
+        $this->assertNotContains($orphan->code, $returnedCodes);
+        $this->assertNotContains('deleted-rose', $returnedCodes);
+        $this->assertNotContains('old-teal', $returnedCodes);
+        $this->assertArrayNotHasKey('id', $arabic->json('data.colors.0'));
+        $this->getJson('/api/v1/products/filter-options?category=home')->assertUnprocessable();
+        $after = [];
+        foreach (array_keys($before) as $table) {
+            $after[$table] = DB::table($table)->orderBy('id')->get()
+                ->map(static fn (object $row): array => (array) $row)
+                ->all();
+        }
+        $this->assertSame($before, $after);
     }
 
     public function test_price_sort_uses_published_at_and_id_as_deterministic_tie_breakers(): void
@@ -320,6 +468,19 @@ class ProductCatalogFilteringTest extends TestCase
             'status' => 'active',
             'is_default' => true,
         ], $attributes));
+    }
+
+    private function colorValue(Product $product, string $code, string $nameAr, string $nameEn): ProductOptionValue
+    {
+        $option = ProductOption::query()->firstOrCreate(
+            ['product_id' => $product->getKey(), 'code' => 'color'],
+            ['name_ar' => 'اللون', 'name_en' => 'Color', 'sort_order' => 0],
+        );
+
+        return ProductOptionValue::query()->firstOrCreate(
+            ['product_option_id' => $option->getKey(), 'code' => $code],
+            ['value_ar' => $nameAr, 'value_en' => $nameEn, 'sort_order' => 0],
+        );
     }
 
     private function attachOffer(
