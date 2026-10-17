@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\ProductColorRules;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Validator;
@@ -179,6 +180,13 @@ class AdminProductConversionRequest extends FormRequest
                     $validator->errors()->add("options.{$optionIndex}.code", 'Option codes must be distinct within this conversion.');
                 }
                 $optionCodes[$code] = true;
+                ProductColorRules::validateOption(
+                    $validator,
+                    $code,
+                    is_string($option['name_ar'] ?? null) ? $option['name_ar'] : null,
+                    is_string($option['name_en'] ?? null) ? $option['name_en'] : null,
+                    "options.{$optionIndex}.code",
+                );
             }
             if (is_string($option['name_ar'] ?? null)) {
                 $this->validateUniqueLabel($validator, $optionNamesAr, trim($option['name_ar']), "options.{$optionIndex}.name_ar", 'Option names must be distinct within this conversion.');
@@ -204,6 +212,15 @@ class AdminProductConversionRequest extends FormRequest
                             $validator->errors()->add("options.{$optionIndex}.values.{$valueIndex}.code", 'Value codes must be distinct within an option.');
                         }
                         $valueCodesByOption[$optionRef][$code] = true;
+                    }
+                    if (($option['code'] ?? null) === 'color') {
+                        ProductColorRules::validateValue(
+                            $validator,
+                            $code,
+                            (string) ($value['value_ar'] ?? ''),
+                            (string) ($value['value_en'] ?? ''),
+                            "options.{$optionIndex}.values.{$valueIndex}.code",
+                        );
                     }
                 }
                 if (is_string($value['value_ar'] ?? null)) {

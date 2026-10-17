@@ -1,4 +1,4 @@
-# Catalog API v1
+﻿# Catalog API v1
 
 ## 1. Overview
 
@@ -78,6 +78,7 @@ Optional query parameters:
 | `sort` | `newest`, `price_asc`, `price_desc` | Sorts by publication or effective displayed price. |
 | `min_price`, `max_price` | non-negative decimal, at most 2 fractional digits | Inclusive bounds on the effective displayed price. |
 | `offer` | `active` | Keeps products with a currently qualifying offer. |
+| `colors[]` | Up to 20 distinct lowercase kebab-case color codes | Filters by matching active color variants with OR semantics. |
 
 Search is case-insensitive and supports Arabic, English, slug fragments,
 partial matching, and multiple whitespace-separated words. `q` and `category`
@@ -120,6 +121,7 @@ numbers):
   "slug": "soft-sofa-throw-blanket",
   "name": "Soft Sofa Throw Blanket",
   "displayVariantId": "1",
+  "sku": "THROW-BEIGE-M",
   "category": {
     "slug": "home-textiles",
     "name": "Home Textiles"
@@ -137,7 +139,8 @@ The `category` and `image` values may be `null`; `originalPrice` may also be
 
 `displayVariantId` identifies the SellableItem used for the card's displayed
 price, image, and availability. It is a string ID or `null` when no valid
-active, unarchived variant exists.
+active, unarchived variant exists. `sku` comes from that same item and is `null`
+when no display variant exists.
 
 The listing response is Laravel pagination JSON with `data`, `links`, and
 `meta`. `meta` contains the pagination values, including `current_page`,
@@ -154,9 +157,10 @@ Catalog-wide filtering and sorting use only these query parameters:
 | `sort` | `newest`, `price_asc`, `price_desc` | Default `newest`. |
 | `min_price`, `max_price` | non-negative decimal amount | Up to 10 whole digits and 2 fractional digits; bounds are inclusive and `min_price` cannot exceed `max_price`. |
 | `offer` | `active` | Includes products with an enabled offer whose start is at or before the request instant and whose end is after it. |
+| `colors[]` | 1–20 distinct lowercase kebab-case codes | Optional OR filter; unknown valid codes yield no matches. |
 
-Unknown parameters and unsupported values (including `color`, `collection`,
-and `sort=popular`) return the standard Laravel 422 validation response. Price
+Unknown parameters and unsupported values (including `collection` and
+`sort=popular`) return the standard Laravel 422 validation response. Price
 filters and price ordering run in the database before pagination. Price means
 the current `price` field shown in each `ProductListResource` card: the API
 selects the display variant by availability/default priority, then applies the
@@ -166,6 +170,20 @@ visibility rules. A request captures one UTC instant for offer selection;
 offer start is inclusive and offer end is exclusive. Multiple qualifying
 offers retain the existing pricing invariant failure instead of silently
 choosing one.
+
+When `colors[]` is present, only active, non-deleted, non-superseded sellable
+items assigned to one of the requested canonical color values can make the
+product match. Requested colors use OR semantics. A valid unknown code returns
+an empty paginated result. Filtering happens before pagination. A matching
+out-of-stock item still matches; the response selects the best matching item
+using the same default/availability/ID priority used by ordinary listings. The
+filtered item supplies `displayVariantId`, `sku`, `price`, `originalPrice`,
+offer fields, `inStock`, and variant-image fallback. Price bounds and sorting
+use that same item's effective price and one captured request instant. Without
+`colors[]`, display selection keeps the existing behavior. `colors` must be an
+array of 1–20 distinct strings matching `^[a-z0-9]+(?:-[a-z0-9]+)*$`; malformed,
+duplicate, or oversized lists return 422. `popular` and `collection` remain
+unsupported.
 
 Ordering is deterministic:
 
@@ -217,6 +235,7 @@ Example:
       "slug": "soft-sofa-throw-blanket",
       "name": "Soft Sofa Throw Blanket",
       "displayVariantId": "1",
+      "sku": "THROW-BEIGE-M",
       "category": {
         "slug": "home-textiles",
         "name": "Home Textiles"
@@ -245,6 +264,7 @@ The detail response uses the listing fields and adds:
   "slug": "soft-sofa-throw-blanket",
   "name": "Soft Sofa Throw Blanket",
   "displayVariantId": "1",
+  "sku": "THROW-BEIGE-M",
   "category": {
     "slug": "home-textiles",
     "name": "Home Textiles"
@@ -973,3 +993,77 @@ After a successful content or SEO change, frontend sitemap generation and its
 cache should be refreshed through the future commit-level integration point.
 That invalidation integration and XML generation/publication are not part of
 this API endpoint.
+
+## Product colors (current backend contract)
+
+Option values reuse `product_options` and `product_option_values`; there is no separate color table. The sole canonical option code is `color`. Color values use lowercase kebab-case codes such as `beige`, `grey`, `black`, and `navy-blue`; translated Arabic/English labels are presentation only. IDs and translated names are never filter keys. `popular` and `collection` remain unsupported.
+
+### Admin suggestions: GET `/api/v1/admin/catalog/colors`
+
+Requires Sanctum authentication and `admin.access`. No body or query parameters. Returns one row per consistent canonical code, sorted by code, and includes color values associated with non-deleted products regardless of published/draft/inactive status:
+
+```json
+{"data":[{"code":"beige","nameAr":"بيج","nameEn":"Beige"},{"code":"grey","nameAr":"رمادي","nameEn":"Grey"}]}
+```
+
+IDs are intentionally omitted. Empty catalog is `{ "data": [] }`. If a stored code is noncanonical, has blank labels, or disagrees on Arabic/English labels, returns 409 with a `message` and `conflicts:[{code,translations:[{nameAr,nameEn}]}]`; it does not silently merge them. A guest receives 401; an authenticated non-admin receives 403. There are no writes during GET. No explicit HTTP cache policy is set. This does not audit a production database: runtime DB audit must run in the target environment before rollout.
+
+### Public filter choices: GET `/api/v1/products/filter-options`
+
+Public, no auth, body, or query parameters. Locale follows `Accept-Language` (`ar` default; `en` supported), with `Content-Language` and `Vary: Accept-Language` from API middleware. Returns globally available color facets without category/search context:
+
+```json
+{"data":{"colors":[{"code":"beige","name":"بيج"},{"code":"grey","name":"رمادي"}]}}
+```
+
+English response uses the same codes and English `name` values (for example `{"code":"beige","name":"Beige"}`). Only canonical color values assigned to active, non-deleted, non-superseded sellable items for currently visible, published products are included. Hidden products/categories, deleted option/value rows, superseded/deleted variants, and orphan values are excluded. Empty result is `{ "data": { "colors": [] } }`. Noncanonical codes, blank labels, or conflicting legacy names return 409 with conflict details. Reads do not write. No explicit HTTP cache policy is set.
+
+### Listing filter: GET `/api/v1/products?colors[]=beige&colors[]=grey`
+
+`colors` accepts up to 20 distinct lowercase kebab-case codes. Multiple values use OR semantics. Filtering occurs in SQL before pagination; a syntactically valid unknown code returns the normal 200 empty paginated response. Invalid shape/code, duplicates, more than 20 values, and other unknown query parameters return 422. Existing product visibility, category/search/price/offer/sort rules remain in force. An out-of-stock matching variant keeps the product eligible.
+
+With colors selected, display variant priority is: matching default with positive available quantity; first matching in-stock variant by ID; matching default even if out of stock; first matching variant by ID. That one item determines `displayVariantId`, `sku`, displayed/base/effective offer prices, `originalPrice`, `offerApplied`, `offerId`, `discountPercentage`, `inStock`, and variant image fallback. Price bounds and price sorting use that same effective price and the listing request's single UTC offer timestamp. Without `colors[]`, the previous selection behavior is unchanged. Arabic and English requests retain the same filtered product IDs and order; localized names still follow locale middleware.
+
+Example filtered request: `GET /api/v1/products?colors%5B%5D=navy-blue&min_price=100&sort=price_asc&per_page=12`. Example validation error:
+
+```json
+{"message":"The given data was invalid.","errors":{"colors.1":["The colors.1 field has a duplicate value."]}}
+```
+
+Tests: ``tests/Feature/Api/AdminProductOptionApiTest::test_color_codes_are_canonical_and_reused_translations_must_match`, `::test_admin_color_suggestions_include_nonpublic_products_and_do_not_write`, `::test_admin_color_suggestions_report_legacy_translation_conflicts`, `::test_legacy_color_options_and_values_cannot_be_restored_with_noncanonical_codes`, `tests/Feature/Api/AdminProductConversionApiTest::test_conversion_rejects_color_aliases_and_noncanonical_color_value_codes`, `tests/Feature/Api/ProductCatalogFilteringTest::test_color_filter_uses_matching_variant_for_price_offer_sku_and_out_of_stock_state`, `::test_color_filters_use_or_semantics_before_pagination_and_unknown_codes_return_empty`, and `::test_public_color_filter_options_localize_labels_and_exclude_nonvisible_products`. Product option/value changes use existing significant-modification and revalidation services; checkout, pricing snapshots, payment, and inventory lifecycle are not changed.
+
+### Data audit status
+
+Repository fixtures contain the canonical option `color` and values `beige` and `grey` in `database/seeders/ProductCatalogSeeder.php`; source search found no legacy `colors`/`colour` option fixture. The checked-in `database/database.sqlite` has no product option tables. This shell's `.env` selects PostgreSQL, but PHP, Composer, `psql`, and a Laravel database-query connection are unavailable here. Therefore no claim is made about exact production rows or conflicts. Existing database rows have not been rewritten. Run a read-only query in the configured target database for option code/name aliases and invalid/duplicate color value codes before rollout; resolve any returned rows explicitly through an approved admin repair rather than an automatic rewrite.
+
+Read-only PostgreSQL audit query for exact legacy option/value records:
+
+```sql
+SELECT p.slug, po.id AS option_record_id, po.code AS option_code,
+       po.name_ar AS option_name_ar, po.name_en AS option_name_en,
+       pov.id AS value_record_id, pov.code AS value_code,
+       pov.value_ar, pov.value_en, pov.deleted_at AS value_deleted_at
+FROM product_options AS po
+JOIN products AS p ON p.id = po.product_id
+LEFT JOIN product_option_values AS pov ON pov.product_option_id = po.id
+WHERE (lower(po.code) IN ('color', 'colors', 'colour', 'colours') AND po.code <> 'color')
+   OR po.code IN ('لون', 'اللون', 'ألوان', 'الوان')
+   OR lower(po.name_en) IN ('color', 'colors', 'colour', 'colours')
+   OR po.name_ar IN ('لون', 'اللون', 'ألوان', 'الوان')
+   OR (po.code = 'color' AND pov.id IS NOT NULL
+       AND pov.code !~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+ORDER BY p.slug, po.id, pov.id;
+
+SELECT pov.code AS color_code,
+       array_agg(DISTINCT (pov.value_ar, lower(pov.value_en))) AS translations,
+       array_agg(pov.id ORDER BY pov.id) AS value_record_ids
+FROM product_option_values AS pov
+JOIN product_options AS po ON po.id = pov.product_option_id
+WHERE po.code = 'color'
+GROUP BY pov.code
+HAVING count(DISTINCT (pov.value_ar, lower(pov.value_en))) > 1
+ORDER BY pov.code;
+```
+
+For a conflicting canonical value code, record the authoritative bilingual labels first. Temporarily move every conflicting value record to a distinct valid kebab-case repair code through the admin value endpoint, correct translations while each code is unique, then set the records back to the shared canonical code with identical labels. Confirm that value assignments stay on the intended variants and that no order or inventory records are changed. If a noncanonical option coexists with a `color` option on one product, reconcile its value assignments into the canonical option before archiving the alias. Review and approve the exact row list before repair; never automate this procedure.
+

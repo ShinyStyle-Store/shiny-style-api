@@ -27,6 +27,7 @@ class ProductListResource extends JsonResource
                 'name' => $this->localizedValue($category->name_ar, $category->name_en),
             ] : null,
             'displayVariantId' => $sellableItem ? (string) $sellableItem->getKey() : null,
+            'sku' => $sellableItem?->sku,
             ...$this->pricePresentation($sellableItem),
             'badge' => $this->badge,
             'inStock' => $sellableItem?->availableQuantity() > 0,

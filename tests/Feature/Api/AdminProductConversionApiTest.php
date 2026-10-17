@@ -113,6 +113,26 @@ class AdminProductConversionApiTest extends TestCase
             ->assertConflict()->assertJsonPath('code', 'already_converted');
     }
 
+    public function test_conversion_rejects_color_aliases_and_noncanonical_color_value_codes(): void
+    {
+        [$product, $source] = $this->simpleProduct();
+        $context = $this->context($product, $source);
+        $payload = $this->payload($context, 5);
+        $payload['options'][0]['code'] = 'colors';
+        $payload['options'][0]['name_ar'] = 'الألوان';
+        $payload['options'][0]['name_en'] = 'Colors';
+
+        $this->withToken($this->adminToken)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson("/api/v1/admin/products/{$product->id}/convert-simple-item/{$source->id}", $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('options.0.code');
+
+        $payload['options'][0]['code'] = 'color';
+        $payload['options'][0]['values'][0]['code'] = 'navy_blue';
+        $this->withToken($this->adminToken)->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson("/api/v1/admin/products/{$product->id}/convert-simple-item/{$source->id}", $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('options.0.values.0.code');
+    }
+
     public function test_product_list_and_detail_expose_only_an_eligible_simple_source_id(): void
     {
         [$product, $source] = $this->simpleProduct();
