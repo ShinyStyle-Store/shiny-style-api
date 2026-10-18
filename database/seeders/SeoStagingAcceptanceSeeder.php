@@ -94,11 +94,6 @@ final class SeoStagingAcceptanceSeeder extends Seeder
             throw new RuntimeException('Set SEO_STAGING_CANONICAL_BASE_URL to the absolute HTTPS staging origin.');
         }
 
-        $applicationUrl = config('app.url');
-        if (! is_string($applicationUrl) || ! $this->sameHttpsOrigin($canonicalBaseUrl, $applicationUrl)) {
-            throw new RuntimeException('SEO_STAGING_CANONICAL_BASE_URL must match the configured HTTPS APP_URL staging origin.');
-        }
-
         $logoMediaId = config('seo_staging_fixtures.logo_media_id');
         if ($logoMediaId !== null && $logoMediaId !== '') {
             if (filter_var($logoMediaId, FILTER_VALIDATE_INT) === false || (int) $logoMediaId < 1) {
@@ -411,18 +406,5 @@ final class SeoStagingAcceptanceSeeder extends Seeder
             && $parts['host'] !== ''
             && ! isset($parts['user'])
             && ! isset($parts['pass']);
-    }
-
-    private function sameHttpsOrigin(string $left, string $right): bool
-    {
-        if (! $this->isHttpsOrigin($left) || ! $this->isHttpsOrigin($right)) {
-            return false;
-        }
-
-        $leftParts = parse_url($left);
-        $rightParts = parse_url($right);
-
-        return strtolower((string) $leftParts['host']) === strtolower((string) $rightParts['host'])
-            && (int) ($leftParts['port'] ?? 443) === (int) ($rightParts['port'] ?? 443);
     }
 }
