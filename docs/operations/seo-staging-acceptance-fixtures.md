@@ -4,13 +4,13 @@ The acceptance fixtures are opt-in and are not called by `DatabaseSeeder`. They 
 
 ## Configuration
 
-Before seeding, set `APP_ENV=staging`, configure `APP_URL` as the staging HTTPS origin, and provide operator-approved values through:
+Before seeding, set `APP_ENV=staging`, keep `APP_URL` configured for the Laravel API application, and provide operator-approved values through:
 
 | Variable | Required | Use |
 |---|---|---|
 | `SEO_STAGING_STORE_NAME_AR` | Yes | Arabic staging store name used only if the corresponding setting is absent. |
 | `SEO_STAGING_STORE_NAME_EN` | Yes | English staging store name used only if the corresponding setting is absent. |
-| `SEO_STAGING_CANONICAL_BASE_URL` | Yes | Absolute HTTPS origin; it must match the configured staging `APP_URL`. |
+| `SEO_STAGING_CANONICAL_BASE_URL` | Yes | Absolute HTTPS origin of the staging storefront. It may differ from the backend API's `APP_URL`. |
 | `SEO_STAGING_LOGO_MEDIA_ID` | No | Existing active public image with an absolute HTTPS URL. No media is created or modified. |
 
 The seeder refuses to run outside `staging`, verifies the staging URL and optional logo, and fails if required configuration is missing. Existing SEO settings and media are never overwritten; if an existing setting conflicts with the supplied value, the seed transaction fails and asks the operator to update it through the admin workflow. A small ownership ledger records only rows inserted by this fixture so cleanup can distinguish them from existing staging content.

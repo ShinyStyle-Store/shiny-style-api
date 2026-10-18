@@ -88,6 +88,23 @@ class SeoStagingAcceptanceFixturesTest extends TestCase
         $this->assertDatabaseCount('seo_staging_fixture_records', 0);
     }
 
+    public function test_canonical_storefront_origin_can_differ_from_backend_application_url(): void
+    {
+        config([
+            'app.url' => 'https://api-staging.example.test',
+            'seo_staging_fixtures.canonical_base_url' => 'https://storefront-staging.example.test',
+        ]);
+
+        $this->artisan('seo:staging-fixtures')->assertSuccessful();
+
+        $canonicalSetting = SeoSetting::query()
+            ->where('key', 'canonical_base_url')
+            ->where('locale', '')
+            ->firstOrFail();
+
+        $this->assertSame('https://storefront-staging.example.test', $canonicalSetting->value_json);
+    }
+
     public function test_existing_operator_setting_is_never_overwritten_by_fixture_configuration(): void
     {
         $setting = SeoSetting::query()->create([
