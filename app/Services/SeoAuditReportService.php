@@ -98,6 +98,121 @@ final class SeoAuditReportService
         ];
     }
 
+    /** @return array{total: int, missing_title: int, missing_description: int, non_indexable: int} */
+    public function dashboardCounts(): array
+    {
+        $settings = $this->settings->all();
+        $supportedLocales = $this->settingValue($settings, 'supported_locales');
+        $supportedLocales = is_array($supportedLocales) ? $supportedLocales : self::LOCALES;
+        $visibleCategoryIds = $this->categories->visibilitySnapshot()->visibleIds();
+        $counts = [
+            'total' => 0,
+            'missing_title' => 0,
+            'missing_description' => 0,
+            'non_indexable' => 0,
+        ];
+
+        $this->countDashboardPages(
+            Product::query()
+                ->visible($visibleCategoryIds)
+                ->select(['id', 'name_ar', 'name_en', 'description_ar', 'description_en'])
+                ->with('seoRecords'),
+            $settings,
+            $supportedLocales,
+            $counts,
+        );
+        $this->countDashboardPages(
+            Category::query()
+                ->whereIn('id', $visibleCategoryIds)
+                ->select(['id', 'name_ar', 'name_en', 'description_ar', 'description_en'])
+                ->with('seoRecords'),
+            $settings,
+            $supportedLocales,
+            $counts,
+        );
+        $this->countDashboardPages(
+            ContentPage::query()
+                ->whereIn('slug', config('content.page_slugs', []))
+                ->select(['id', 'slug', 'title_ar', 'title_en', 'body_ar', 'body_en'])
+                ->with('seoRecords'),
+            $settings,
+            $supportedLocales,
+            $counts,
+        );
+
+        $indexablePages = 0;
+        foreach (SeoSitemapItemsService::TYPES as $type) {
+            $indexablePages += $this->sitemap->eligibleSummary($type)['totalLocaleUrls'];
+        }
+
+        $counts['non_indexable'] = max(0, $counts['total'] - $indexablePages);
+
+        return $counts;
+    }
+
+    /** @param Collection<int, SeoSetting> $settings @param list<string> $supportedLocales
+     *  @param array{total: int, missing_title: int, missing_description: int, non_indexable: int} $counts
+     */
+    private function countDashboardPages(
+        Builder $query,
+        Collection $settings,
+        array $supportedLocales,
+        array &$counts,
+    ): void {
+        $query->chunkById(200, function (Collection $entities) use ($settings, $supportedLocales, &$counts): void {
+            foreach ($entities as $entity) {
+                if (! $entity instanceof Product && ! $entity instanceof Category && ! $entity instanceof ContentPage) {
+                    continue;
+                }
+
+                $records = $entity->seoRecords->keyBy('locale');
+                foreach ($this->eligibility->availableLocales($entity, $supportedLocales) as $locale) {
+                    $record = $records->get($locale);
+                    $record = $record instanceof SeoRecord ? $record : null;
+                    $presentation = $this->dashboardPresentation($entity, $locale);
+                    $counts['total']++;
+
+                    if ($this->metadata->cleanPublicText($record?->meta_title) === null) {
+                        $counts['missing_title']++;
+                    }
+
+                    if ($this->metadata->resolveDescription($presentation, $record, $settings, $locale) === null) {
+                        $counts['missing_description']++;
+                    }
+                }
+            }
+        });
+    }
+
+    /** @return array{name?: ?string, title?: ?string, description?: ?string, body?: ?string} */
+    private function dashboardPresentation(Product|Category|ContentPage $entity, string $locale): array
+    {
+        if ($entity instanceof Product || $entity instanceof Category) {
+            $description = $entity instanceof Product
+                ? $this->localizedProductDescription($entity, $locale)
+                : $this->localizedAuditValue($entity->description_ar, $entity->description_en, $locale);
+
+            return [
+                'name' => $this->localizedAuditValue($entity->name_ar, $entity->name_en, $locale),
+                'description' => $description,
+            ];
+        }
+
+        return [
+            'title' => $this->localizedAuditValue($entity->title_ar, $entity->title_en, $locale),
+            'body' => $this->localizedAuditValue($entity->body_ar, $entity->body_en, $locale),
+        ];
+    }
+
+    private function localizedAuditValue(?string $arabic, ?string $english, string $locale): ?string
+    {
+        if ($locale === 'en') {
+            return $english !== null && $english !== '' ? $english : ($arabic !== '' ? $arabic : null);
+        }
+
+        return $arabic !== null && $arabic !== '' ? $arabic : ($english !== '' ? $english : null);
+    }
+
     /** @param Collection<int, SeoSetting> $settings @param list<string> $supportedLocales
      *  @param array{ar: int, en: int, total: int, distinctEntities: int} $eligibleProductSummary
      *  @return array{indexEligible: array{distinctProducts: int, byLocale: array{ar: int, en: int}}, customSeoTitle: array{ar: int, en: int}, missingDescription: array{ar: int, en: int}, invalidImages: array{products: array{ar: int, en: int}}}

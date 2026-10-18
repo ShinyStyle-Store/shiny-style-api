@@ -40,6 +40,7 @@ class AdminSeoController extends Controller
     {
         $validated = $request->validated();
         $audits = SeoAudit::query()
+            ->with('actor')
             ->orderByDesc('created_at')
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 20)

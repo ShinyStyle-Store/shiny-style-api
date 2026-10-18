@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\ContentPage;
 use App\Models\MediaAsset;
 use App\Models\Product;
+use App\Models\SeoAudit;
 use App\Models\SeoSetting;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,13 +19,15 @@ class AdminSeoApiTest extends TestCase
 
     private string $adminToken;
 
+    private User $admin;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        $admin = User::factory()->create(['is_active' => true]);
-        AdminMembership::factory()->create(['user_id' => $admin->getKey()]);
-        $this->adminToken = $admin->createToken('admin', ['admin-access'])->plainTextToken;
+        $this->admin = User::factory()->create(['name' => 'SEO Admin', 'is_active' => true]);
+        AdminMembership::factory()->create(['user_id' => $this->admin->getKey()]);
+        $this->adminToken = $this->admin->createToken('admin', ['admin-access'])->plainTextToken;
     }
 
     public function test_record_updates_are_partial_locale_specific_and_audited_only_when_changed(): void
@@ -205,6 +208,16 @@ class AdminSeoApiTest extends TestCase
         ]])->assertOk();
         $this->assertDatabaseCount('seo_settings', 3);
         $this->assertDatabaseCount('seo_audits', 3);
+        $this->assertDatabaseHas('seo_audits', [
+            'target_type' => 'seo_setting',
+            'locale' => 'ar',
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $history = $this->withToken($this->adminToken)->getJson('/api/v1/admin/seo/history')->assertOk();
+        foreach ($history->json('data') as $entry) {
+            $this->assertContains($entry['locale'], ['ar', 'en']);
+        }
 
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->putJson($url, ['settings' => [
@@ -217,13 +230,80 @@ class AdminSeoApiTest extends TestCase
     {
         $product = $this->product();
         $this->getJson('/api/v1/admin/seo/product/'.$product->id)->assertUnauthorized();
+        $this->getJson('/api/v1/admin/seo/history')->assertUnauthorized();
         $this->getJson('/api/v1/admin/seo/history?per_page=101')->assertUnauthorized();
 
+        $nonAdmin = User::factory()->create(['is_active' => true]);
+        $nonAdminToken = $nonAdmin->createToken('non-admin', ['admin-access'])->plainTextToken;
+        $this->withToken($nonAdminToken)->getJson('/api/v1/admin/seo/history')->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/seo/history?per_page=101')
             ->assertUnprocessable()->assertJsonValidationErrors('per_page');
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/seo/history?unexpected=1')
             ->assertUnprocessable()->assertJsonValidationErrors('unexpected');
+    }
+
+    public function test_history_returns_stable_localized_rows_with_actor_identity_and_iso_timestamps(): void
+    {
+        $product = $this->product();
+        $this->travelTo('2026-10-18 04:00:00');
+
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/product/'.$product->id, [
+            'locale' => 'ar',
+            'metaTitle' => 'Arabic SEO title',
+        ])->assertOk();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->putJson('/api/v1/admin/seo/product/'.$product->id, [
+            'locale' => 'en',
+            'metaTitle' => 'English SEO title',
+        ])->assertOk();
+
+        $arabicAuditId = (string) SeoAudit::query()->where('locale', 'ar')->value('id');
+        $englishAuditId = (string) SeoAudit::query()->where('locale', 'en')->value('id');
+        $history = $this->withToken($this->adminToken)
+            ->getJson('/api/v1/admin/seo/history?per_page=1')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [[
+                    'id', 'record_type', 'record_id', 'locale', 'changed_at', 'changed_by',
+                ]],
+                'links',
+                'meta',
+            ])
+            ->assertJsonPath('data.0.id', $englishAuditId)
+            ->assertJsonPath('data.0.record_type', 'product')
+            ->assertJsonPath('data.0.record_id', (string) $product->getKey())
+            ->assertJsonPath('data.0.locale', 'en')
+            ->assertJsonPath('data.0.changed_at', '2026-10-18T04:00:00.000000Z')
+            ->assertJsonPath('data.0.changed_by', 'SEO Admin')
+            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.per_page', 1);
+
+        $changedAt = $history->json('data.0.changed_at');
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/', $changedAt);
+        $this->assertNotFalse(\DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i:s.u\\Z', $changedAt));
+        $history->assertJsonMissingPath('data.0.before')
+            ->assertJsonMissingPath('data.0.after')
+            ->assertJsonMissingPath('data.0.actorId');
+
+        $this->app['auth']->forgetGuards();
+        $arabicHistory = $this->withToken($this->adminToken)
+            ->getJson('/api/v1/admin/seo/history?page=2&per_page=1')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $arabicAuditId)
+            ->assertJsonPath('data.0.record_type', 'product')
+            ->assertJsonPath('data.0.record_id', (string) $product->getKey())
+            ->assertJsonPath('data.0.locale', 'ar')
+            ->assertJsonPath('data.0.changed_by', 'SEO Admin');
+
+        $this->app['auth']->forgetGuards();
+        $repeatedHistory = $this->withToken($this->adminToken)
+            ->getJson('/api/v1/admin/seo/history?per_page=1')
+            ->assertOk();
+        $this->assertSame($englishAuditId, $repeatedHistory->json('data.0.id'));
+        $this->assertSame($arabicAuditId, $arabicHistory->json('data.0.id'));
     }
 
     public function test_seo_images_must_be_public_when_saved(): void

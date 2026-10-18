@@ -48,6 +48,7 @@ class SendSeoRevalidationTest extends TestCase
                 && $request->header('X-Shiny-SEO-Signature') === [
                     'sha256=bda302e0f6137cd02080b0e28e1ba4f7f5ff55eb1b3e8512d1236ea8371c1964',
                 ]
+                && $request->header('Content-Type') === ['application/json; charset=utf-8']
                 && $request->data()['eventId'] === $eventId;
         });
     }
@@ -79,12 +80,34 @@ class SendSeoRevalidationTest extends TestCase
             $requests[0]->header('X-Shiny-SEO-Signature'),
             $requests[1]->header('X-Shiny-SEO-Signature'),
         );
+        foreach ($requests as $request) {
+            $timestamp = $request->header('X-Shiny-SEO-Timestamp')[0];
+            $expectedSignature = 'sha256='.hash_hmac(
+                'sha256',
+                $timestamp.'.'.self::RAW_BODY,
+                'shiny-style-seo-v1-test-secret-only',
+            );
+
+            $this->assertSame(['application/json; charset=utf-8'], $request->header('Content-Type'));
+            $this->assertSame([$expectedSignature], $request->header('X-Shiny-SEO-Signature'));
+            $this->assertSame($eventId, $request->data()['eventId']);
+        }
         $this->assertSame('d7430a27-d765-4a88-bb82-9216bd789501', $requests[1]->data()['eventId']);
     }
 
     public function test_utf8_body_is_sent_byte_for_byte_and_signed_as_utf8(): void
     {
-        $body = '{"version":1,"eventId":"88b02ba4-a0f7-41ef-8c9a-407d79bbef01","occurredAt":"2026-10-15T18:15:00Z","entityType":"product","entityId":"منتج-123","reason":"updated","locales":["ar"],"scopes":["catalog"],"paths":[]}';
+        $body = json_encode([
+            'version' => 1,
+            'eventId' => '88b02ba4-a0f7-41ef-8c9a-407d79bbef01',
+            'occurredAt' => '2026-10-15T18:15:00Z',
+            'entityType' => 'product',
+            'entityId' => "\u{0645}\u{0646}\u{062A}\u{062C}-123",
+            'reason' => 'updated',
+            'locales' => ['ar'],
+            'scopes' => ['catalog'],
+            'paths' => [],
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         $this->travelTo(CarbonImmutable::createFromTimestampUTC(1792088100));
         Http::fake([
             'next.example/api/internal/seo/revalidate' => Http::response([
@@ -99,6 +122,7 @@ class SendSeoRevalidationTest extends TestCase
         $expected = 'sha256='.hash_hmac('sha256', '1792088100.'.$body, 'shiny-style-seo-v1-test-secret-only');
         Http::assertSent(fn (Request $request): bool =>
             $request->body() === $body
+            && $request->header('Content-Type') === ['application/json; charset=utf-8']
             && $request->header('X-Shiny-SEO-Signature') === [$expected]);
     }
 
@@ -128,6 +152,19 @@ class SendSeoRevalidationTest extends TestCase
         }
 
         $this->assertSame([120, 60, 300, 900], $job->backoff());
+        Http::assertSentCount(1);
+    }
+
+    public function test_receiver_unauthorized_response_fails_without_retrying(): void
+    {
+        $job = (new SendSeoRevalidation(self::RAW_BODY))->withFakeQueueInteractions();
+        Http::fake([
+            'next.example/api/internal/seo/revalidate' => Http::response(['error' => 'unauthorized'], 401),
+        ]);
+
+        $job->handle();
+
+        $job->assertFailed();
         Http::assertSentCount(1);
     }
 }

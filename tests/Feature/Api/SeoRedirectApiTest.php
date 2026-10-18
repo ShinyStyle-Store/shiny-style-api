@@ -5,6 +5,7 @@ namespace Tests\Feature\Api;
 use App\Jobs\SendSeoRevalidation;
 use App\Models\AdminMembership;
 use App\Models\Category;
+use App\Models\ContentPage;
 use App\Models\Product;
 use App\Models\SeoRedirect;
 use App\Models\SeoSetting;
@@ -406,9 +407,57 @@ class SeoRedirectApiTest extends TestCase
             ->assertJsonPath('data.destinationPath', '/en/products/'.$finalSlug);
     }
 
+    public function test_manual_redirect_creation_accepts_camel_case_and_preserves_301_and_308(): void
+    {
+        ContentPage::query()->create(['slug' => 'about-us', 'title_en' => 'About']);
+        $destinationPath = '/en/about';
+        $sourcePath = '/en/products/example-old';
+
+        $created301 = $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'sourcePath' => $sourcePath,
+            'destinationPath' => $destinationPath,
+            'statusCode' => 301,
+        ])->assertCreated()
+            ->assertJsonPath('data.sourcePath', $sourcePath)
+            ->assertJsonPath('data.destinationPath', $destinationPath)
+            ->assertJsonPath('data.statusCode', 301);
+
+        $this->resolve($sourcePath)
+            ->assertJsonPath('data.destinationPath', $destinationPath)
+            ->assertJsonPath('data.statusCode', 301);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'sourcePath' => $sourcePath,
+            'destinationPath' => $destinationPath,
+            'statusCode' => 301,
+        ])->assertUnprocessable()->assertJsonValidationErrors('sourcePath');
+
+        $sourcePath308 = '/en/products/example-old-308';
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'sourcePath' => $sourcePath308,
+            'destinationPath' => $destinationPath,
+            'statusCode' => 308,
+        ])->assertCreated()->assertJsonPath('data.statusCode', 308);
+
+        $this->resolve($sourcePath308)
+            ->assertJsonPath('data.destinationPath', $destinationPath)
+            ->assertJsonPath('data.statusCode', 308);
+
+        $this->assertDatabaseHas('seo_redirects', [
+            'id' => $created301->json('data.id'),
+            'source_path' => $sourcePath,
+            'destination_path' => $destinationPath,
+            'status_code' => 301,
+        ]);
+    }
+
     public function test_manual_redirect_api_audits_updates_disables_and_invalidates_negative_and_positive_cache_entries(): void
     {
         $destination = $this->product('active', 'redirect-destination-'.Str::lower(Str::random(8)));
+        $secondDestination = $this->product('active', 'redirect-second-destination-'.Str::lower(Str::random(8)));
+        ContentPage::query()->create(['slug' => 'about-us', 'title_ar' => 'عن المتجر']);
         $sourcePath = '/en/products/redirect-source-'.Str::lower(Str::random(8));
         $this->resolve($sourcePath)->assertJsonPath('data', null);
 
@@ -423,6 +472,38 @@ class SeoRedirectApiTest extends TestCase
             ->assertJsonPath('data.destinationPath', '/en/products/'.$destination->slug)
             ->assertJsonPath('data.statusCode', 308);
         $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/redirects/'.$redirectId, [
+            'sourcePath' => '/en/products/changed-source',
+        ])->assertUnprocessable()->assertJsonValidationErrors('sourcePath');
+        $this->assertDatabaseHas('seo_redirects', [
+            'id' => $redirectId,
+            'source_path' => $sourcePath,
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/redirects/'.$redirectId, [
+            'destinationPath' => '/ar/about',
+        ])->assertUnprocessable()->assertJsonValidationErrors('destinationPath');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/redirects/'.$redirectId, [
+            'destinationPath' => '/en/products/'.$secondDestination->slug,
+        ])->assertOk()->assertJsonPath('data.destinationPath', '/en/products/'.$secondDestination->slug);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/redirects/'.$redirectId, [
+            'isActive' => false,
+        ])->assertOk()->assertJsonPath('data.isActive', false);
+        $this->resolve($sourcePath)->assertJsonPath('data', null);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->patchJson('/api/v1/admin/redirects/'.$redirectId, [
+            'isActive' => true,
+        ])->assertOk()->assertJsonPath('data.isActive', true);
+        $this->resolve($sourcePath)
+            ->assertJsonPath('data.destinationPath', '/en/products/'.$secondDestination->slug);
+
+        $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/redirects?per_page=1')
             ->assertOk()->assertJsonPath('meta.per_page', 1);
 
@@ -434,7 +515,12 @@ class SeoRedirectApiTest extends TestCase
 
         $this->app['auth']->forgetGuards();
         $this->withToken($this->adminToken)->deleteJson('/api/v1/admin/redirects/'.$redirectId)
-            ->assertOk()->assertJsonPath('data.isActive', false);
+            ->assertOk()
+            ->assertJsonPath('data.id', (string) $redirectId)
+            ->assertJsonPath('data.sourcePath', $sourcePath)
+            ->assertJsonPath('data.destinationPath', '/en/products/'.$secondDestination->slug)
+            ->assertJsonPath('data.statusCode', 301)
+            ->assertJsonPath('data.isActive', false);
         $this->resolve($sourcePath)->assertJsonPath('data', null);
         $this->assertDatabaseHas('seo_redirects', ['id' => $redirectId, 'is_active' => false]);
         $this->assertDatabaseHas('seo_audits', ['target_type' => 'seo_redirect', 'target_id' => $redirectId, 'action' => 'create']);
@@ -444,6 +530,7 @@ class SeoRedirectApiTest extends TestCase
 
     public function test_manual_redirect_rejects_live_sources_unsafe_paths_loops_and_nonpublic_destinations(): void
     {
+        ContentPage::query()->create(['slug' => 'about-us', 'title_en' => 'About']);
         $live = $this->product('active', 'redirect-live-'.Str::lower(Str::random(8)));
         $hidden = $this->product('draft', 'redirect-hidden-'.Str::lower(Str::random(8)));
         $other = $this->product('active', 'redirect-other-'.Str::lower(Str::random(8)));
@@ -458,6 +545,7 @@ class SeoRedirectApiTest extends TestCase
             ['/en/checkout', '/en/products/'.$other->slug],
             ['/en/products/not-live', 'https://attacker.example/path'],
             ['/en/products/self-loop', '/en/products/self-loop'],
+            ['/en/products/cross-locale-source', '/ar/about'],
             ['/en/products/hidden-destination', '/en/products/'.$hidden->slug],
         ] as [$source, $destination]) {
             $this->app['auth']->forgetGuards();
@@ -467,6 +555,58 @@ class SeoRedirectApiTest extends TestCase
                 'statusCode' => 301,
             ])->assertUnprocessable();
         }
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'sourcePath' => '/en/products/explicit-cross-locale-source',
+            'destinationPath' => '/ar/about',
+            'statusCode' => 301,
+        ])->assertUnprocessable()->assertJsonValidationErrors('destinationPath');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'source_path' => '/en/products/snake-case-source',
+            'destination_path' => '/en/about',
+            'status_code' => 301,
+        ])->assertUnprocessable()->assertJsonValidationErrors('source_path');
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)->postJson('/api/v1/admin/redirects', [
+            'sourcePath' => '/en/products/invalid-status',
+            'destinationPath' => '/en/about',
+            'statusCode' => 302,
+        ])->assertUnprocessable()->assertJsonValidationErrors('statusCode');
+    }
+
+    public function test_public_resolver_does_not_follow_cross_locale_redirect_rows(): void
+    {
+        ContentPage::query()->create(['slug' => 'about-us', 'title_en' => 'About']);
+        $sourcePath = '/ar/products/cross-locale-redirect-source';
+
+        SeoRedirect::query()->create([
+            'domain_scope' => 'shop.example.com',
+            'source_path' => $sourcePath,
+            'source_hash' => hash('sha256', $sourcePath),
+            'destination_path' => '/en/about',
+            'status_code' => 301,
+            'is_active' => true,
+            'reason' => 'manual',
+        ]);
+
+        $this->resolve($sourcePath)->assertJsonPath('data', null);
+
+        $unsafeSourcePath = '/en/products/unsafe-destination-redirect-source';
+        SeoRedirect::query()->create([
+            'domain_scope' => 'shop.example.com',
+            'source_path' => $unsafeSourcePath,
+            'source_hash' => hash('sha256', $unsafeSourcePath),
+            'destination_path' => 'https://attacker.example/path',
+            'status_code' => 301,
+            'is_active' => true,
+            'reason' => 'manual',
+        ]);
+
+        $this->resolve($unsafeSourcePath)->assertJsonPath('data', null);
     }
 
     public function test_product_slug_update_rolls_back_when_redirect_source_conflicts_and_prevents_slug_reuse(): void

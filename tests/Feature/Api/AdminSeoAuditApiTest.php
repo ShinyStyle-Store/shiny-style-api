@@ -11,6 +11,7 @@ use App\Models\SeoRedirect;
 use App\Models\SeoSetting;
 use App\Models\SellableItem;
 use App\Models\User;
+use App\Services\SeoAuditReportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -45,35 +46,19 @@ class AdminSeoAuditApiTest extends TestCase
         config(['seo.indexing_allowed' => true]);
         $this->setting('supported_locales', '', ['ar', 'en']);
 
-        $this->withToken($this->adminToken)
+        $response = $this->withToken($this->adminToken)
             ->getJson('/api/v1/admin/seo/audit')
             ->assertOk()
-            ->assertJsonPath('data.products.indexEligible.distinctProducts', 0)
-            ->assertJsonPath('data.products.indexEligible.byLocale.ar', 0)
-            ->assertJsonPath('data.products.indexEligible.byLocale.en', 0)
-            ->assertJsonPath('data.products.indexEligible.totalProductLocalePages', 0)
-            ->assertJsonPath('data.products.customSeoTitleByLocale.ar', 0)
-            ->assertJsonPath('data.products.customSeoTitleByLocale.en', 0)
-            ->assertJsonPath('data.products.missingUsefulDescriptionByLocale.ar', 0)
-            ->assertJsonPath('data.products.missingUsefulDescriptionByLocale.en', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byLocale.ar', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byLocale.en', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byEntityType.products.ar', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byEntityType.categories.ar', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byEntityType.pages.en', 0)
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.product', [
-                'ar' => 0, 'en' => 0, 'total' => 0, 'distinctEntities' => 0,
-            ])
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.category', [
-                'ar' => 0, 'en' => 0, 'total' => 0, 'distinctEntities' => 0,
-            ])
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.page', [
-                'ar' => 0, 'en' => 0, 'total' => 0, 'distinctEntities' => 0,
-            ])
-            ->assertJsonPath('data.sitemap.eligibleUrlsByLocale.ar', 0)
-            ->assertJsonPath('data.sitemap.eligibleUrlsByLocale.en', 0)
-            ->assertJsonPath('data.sitemap.totalEligibleUrls', 0)
-            ->assertJsonPath('data.activeRedirects', 0);
+            ->assertJsonStructure(['data' => ['total', 'missing_title', 'missing_description', 'non_indexable']])
+            ->assertJsonPath('data.total', 0)
+            ->assertJsonPath('data.missing_title', 0)
+            ->assertJsonPath('data.missing_description', 0)
+            ->assertJsonPath('data.non_indexable', 0);
+
+        $counts = $response->json('data');
+        foreach (['total', 'missing_title', 'missing_description', 'non_indexable'] as $key) {
+            $this->assertSame(0, $counts[$key]);
+        }
     }
 
     public function test_report_counts_localized_public_content_fallbacks_and_invalid_custom_images_without_writes(): void
@@ -140,27 +125,26 @@ class AdminSeoAuditApiTest extends TestCase
 
         $response = $this->withToken($this->adminToken)->getJson('/api/v1/admin/seo/audit')->assertOk();
 
-        $response->assertJsonPath('data.products.indexEligible.distinctProducts', 2)
-            ->assertJsonPath('data.products.indexEligible.byLocale.ar', 2)
-            ->assertJsonPath('data.products.indexEligible.byLocale.en', 1)
-            ->assertJsonPath('data.products.indexEligible.totalProductLocalePages', 3)
-            ->assertJsonPath('data.products.customSeoTitleByLocale.ar', 1)
-            ->assertJsonPath('data.products.customSeoTitleByLocale.en', 0)
-            ->assertJsonPath('data.products.missingUsefulDescriptionByLocale.ar', 0)
-            ->assertJsonPath('data.products.missingUsefulDescriptionByLocale.en', 1)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byLocale.ar', 1)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.byLocale.en', 0)
-            ->assertJsonPath('data.seoImages.invalidCustomOverrides.unconfiguredOverrideIsNotAnError', true)
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.product.total', 3)
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.category.total', 2)
-            ->assertJsonPath('data.sitemap.eligibleUrlsByType.page.total', 2)
-            ->assertJsonPath('data.sitemap.totalEligibleUrls', 7)
-            ->assertJsonPath('data.sitemap.xmlPublicationStatus', null)
-            ->assertJsonPath('data.sitemap.lastGenerationError', null)
-            ->assertJsonPath('data.sitemap.publicationStatusAvailable', false)
-            ->assertJsonPath('data.sitemap.countsAreGoogleIndexingMetrics', false)
-            ->assertJsonPath('data.activeRedirects', 1)
-            ->assertJsonPath('data.products.indexEligible.indexingAllowed', true);
+        $counts = $response->json('data');
+        $this->assertSame(
+            ['total', 'missing_title', 'missing_description', 'non_indexable'],
+            array_keys($counts),
+        );
+        foreach ($counts as $count) {
+            $this->assertIsInt($count);
+            $this->assertGreaterThanOrEqual(0, $count);
+        }
+
+        $response->assertJsonPath('data.total', 8)
+            ->assertJsonPath('data.missing_title', 7)
+            ->assertJsonPath('data.missing_description', 2)
+            ->assertJsonPath('data.non_indexable', 1);
+
+        $report = app(SeoAuditReportService::class)->report();
+        $this->assertSame(2, $report['products']['indexEligible']['distinctProducts']);
+        $this->assertSame(1, $report['seoImages']['invalidCustomOverrides']['byLocale']['ar']);
+        $this->assertSame(7, $report['sitemap']['totalEligibleUrls']);
+        $this->assertSame(1, $report['activeRedirects']);
 
         $this->assertSame($before, $this->snapshotTables([
             'products', 'categories', 'sellable_items', 'content_pages',

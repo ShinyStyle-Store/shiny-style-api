@@ -18,6 +18,7 @@ final class SeoAuditService
         string $action,
         ?array $before,
         ?array $after,
+        ?string $locale = null,
     ): SeoAudit {
         if (! in_array($action, ['create', 'update', 'delete'], true)) {
             throw new InvalidArgumentException('Unsupported SEO audit action.');
@@ -27,10 +28,17 @@ final class SeoAuditService
             throw new InvalidArgumentException('SEO audit records must be written inside the data transaction.');
         }
 
+        $locale ??= 'ar';
+
+        if (! in_array($locale, ['ar', 'en'], true)) {
+            throw new InvalidArgumentException('SEO audit locale must be ar or en.');
+        }
+
         return SeoAudit::query()->create([
             'actor_id' => $actorId,
             'target_type' => $targetType,
             'target_id' => $targetId,
+            'locale' => $locale,
             'action' => $action,
             'before_json' => $before,
             'after_json' => $after,

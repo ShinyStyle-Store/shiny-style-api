@@ -70,6 +70,26 @@ No-op updates do not create audit entries. Actual value changes create audit sna
 
 Tests: `tests/Feature/Api/AdminSeoApiTest::test_settings_are_fixed_typed_partial_and_global_values_have_one_row`, `::test_seo_admin_routes_require_an_admin_token_and_history_is_bounded`, `tests/Feature/Api/PublicSeoSettingsApiTest::test_admin_page_overrides_round_trip_and_null_clears_back_to_global_fallback`, `::test_public_reads_do_not_write_settings_or_audits_and_noop_admin_updates_do_not_revalidate`, and `tests/Feature/Services/SeoRevalidationQueueTest`. Result this revision: **not run** (`php` unavailable).
 
+### Admin SEO audit and history
+
+`GET /api/v1/admin/seo/audit` requires the same Sanctum plus `admin.access` authorization as the other admin SEO endpoints. It returns exactly four integer counts in the existing `{ "data": ... }` envelope:
+
+```json
+{"data":{"total":8,"missing_title":7,"missing_description":2,"non_indexable":1}}
+```
+
+The counting unit is a public page-locale pair: effectively visible products, visible categories, and existing configured content pages, for each supported locale with a non-empty localized product/category name or page title. `total` counts all such pairs, whether indexable or not. In keeping with the existing audit's `customSeoTitleByLocale` diagnostic, `missing_title` counts pairs without a usable entity-specific SEO title override. It does not mean that the final public title is absent: the public resolver can supply a title from localized content, `defaultSeoTitle`, or `storeName`. `missing_description` counts pairs whose final public description is empty after custom SEO, localized content (including the existing alternate-language fallback), and localized default-description fallback. `non_indexable` counts pairs in this same scope that are not eligible for the current sitemap under the app indexing flag, locale/robots rules, canonical path, and active redirect rules. These are application eligibility counts, not Google indexing metrics.
+
+`GET /api/v1/admin/seo/history` keeps the existing descending `created_at`, then descending `id` ordering and Laravel pagination. It accepts only `page` (minimum 1) and `per_page` (1–100; default 20). Each row contains only:
+
+```json
+{"id":"42","record_type":"product","record_id":"17","locale":"ar","changed_at":"2026-10-18T04:00:00.000000Z","changed_by":"Admin display name"}
+```
+
+`id` is the stable audit-row primary key; `record_id` is the stable ID of the existing audit target. `record_type` uses the stored supported audit target types (`product`, `category`, `content_page`, `seo_setting`, `seo_redirect`). `locale` is always `ar` or `en`. Locale-specific record, setting, and redirect changes retain their locale. Shared/global changes use `ar` as the documented primary-locale label; it does not mean the change affects Arabic only. The locale migration recovers locale from stored setting snapshots and localized redirect paths where possible. Shared changes and legacy snapshots without recoverable locale use the same `ar` primary label. New audit writes always persist a valid locale, defaulting to `ar` for shared/unscoped changes. `changed_at` is the audit creation timestamp in ISO-8601 UTC form. `changed_by` uses the linked admin's display name only; it is null if the actor record is no longer available. Audit snapshots and admin contact details are not returned.
+
+Both endpoints retain the existing authentication/authorization boundary. Audit history remains paginated as `{ "data": [...], "links": ..., "meta": ... }`. Focused coverage is in `tests/Feature/Api/AdminSeoAuditApiTest` and `tests/Feature/Api/AdminSeoApiTest`.
+
 ### Global store Open Graph image
 
 `defaultOgImageId` is an existing global setting. Set it through the same admin endpoint; its value must be the numeric ID of an existing, non-deleted `MediaAsset` whose image URL passes the shared public-image checks. It does not accept a locale. Omit `locale` and send a JSON number, not a URL or filename:
@@ -276,6 +296,8 @@ English equivalent uses `/en/...`. Tests: `tests/Feature/Api/SeoRedirectApiTest`
 ```
 
 `domainScope` is the canonical domain scope configured by SEO settings, not a guessed production URL. `sourceHash` is computed from source path. Generated slug redirects may have entity/reason values; manual rows use the source/snapshot fields above. Arabic paths use `/ar/...` and keep that locale through resolution; English uses `/en/...`. Empty list is normal, no-match public resolver is `{ "data": null }`, validation/conflict is 422, missing redirect is 404, auth failure is 401/403. Redirect management has no explicit HTTP cache policy; resolver lookup cache is described above. Tests: `tests/Feature/Api/SeoRedirectApiTest::test_manual_redirect_api_audits_updates_disables_and_invalidates_negative_and_positive_cache_entries`, `::test_manual_redirect_rejects_live_sources_unsafe_paths_loops_and_nonpublic_destinations`, `::test_redirect_admin_requires_admin_access_and_resolver_rejects_unrecognized_path_inputs`, and `::test_redirect_admin_rejects_a_guest_request`. Result this revision: **not run** (`php` unavailable).
+
+Manual redirect POST accepts exactly the camelCase fields `sourcePath`, `destinationPath`, and `statusCode`; snake_case and unknown fields are rejected. Paths must be normalized, locale-prefixed internal product, category, or mapped content routes. External, protocol-relative, query, fragment, escaped, unsupported, and unsafe paths are rejected. Source and destination must use the same locale and must not be identical. Only 301 and 308 are accepted. Sources that are currently live or reserved by existing redirect history are rejected; destinations must be public, and loops or chains are rejected. PATCH accepts only `destinationPath`, `statusCode`, and `isActive`; `sourcePath` cannot be changed. Destination updates must use the source locale. DELETE returns the updated inactive resource. Public resolution preserves the configured 301/308 status and exact same-locale destination, and rechecks current public visibility; inactive, unsafe, cross-locale, or unavailable destinations return no match (`{ "data": null }`).
 
 ## 9. Revalidation boundary
 

@@ -456,6 +456,22 @@ update earlier product history to the latest path rather than building chains.
 Category and mapped content paths can be managed manually; automatic history
 is currently connected only to product slug updates.
 
+Manual redirect creation uses the exact camelCase JSON keys `sourcePath`,
+`destinationPath`, and `statusCode` (301 or 308); snake_case aliases and
+unknown keys are rejected. Both paths must be normalized, locale-prefixed
+internal product, category, or mapped content routes. External, protocol-
+relative, escaped, query/fragment, unsupported, or otherwise unsafe paths are
+rejected. Source and destination must use the same locale and cannot be
+identical. A source that is live or already reserved is rejected; the
+destination must currently be public; conflicts, loops, and chains are
+rejected.
+
+PATCH accepts only `destinationPath`, `statusCode` (301/308), and `isActive`;
+`sourcePath` is immutable. Destination changes must stay in the source locale.
+DELETE deactivates the row and returns the updated redirect resource. The
+public resolver returns the stored 301 or 308 and exact same-locale destination
+only while the redirect is active and its destination remains safe and public.
+
 Every source path remains reserved while its row exists, including when the
 row is inactive. This prevents a live product/category path from shadowing
 history or creating a loop. The API does not silently delete old history or
