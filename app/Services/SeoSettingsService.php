@@ -78,7 +78,15 @@ final class SeoSettingsService
             $before = ['key' => $apiKey, 'locale' => $locale, 'value' => $existing->value_json];
             $targetId = (int) $existing->getKey();
             $existing->delete();
-            $this->audits->record((int) $actor->getKey(), 'seo_setting', $targetId, 'delete', $before, null);
+            $this->audits->record(
+                (int) $actor->getKey(),
+                'seo_setting',
+                $targetId,
+                'delete',
+                $before,
+                null,
+                locale: $locale,
+            );
 
             return true;
         }
@@ -123,6 +131,7 @@ final class SeoSettingsService
             $creating ? 'create' : 'update',
             $before,
             $after,
+            locale: $locale,
         );
 
         return true;

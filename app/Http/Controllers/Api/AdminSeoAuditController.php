@@ -10,6 +10,6 @@ final class AdminSeoAuditController extends Controller
 {
     public function show(SeoAuditReportService $report): JsonResponse
     {
-        return response()->json(['data' => $report->report()]);
+        return response()->json(['data' => $report->dashboardCounts()]);
     }
 }

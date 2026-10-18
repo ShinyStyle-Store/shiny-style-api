@@ -12,7 +12,6 @@ use App\Models\SocialLink;
 use App\Models\StoreContact;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class StoreStructuredDataApiTest extends TestCase
@@ -85,6 +84,8 @@ class StoreStructuredDataApiTest extends TestCase
             ->assertJsonPath('data.organization.contact.address', 'Store address')
             ->assertJsonPath('data.organization.sameAs', ['https://www.facebook.com/shinystyle'])
             ->assertJsonPath('data.website.websiteId', 'https://merchant.example.com/#website')
+            ->assertJsonPath('data.website.name', 'Style & Shine')
+            ->assertJsonPath('data.website.url', 'https://merchant.example.com')
             ->assertJsonPath('data.website.inLanguage', 'en')
             ->assertJsonPath('data.website.publisherId', 'https://merchant.example.com/#organization')
             ->assertJsonPath('data.currency', 'EGP')
@@ -104,6 +105,11 @@ class StoreStructuredDataApiTest extends TestCase
             ->assertJsonPath('data.organization.name', 'Ø³ØªØ§ÙŠÙ„ ÙˆØ´Ø§ÙŠÙ†')
             ->assertJsonPath('data.organization.contact.address', 'Ø¹Ù†ÙˆØ§Ù† Ø§Ù„Ù…ØªØ¬Ø±')
             ->assertJsonPath('data.website.inLanguage', 'ar');
+
+        $arabic->assertJsonPath('data.website.name', $arabic->json('data.organization.name'));
+        $this->assertNotSame($english->json('data.organization.name'), $arabic->json('data.organization.name'));
+        $this->assertSame($english->json('data.organization.organizationId'), $arabic->json('data.organization.organizationId'));
+        $this->assertSame($english->json('data.website.websiteId'), $arabic->json('data.website.websiteId'));
 
         $this->assertSame($snapshotBefore, $this->snapshotTables([
             'seo_settings', 'store_contacts', 'social_links', 'content_pages', 'seo_audits',
@@ -204,7 +210,7 @@ class StoreStructuredDataApiTest extends TestCase
             ->assertJsonPath('data.organization.logo', null);
     }
 
-    public function test_public_disk_accepts_a_local_url_when_its_visibility_is_explicitly_public(): void
+    public function test_structured_data_omits_a_logo_when_its_public_disk_url_is_not_https(): void
     {
         config(['filesystems.disks.test-public-local' => [
             'driver' => 'local',
@@ -219,7 +225,7 @@ class StoreStructuredDataApiTest extends TestCase
 
         $this->withHeader('Accept-Language', 'en')->getJson('/api/v1/store/structured-data')
             ->assertOk()
-            ->assertJsonPath('data.organization.logo', Storage::disk('test-public-local')->url($logo->path));
+            ->assertJsonPath('data.organization.logo', null);
     }
 
     public function test_product_seller_uses_the_same_identity_as_the_public_store_profile(): void

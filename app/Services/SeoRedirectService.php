@@ -174,6 +174,7 @@ final class SeoRedirectService
                 'update',
                 $before,
                 $this->snapshot($redirect),
+                locale: $this->auditLocale($redirect),
             );
             $invalidated[] = [$redirect->domain_scope, $redirect->source_path];
             $revalidationSourcePaths[] = $redirect->source_path;
@@ -219,6 +220,7 @@ final class SeoRedirectService
                 $creating ? 'create' : 'update',
                 $before,
                 $this->snapshot($redirect),
+                locale: $this->auditLocale($redirect),
             );
             $invalidated[] = [$scope, $sourcePath];
             $revalidationSourcePaths[] = $sourcePath;
@@ -275,6 +277,7 @@ final class SeoRedirectService
         if (($redirectData['found'] ?? false) !== true
             || ! in_array($redirectData['statusCode'] ?? null, [301, 308], true)
             || $redirectData['destinationPath'] === $sourcePath
+            || ! $this->hasSameLocale($sourcePath, $redirectData['destinationPath'])
             || $this->isPublicPath($sourcePath)
             || ! $this->isPublicPath($redirectData['destinationPath'])) {
             return null;
@@ -301,6 +304,13 @@ final class SeoRedirectService
             $scope = $this->currentDomainScopeOrFail();
             $sourcePath = $this->validatedPath($data['source_path'] ?? null, 'sourcePath');
             $destinationPath = $this->validatedPath($data['destination_path'] ?? null, 'destinationPath');
+
+            if (! $this->hasSameLocale($sourcePath, $destinationPath)) {
+                throw ValidationException::withMessages([
+                    'destinationPath' => 'The source and destination paths must use the same locale.',
+                ]);
+            }
+
             $destination = $this->publicPathEntity($destinationPath);
 
             if ($sourcePath === $destinationPath || $this->publicPathEntity($sourcePath) !== null) {
@@ -332,7 +342,15 @@ final class SeoRedirectService
                 'entity_id' => (int) $destination->getKey(),
                 'created_by' => (int) $actor->getKey(),
             ]);
-            $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $redirect->getKey(), 'create', null, $this->snapshot($redirect));
+            $this->audits->record(
+                (int) $actor->getKey(),
+                'seo_redirect',
+                (int) $redirect->getKey(),
+                'create',
+                null,
+                $this->snapshot($redirect),
+                locale: $this->auditLocale($redirect),
+            );
             $this->forgetAfterCommit([[$scope, $sourcePath]]);
             app(SeoRevalidationService::class)->afterCommitForTarget(
                 'redirect',
@@ -358,6 +376,18 @@ final class SeoRedirectService
             $statusCode = (int) ($data['status_code'] ?? $locked->status_code);
             $isActive = (bool) ($data['is_active'] ?? $locked->is_active);
 
+            if (! $this->hasSameLocale($locked->source_path, $destinationPath)) {
+                throw ValidationException::withMessages([
+                    'destinationPath' => 'The source and destination paths must use the same locale.',
+                ]);
+            }
+
+            if (array_key_exists('destination_path', $data) && $locked->source_path === $destinationPath) {
+                throw ValidationException::withMessages([
+                    'destinationPath' => 'The source and destination paths must not be identical.',
+                ]);
+            }
+
             if ($isActive) {
                 $destination = $this->publicPathEntity($destinationPath);
                 if ($destination === null) {
@@ -381,7 +411,15 @@ final class SeoRedirectService
             $locked->is_active = $isActive;
             $locked->save();
             if ($before !== $this->snapshot($locked)) {
-                $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $locked->getKey(), 'update', $before, $this->snapshot($locked));
+                $this->audits->record(
+                    (int) $actor->getKey(),
+                    'seo_redirect',
+                    (int) $locked->getKey(),
+                    'update',
+                    $before,
+                    $this->snapshot($locked),
+                    locale: $this->auditLocale($locked),
+                );
                 $this->forgetAfterCommit([[$locked->domain_scope, $locked->source_path]]);
                 app(SeoRevalidationService::class)->afterCommitForTarget(
                     'redirect',
@@ -413,7 +451,15 @@ final class SeoRedirectService
             $before = $this->snapshot($locked);
             $locked->is_active = false;
             $locked->save();
-            $this->audits->record((int) $actor->getKey(), 'seo_redirect', (int) $locked->getKey(), 'delete', $before, $this->snapshot($locked));
+            $this->audits->record(
+                (int) $actor->getKey(),
+                'seo_redirect',
+                (int) $locked->getKey(),
+                'delete',
+                $before,
+                $this->snapshot($locked),
+                locale: $this->auditLocale($locked),
+            );
             $this->forgetAfterCommit([[$locked->domain_scope, $locked->source_path]]);
             app(SeoRevalidationService::class)->afterCommitForTarget(
                 'redirect',
@@ -525,6 +571,16 @@ final class SeoRedirectService
         return $normalized;
     }
 
+    private function hasSameLocale(mixed $sourcePath, mixed $destinationPath): bool
+    {
+        $source = SeoRedirectPath::parse($sourcePath);
+        $destination = SeoRedirectPath::parse($destinationPath);
+
+        return $source !== null
+            && $destination !== null
+            && $source['locale'] === $destination['locale'];
+    }
+
     private function isPublicPath(string $path): bool
     {
         return $this->publicPathEntity($path) !== null;
@@ -601,5 +657,12 @@ final class SeoRedirectService
     private function cacheKey(string $scope, string $path): string
     {
         return 'seo-redirect:'.hash('sha256', $scope).':'.hash('sha256', $path);
+    }
+
+    private function auditLocale(SeoRedirect $redirect): ?string
+    {
+        $source = SeoRedirectPath::parse($redirect->source_path);
+
+        return $source['locale'] ?? null;
     }
 }

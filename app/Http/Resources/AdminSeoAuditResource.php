@@ -11,13 +11,11 @@ class AdminSeoAuditResource extends JsonResource
     {
         return [
             'id' => (string) $this->getKey(),
-            'actorId' => $this->actor_id === null ? null : (string) $this->actor_id,
-            'targetType' => $this->target_type,
-            'targetId' => (string) $this->target_id,
-            'action' => $this->action,
-            'before' => $this->before_json,
-            'after' => $this->after_json,
-            'createdAt' => $this->created_at?->toISOString(),
+            'record_type' => $this->target_type,
+            'record_id' => (string) $this->target_id,
+            'locale' => $this->locale ?? 'ar',
+            'changed_at' => $this->created_at?->toISOString(),
+            'changed_by' => $this->actor?->name,
         ];
     }
 }

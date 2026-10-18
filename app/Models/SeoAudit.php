@@ -13,6 +13,7 @@ class SeoAudit extends Model
         'actor_id',
         'target_type',
         'target_id',
+        'locale',
         'action',
         'before_json',
         'after_json',

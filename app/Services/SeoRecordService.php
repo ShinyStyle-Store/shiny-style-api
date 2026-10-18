@@ -82,7 +82,15 @@ final class SeoRecordService
 
             if (! $this->hasCustomValue($record->only(self::CUSTOM_FIELDS))) {
                 $record->delete();
-                $this->audits->record((int) $actor->getKey(), $targetType, $targetId, 'delete', $before, null);
+                $this->audits->record(
+                    (int) $actor->getKey(),
+                    $targetType,
+                    $targetId,
+                    'delete',
+                    $before,
+                    null,
+                    locale: $locale,
+                );
                 app(SeoSignificantModificationService::class)->mark($entity, locale: $locale);
 
                 return null;
@@ -96,6 +104,7 @@ final class SeoRecordService
                 $creating ? 'create' : 'update',
                 $creating ? null : $before,
                 $after,
+                locale: $locale,
             );
             app(SeoSignificantModificationService::class)->mark($entity, locale: $locale);
 

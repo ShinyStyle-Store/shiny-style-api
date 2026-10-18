@@ -232,7 +232,10 @@ class SeoPublicPayloadTest extends TestCase
 
     public function test_product_seller_identity_dependencies_follow_used_locale_and_ignore_unused_origin(): void
     {
-        config(['seo.indexing_allowed' => true]);
+        config([
+            'seo.indexing_allowed' => true,
+            'filesystems.disks.public.url' => 'https://cdn.example.test/storage',
+        ]);
         $this->travelTo(now()->setDate(2026, 5, 1)->setTime(12, 0));
         $product = $this->product();
         SeoSetting::query()->create([
@@ -278,7 +281,10 @@ class SeoPublicPayloadTest extends TestCase
         ]);
         $withUpdatedLogo = $this->withHeader('Accept-Language', 'en')
             ->getJson('/api/v1/products/'.$product->slug)->assertOk();
-        $this->assertSame(Storage::disk('public')->url($logo->path), $withUpdatedLogo->json('data.structuredData.product.seller.logo'));
+        $this->assertSame(
+            'https://cdn.example.test/storage/seller-logo.webp',
+            $withUpdatedLogo->json('data.structuredData.product.seller.logo'),
+        );
         $this->assertSame($changedLogoAt, $withUpdatedLogo->json('data.seo.lastSignificantModifiedAt'));
 
         $englishDate = $withUpdatedLogo->json('data.seo.lastSignificantModifiedAt');

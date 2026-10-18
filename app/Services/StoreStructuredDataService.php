@@ -104,7 +104,21 @@ final class StoreStructuredDataService
             ->whereNull('deleted_at')
             ->first();
 
-        return $this->images->url($asset);
+        $url = $this->images->url($asset);
+        if ($url === null) {
+            return null;
+        }
+
+        $parts = parse_url($url);
+
+        return is_array($parts)
+            && strtolower((string) ($parts['scheme'] ?? '')) === 'https'
+            && is_string($parts['host'] ?? null)
+            && $parts['host'] !== ''
+            && ! isset($parts['user'])
+            && ! isset($parts['pass'])
+                ? $url
+                : null;
     }
 
     private function publicGoogleMapsUrl(mixed $value): ?string
