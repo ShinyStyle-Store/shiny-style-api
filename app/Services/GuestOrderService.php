@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Exceptions\IdempotencyConflictException;
+use App\Exceptions\InsufficientStockException;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
@@ -167,9 +168,11 @@ class GuestOrderService
             $quantity = (int) $requestedItem['quantity'];
 
             if ($sellableItem->availableQuantity() < $quantity) {
-                throw ValidationException::withMessages([
-                    'items' => ['One or more requested items are unavailable.'],
-                ]);
+                throw new InsufficientStockException(
+                    (int) $sellableItem->getKey(),
+                    $quantity,
+                    $sellableItem->availableQuantity(),
+                );
             }
 
             try {

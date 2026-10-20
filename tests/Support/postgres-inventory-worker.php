@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\OrderReturnConflictException;
+use App\Exceptions\InsufficientStockException;
 use App\Exceptions\PhysicalReturnConflictException;
 use App\Exceptions\ProductConversionConflictException;
 use App\Models\Order;
@@ -103,6 +104,14 @@ $execute = static function (array $operation): array {
         ];
     } catch (ProductConversionConflictException|PhysicalReturnConflictException|OrderReturnConflictException $exception) {
         return ['ok' => false, 'code' => $exception->errorCode, 'message' => $exception->getMessage()];
+    } catch (InsufficientStockException $exception) {
+        return [
+            'ok' => false,
+            'code' => 'insufficient_stock',
+            'sellable_item_id' => $exception->sellableItemId,
+            'requested_quantity' => $exception->requestedQuantity,
+            'available_quantity' => $exception->availableQuantity,
+        ];
     } catch (ValidationException $exception) {
         return ['ok' => false, 'code' => 'validation_failed', 'message' => implode(' ', $exception->validator->errors()->all())];
     } catch (QueryException $exception) {

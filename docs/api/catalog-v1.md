@@ -129,6 +129,7 @@ numbers):
   "price": 650,
   "originalPrice": 750,
   "badge": "new",
+  "availableQuantity": 7,
   "inStock": true,
   "image": "https://res.cloudinary.com/dodvtbpwq/image/upload/v1789454206/img2_ponchv.jpg"
 }
@@ -295,6 +296,7 @@ The detail response uses the listing fields and adds:
       "sku": "THROW-BEIGE-M",
       "price": 650,
       "originalPrice": 750,
+      "availableQuantity": 7,
       "inStock": true,
       "optionValues": {"color": "beige", "size": "medium"}
     }
@@ -317,16 +319,19 @@ The display variant is selected using this exact order:
    unarchived default variant.
 4. Otherwise, the first active, unarchived variant ordered by ascending ID.
 
-`availableQuantity()` is `stock_quantity - reserved_quantity`. The displayed
-price, display image, `inStock`, and offer presentation all use the selected
-display variant. The image uses that variant's primary image when available,
-and falls back to the Product's primary image.
+`availableQuantity()` is `max(stock_quantity - reserved_quantity, 0)`. The
+top-level `availableQuantity` and `inStock` use the selected display variant.
+Each `sellableItems` entry also includes its own `availableQuantity` and
+`inStock`. The displayed price, display image, `inStock`, and offer
+presentation all use the selected display variant. The image uses that
+variant's primary image when available, and falls back to the Product's
+primary image.
 
-Inactive and soft-deleted variants are hidden. Active variants with no
+Inactive, soft-deleted, and superseded variants are hidden. Active variants with no
 available-to-sell inventory remain present and have `inStock: false`.
-Availability is calculated as `stock_quantity - reserved_quantity`; reservations
-therefore reduce availability immediately. Product `inStock` reflects the
-selected display variant's available-to-sell inventory.
+Reservations therefore reduce availability immediately, and `inStock` is true
+exactly when `availableQuantity` is greater than zero. The detail GET is
+read-only and does not reserve inventory.
 
 The checkout quote checks current availability but does not reserve stock.
 Order creation performs the final availability check and creates the
@@ -402,7 +407,8 @@ and canonical origin.
 `offer` describes only the currently displayed variant. Its SKU is the actual
 SellableItem SKU, its price and offer fields come from the existing
 `OfferPricingService` result, and availability uses the existing
-`availableQuantity()` calculation (stock minus reservations). `priceCurrency`
+`availableQuantity()` calculation (stock minus reservations, clamped at zero).
+`priceCurrency`
 comes from the single store currency setting in `config/store.php` (`EGP`),
 also used when creating new checkout quotes and orders. Existing order,
 payment, and refund currency fields are historical transaction snapshots; this

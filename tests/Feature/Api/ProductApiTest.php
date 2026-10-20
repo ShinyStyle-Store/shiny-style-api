@@ -869,6 +869,88 @@ class ProductApiTest extends TestCase
         $this->assertFalse($home->json("data.featured.{$homeIndex}.inStock"));
     }
 
+    public function test_product_details_return_each_public_items_clamped_availability_without_changing_inventory(): void
+    {
+        $simpleProduct = $this->createProductWithVariant(
+            ['slug' => 'simple-available-quantity'],
+            ['stock_quantity' => 10, 'reserved_quantity' => 3],
+        );
+        $simpleItem = $simpleProduct->sellableItems()->firstOrFail();
+
+        $variantProduct = $this->createProductWithVariant(
+            ['slug' => 'variant-available-quantity'],
+            ['stock_quantity' => 3, 'reserved_quantity' => 3],
+        );
+        $zeroAvailableItem = $variantProduct->sellableItems()->firstOrFail();
+        $availableItem = $this->addVariant($variantProduct, [
+            'stock_quantity' => 10,
+            'reserved_quantity' => 3,
+            'is_default' => false,
+        ]);
+        $inactiveItem = $this->addVariant($variantProduct, [
+            'status' => 'inactive',
+            'stock_quantity' => 100,
+            'reserved_quantity' => 0,
+            'is_default' => false,
+        ]);
+        $deletedItem = $this->addVariant($variantProduct, [
+            'stock_quantity' => 100,
+            'reserved_quantity' => 0,
+            'is_default' => false,
+        ]);
+        $deletedItem->delete();
+        $supersededItem = $this->addVariant($variantProduct, [
+            'stock_quantity' => 100,
+            'reserved_quantity' => 0,
+            'is_default' => false,
+        ]);
+        $supersededItem->forceFill(['superseded_at' => now()])->save();
+        $this->assertNotNull($supersededItem->refresh()->superseded_at);
+        $overReservedItem = $this->addVariant($variantProduct, [
+            'stock_quantity' => 2,
+            'reserved_quantity' => 3,
+            'is_default' => false,
+        ]);
+
+        $this->getJson('/api/v1/products/'.$simpleProduct->slug)
+            ->assertOk()
+            ->assertJsonPath('data.availableQuantity', 7)
+            ->assertJsonPath('data.inStock', true)
+            ->assertJsonPath('data.defaultSellableItemId', (string) $simpleItem->getKey())
+            ->assertJsonPath('data.sellableItems.0.availableQuantity', 7)
+            ->assertJsonPath('data.sellableItems.0.inStock', true);
+
+        $response = $this->getJson('/api/v1/products/'.$variantProduct->slug)
+            ->assertOk()
+            ->assertJsonPath('data.availableQuantity', 7)
+            ->assertJsonPath('data.inStock', true)
+            ->assertJsonPath('data.defaultSellableItemId', (string) $availableItem->getKey())
+            ->assertJsonPath('data.sellableItems.0.availableQuantity', 0)
+            ->assertJsonPath('data.sellableItems.0.inStock', false)
+            ->assertJsonPath('data.sellableItems.1.availableQuantity', 7)
+            ->assertJsonPath('data.sellableItems.1.inStock', true)
+            ->assertJsonPath('data.sellableItems.2.availableQuantity', 0)
+            ->assertJsonPath('data.sellableItems.2.inStock', false);
+
+        $this->assertSame(
+            [
+                (string) $zeroAvailableItem->getKey(),
+                (string) $availableItem->getKey(),
+                (string) $overReservedItem->getKey(),
+            ],
+            $response->json('data.sellableItems.*.id'),
+        );
+        foreach ([$inactiveItem, $deletedItem, $supersededItem] as $excludedItem) {
+            $this->assertNotContains((string) $excludedItem->getKey(), $response->json('data.sellableItems.*.id'));
+        }
+        $this->assertSame(3, $zeroAvailableItem->refresh()->reserved_quantity);
+        $this->assertSame(3, $zeroAvailableItem->stock_quantity);
+        $this->assertSame(3, $availableItem->refresh()->reserved_quantity);
+        $this->assertSame(10, $availableItem->stock_quantity);
+        $this->assertSame(3, $simpleItem->refresh()->reserved_quantity);
+        $this->assertSame(10, $simpleItem->stock_quantity);
+    }
+
     public function test_public_display_fallback_skips_unavailable_variants_and_ignores_inactive_or_deleted_variants(): void
     {
         $product = $this->createProductWithVariant(

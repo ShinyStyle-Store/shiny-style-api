@@ -131,8 +131,65 @@ class OrderCreationTest extends TestCase
         $unavailable = $this->sellableItem('100.00', 5, 4);
         $this->withHeader('Idempotency-Key', $this->key())
             ->postJson('/api/v1/orders', $this->payload($area, $unavailable, 2))
-            ->assertUnprocessable();
+            ->assertUnprocessable()
+            ->assertExactJson([
+                'code' => 'insufficient_stock',
+                'message' => 'The requested quantity exceeds the current available stock.',
+                'sellable_item_id' => $unavailable->getKey(),
+                'requested_quantity' => 2,
+                'available_quantity' => 1,
+            ]);
         $this->assertSame(4, $unavailable->refresh()->reserved_quantity);
+    }
+
+    public function test_stale_order_request_returns_current_available_quantity(): void
+    {
+        $area = $this->shippingArea(0);
+        $item = $this->sellableItem('100.00', 10, 0);
+        $this->getJson('/api/v1/products/'.$item->product->slug)
+            ->assertOk()
+            ->assertJsonPath('data.availableQuantity', 10);
+
+        $item->update(['reserved_quantity' => 7]);
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $this->payload($area, $item, 4))
+            ->assertUnprocessable()
+            ->assertExactJson([
+                'code' => 'insufficient_stock',
+                'message' => 'The requested quantity exceeds the current available stock.',
+                'sellable_item_id' => $item->getKey(),
+                'requested_quantity' => 4,
+                'available_quantity' => 3,
+            ]);
+
+        $this->assertSame(7, $item->refresh()->reserved_quantity);
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_insufficient_stock_in_multi_item_order_rolls_back_all_reservations(): void
+    {
+        $area = $this->shippingArea(0);
+        $available = $this->sellableItem('100.00', 5, 1);
+        $insufficient = $this->sellableItem('100.00', 4, 3);
+        $payload = $this->payload($area, $available, 2);
+        $payload['items'][] = ['sellable_item_id' => $insufficient->getKey(), 'quantity' => 2];
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload)
+            ->assertUnprocessable()
+            ->assertExactJson([
+                'code' => 'insufficient_stock',
+                'message' => 'The requested quantity exceeds the current available stock.',
+                'sellable_item_id' => $insufficient->getKey(),
+                'requested_quantity' => 2,
+                'available_quantity' => 1,
+            ]);
+
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseCount('order_items', 0);
+        $this->assertSame(1, $available->refresh()->reserved_quantity);
+        $this->assertSame(3, $insufficient->refresh()->reserved_quantity);
     }
 
     public function test_one_invalid_item_rolls_back_the_order_and_all_reservations(): void

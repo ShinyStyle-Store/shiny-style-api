@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Exceptions\IdempotencyConflictException;
+use App\Exceptions\InsufficientStockException;
 use App\Exceptions\PaymobConfigurationException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreGuestOrderRequest;
@@ -23,6 +24,14 @@ class OrderController extends Controller
             $result = $orderService->create($request->validated(), $request->idempotencyKey());
         } catch (IdempotencyConflictException $exception) {
             return response()->json(['message' => $exception->getMessage()], 409);
+        } catch (InsufficientStockException $exception) {
+            return response()->json([
+                'code' => 'insufficient_stock',
+                'message' => $exception->getMessage(),
+                'sellable_item_id' => $exception->sellableItemId,
+                'requested_quantity' => $exception->requestedQuantity,
+                'available_quantity' => $exception->availableQuantity,
+            ], 422);
         } catch (QueryException) {
             return response()->json(['message' => 'The order could not be created.'], 500);
         } catch (PaymobConfigurationException) {

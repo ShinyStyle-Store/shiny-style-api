@@ -96,7 +96,7 @@ class SellableItem extends Model
 
     public function availableQuantity(): int
     {
-        return (int) $this->stock_quantity - (int) $this->reserved_quantity;
+        return max((int) $this->stock_quantity - (int) $this->reserved_quantity, 0);
     }
 
     #[Scope]
