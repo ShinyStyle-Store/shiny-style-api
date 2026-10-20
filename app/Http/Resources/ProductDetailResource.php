@@ -52,6 +52,7 @@ class ProductDetailResource extends ProductListResource
             'id' => (string) $item->getKey(),
             'sku' => $item->sku,
             ...$this->pricePresentation($item),
+            'availableQuantity' => $item->availableQuantity(),
             'inStock' => $item->availableQuantity() > 0,
             'images' => $item->variantImages
                 ->map(fn ($attachment): ?string => $this->mediaUrl($attachment))
@@ -96,6 +97,7 @@ class ProductDetailResource extends ProductListResource
 
         return [
             ...$productData,
+            'availableQuantity' => $displaySellableItem?->availableQuantity() ?? 0,
             'description' => $description,
             'seo' => $seo,
             'structuredData' => [

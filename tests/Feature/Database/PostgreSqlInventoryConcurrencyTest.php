@@ -75,6 +75,28 @@ class PostgreSqlInventoryConcurrencyTest extends PostgreSqlInventoryTestCase
         $this->assertSame(0, SellableItem::query()->where('product_id', $second['product']->id)->where('sku', 'like', 'RACE-%')->count());
     }
 
+    public function test_concurrent_orders_cannot_reserve_more_than_available_stock(): void
+    {
+        $fixture = $this->simpleProduct();
+        $firstOrder = $this->orderOperation($fixture['source'], 6, $fixture['shipping_area']);
+        $secondOrder = $this->orderOperation($fixture['source'], 6, $fixture['shipping_area']);
+
+        [$firstResult, $secondResult] = $this->runContendedPair(
+            $fixture['product']->id,
+            $firstOrder,
+            $secondOrder,
+        );
+
+        $this->assertTrue($firstResult['ok']);
+        $this->assertFalse($secondResult['ok']);
+        $this->assertSame('insufficient_stock', $secondResult['code']);
+        $this->assertSame(6, $secondResult['requested_quantity']);
+        $this->assertSame(4, $secondResult['available_quantity']);
+        $this->assertSame(6, (int) $fixture['source']->fresh()->reserved_quantity);
+        $this->assertSame(4, $fixture['source']->fresh()->availableQuantity());
+        $this->assertSame(1, Order::query()->count());
+    }
+
     public function test_source_edit_serializes_with_conversion_and_stale_context_does_not_partially_convert(): void
     {
         $fixture = $this->simpleProduct();
