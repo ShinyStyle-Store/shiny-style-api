@@ -388,6 +388,35 @@ class ProductCatalogFilteringTest extends TestCase
             ->assertJsonPath('data.0.inStock', false);
     }
 
+    public function test_category_listing_is_paginated_and_localized_without_deduplicating_product_columns(): void
+    {
+        $category = Category::query()->where('slug', 'home-textiles')->firstOrFail();
+        $product = $this->createCatalogProduct('category-locale-product', '225.00', $this->instant->subDay());
+        $product->categories()->attach($category, ['is_primary' => false]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $localizedName = $locale === 'ar' ? $product->name_ar : $product->name_en;
+            $response = $this->withHeader('Accept-Language', $locale)
+                ->getJson('/api/v1/products?category=home-textiles&page=1&per_page=24')
+                ->assertOk()
+                ->assertHeader('Content-Language', $locale)
+                ->assertJsonStructure([
+                    'data' => [['id', 'slug', 'name', 'category', 'price', 'originalPrice', 'badge', 'inStock', 'image']],
+                    'links' => ['first', 'last', 'prev', 'next'],
+                    'meta' => ['current_page', 'from', 'last_page', 'per_page', 'to', 'total'],
+                ])
+                ->assertJsonPath('meta.current_page', 1)
+                ->assertJsonPath('meta.per_page', 24)
+                ->assertJsonPath('data.0.name', $localizedName);
+
+            $productCards = collect($response->json('data'))->filter(
+                fn (array $card): bool => $card['id'] === (string) $product->getKey(),
+            );
+
+            $this->assertCount(1, $productCards);
+        }
+    }
+
     public function test_locales_keep_identical_catalog_order_and_unknown_filters_are_rejected(): void
     {
         $this->createCatalogProduct('locale-order-one', '333.00', $this->instant->subHours(2));
