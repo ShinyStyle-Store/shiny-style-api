@@ -10,6 +10,7 @@ use App\Models\SeoRecord;
 use App\Models\SeoSetting;
 use App\Support\SeoSettingCatalog;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 
 final class SeoAuditReportService
@@ -29,7 +30,7 @@ final class SeoAuditReportService
     public function report(): array
     {
         $settings = $this->settings->all();
-        $supportedLocales = $this->settingValue($settings, 'supported_locales');
+        $supportedLocales = $this->settingValue($settings, 'supportedLocales');
         $supportedLocales = is_array($supportedLocales) ? $supportedLocales : self::LOCALES;
         $sitemapCounts = $this->eligibleSitemapUrlCounts();
         $productCounts = $this->productContentCounts(
@@ -102,7 +103,7 @@ final class SeoAuditReportService
     public function dashboardCounts(): array
     {
         $settings = $this->settings->all();
-        $supportedLocales = $this->settingValue($settings, 'supported_locales');
+        $supportedLocales = $this->settingValue($settings, 'supportedLocales');
         $supportedLocales = is_array($supportedLocales) ? $supportedLocales : self::LOCALES;
         $visibleCategoryIds = $this->categories->visibilitySnapshot()->visibleIds();
         $counts = [
@@ -146,6 +147,111 @@ final class SeoAuditReportService
         }
 
         $counts['non_indexable'] = max(0, $counts['total'] - $indexablePages);
+
+        return $counts;
+    }
+
+    /** @return array{total: int, missing_title: int, missing_description: int, non_indexable: int, findings: array<string, mixed>} */
+    public function dashboard(int $page, int $perPage): array
+    {
+        $counts = $this->dashboardCounts();
+        $settings = $this->settings->all();
+        $supportedLocales = $this->settingValue($settings, 'supportedLocales');
+        $supportedLocales = is_array($supportedLocales) ? $supportedLocales : self::LOCALES;
+        $visibleCategoryIds = $this->categories->visibilitySnapshot()->visibleIds();
+        $found = 0;
+        $items = [];
+        $first = ($page - 1) * $perPage;
+        $last = $first + $perPage;
+
+        foreach ([
+            ['product', Product::query()->visible($visibleCategoryIds)->select(['id', 'slug', 'name_ar', 'name_en', 'description_ar', 'description_en'])->with('seoRecords')],
+            ['category', Category::query()->whereIn('id', $visibleCategoryIds)->select(['id', 'slug', 'name_ar', 'name_en', 'description_ar', 'description_en'])->with('seoRecords')],
+            ['content_page', ContentPage::query()->whereIn('slug', config('content.page_slugs', []))->select(['id', 'slug', 'title_ar', 'title_en', 'body_ar', 'body_en'])->with('seoRecords')],
+        ] as [$type, $query]) {
+            $query->chunkById(200, function (Collection $entities) use ($type, $settings, $supportedLocales, &$found, &$items, $first, $last): void {
+                $paths = [];
+                foreach ($entities as $entity) {
+                    $expectedPath = \App\Support\SeoCanonicalPath::expectedPath($entity);
+                    if ($expectedPath !== null) {
+                        foreach ($this->eligibility->availableLocales($entity, $supportedLocales) as $locale) {
+                            $paths[] = '/'.$locale.$expectedPath;
+                        }
+                    }
+                }
+                $redirectSources = array_fill_keys($this->sitemap->existingRedirectSourcePaths($paths), true);
+
+                foreach ($entities as $entity) {
+                    if (! $entity instanceof Product && ! $entity instanceof Category && ! $entity instanceof ContentPage) {
+                        continue;
+                    }
+                    $records = $entity->seoRecords->keyBy('locale');
+                    foreach ($this->eligibility->availableLocales($entity, $supportedLocales) as $locale) {
+                        $record = $records->get($locale);
+                        $record = $record instanceof SeoRecord ? $record : null;
+                        $presentation = $this->dashboardPresentation($entity, $locale);
+                        $issues = [];
+                        $hasCustomTitle = $this->metadata->cleanPublicText($record?->meta_title) !== null;
+                        if (! $hasCustomTitle) {
+                            $issues[] = ['code' => 'missing_custom_title', 'field' => 'meta_title', 'fallback_available' => $this->metadata->resolveTitle($presentation, $record, $settings, $locale)['title'] !== null];
+                        }
+                        if ($this->metadata->resolveDescription($presentation, $record, $settings, $locale) === null) {
+                            $issues[] = ['code' => 'missing_resolved_description', 'field' => 'meta_description'];
+                        }
+
+                        $decision = $this->sitemap->localeDecision($entity, $settings, $locale, $supportedLocales);
+                        $expectedPath = \App\Support\SeoCanonicalPath::expectedPath($entity);
+                        $localizedPath = $expectedPath === null ? null : '/'.$locale.$expectedPath;
+                        $reason = $decision['reason'];
+                        if ($reason === null && $localizedPath !== null && isset($redirectSources[$localizedPath])) {
+                            $reason = 'redirect_source_conflict';
+                        }
+                        if ($reason !== null) {
+                            $issues[] = ['code' => 'not_sitemap_eligible', 'reason' => $reason];
+                        }
+                        if ($issues === []) {
+                            continue;
+                        }
+
+                        if ($found >= $first && $found < $last) {
+                            $items[] = [
+                                'record_type' => $type,
+                                'record_id' => (string) $entity->getKey(),
+                                'display_name' => $presentation['name'] ?? $presentation['title'] ?? '',
+                                'slug' => $entity->slug,
+                                'locale' => $locale,
+                                'path' => $decision['canonicalPath'] === null ? $localizedPath : '/'.$locale.$decision['canonicalPath'],
+                                'canonical_path' => $decision['canonicalPath'],
+                                'issues' => $issues,
+                            ];
+                        }
+                        $found++;
+                    }
+                }
+            });
+        }
+
+        $paginator = new LengthAwarePaginator($items, $found, $perPage, $page, [
+            'path' => url('/api/v1/admin/seo/audit'),
+            'query' => request()->query(),
+        ]);
+        $counts['findings'] = [
+            'data' => $items,
+            'links' => [
+                'first' => $paginator->url(1),
+                'last' => $paginator->url($paginator->lastPage()),
+                'prev' => $paginator->previousPageUrl(),
+                'next' => $paginator->nextPageUrl(),
+            ],
+            'meta' => [
+                'current_page' => $page,
+                'from' => $paginator->firstItem(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $perPage,
+                'to' => $paginator->lastItem(),
+                'total' => $found,
+            ],
+        ];
 
         return $counts;
     }

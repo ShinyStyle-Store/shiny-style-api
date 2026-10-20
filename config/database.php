@@ -99,6 +99,21 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        'catalog_source' => [
+            'driver' => 'pgsql',
+            'url' => env('CATALOG_SOURCE_URL'),
+            'host' => env('CATALOG_SOURCE_HOST'),
+            'port' => env('CATALOG_SOURCE_PORT', '5432'),
+            'database' => env('CATALOG_SOURCE_DATABASE'),
+            'username' => env('CATALOG_SOURCE_USERNAME'),
+            'password' => env('CATALOG_SOURCE_PASSWORD'),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('CATALOG_SOURCE_SSLMODE', 'require'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

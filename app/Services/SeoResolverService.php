@@ -106,6 +106,37 @@ final class SeoResolverService
         ];
     }
 
+    /** @param list<string> $supportedLocales
+     *  @return array{canonicalPath: ?string, reason: ?string}
+     */
+    public function sitemapLocaleDecision(
+        EloquentModel $entity,
+        Collection $settings,
+        string $locale,
+        array $supportedLocales,
+    ): array {
+        $record = $this->seoRecord($entity, $locale);
+        $availableLocales = $this->eligibility->availableLocales($entity, $supportedLocales);
+        if (! in_array($locale, $availableLocales, true)) {
+            return ['canonicalPath' => null, 'reason' => 'locale_unavailable'];
+        }
+
+        $metadata = $this->metadata->sitemapPolicy($entity, $record, $settings);
+        if (! config('seo.indexing_allowed', false)) {
+            return ['canonicalPath' => $metadata['canonicalPath'], 'reason' => 'indexing_disabled'];
+        }
+
+        if (! is_string($metadata['canonicalPath'])) {
+            return ['canonicalPath' => null, 'reason' => 'canonical_path_unavailable'];
+        }
+
+        if (! $metadata['robots']['index']) {
+            return ['canonicalPath' => $metadata['canonicalPath'], 'reason' => 'robots_noindex'];
+        }
+
+        return ['canonicalPath' => $metadata['canonicalPath'], 'reason' => null];
+    }
+
     /**
      * @param list<array{entity: EloquentModel, locale: string, presentation: array<string, mixed>, record: ?SeoRecord}> $entries
      * @return array<int, ?string>
