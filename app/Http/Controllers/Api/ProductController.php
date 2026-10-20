@@ -51,7 +51,7 @@ class ProductController extends Controller
                     ->whereIn('category_id', $matchingCategoryIds)
                     ->distinct();
 
-                $query->distinct()->whereIn('products.id', $matchingProductIds);
+                $query->whereIn('products.id', $matchingProductIds);
             }
         }
 
