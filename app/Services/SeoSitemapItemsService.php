@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\SeoSetting;
 use App\Support\SeoCanonicalPath;
 use App\Support\SeoSitemapCursor;
+use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Illuminate\Support\Collection;
 
 final class SeoSitemapItemsService
@@ -143,6 +144,22 @@ final class SeoSitemapItemsService
         } while ($cursor !== null);
 
         return $summary;
+    }
+
+    /** @param list<string> $paths @return list<string> */
+    public function existingRedirectSourcePaths(array $paths): array
+    {
+        return $this->redirects->existingSourcePaths($paths);
+    }
+
+    /** @param list<string> $supportedLocales @return array{canonicalPath: ?string, reason: ?string} */
+    public function localeDecision(
+        EloquentModel $entity,
+        Collection $settings,
+        string $locale,
+        array $supportedLocales,
+    ): array {
+        return $this->resolver->sitemapLocaleDecision($entity, $settings, $locale, $supportedLocales);
     }
 
     /** @param list<int> $visibleCategoryIds @return Collection<int, Product|Category|ContentPage> */
