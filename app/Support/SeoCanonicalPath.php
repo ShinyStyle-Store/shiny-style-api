@@ -15,6 +15,7 @@ final class SeoCanonicalPath
         'about-us' => '/about',
         'returns-policy' => '/return-policy',
         'shipping-policy' => '/shipping-policy',
+        'terms-conditions' => '/terms-conditions',
     ];
 
     public static function isSafeInternalPath(string $path): bool
