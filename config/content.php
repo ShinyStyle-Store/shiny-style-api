@@ -6,5 +6,6 @@ return [
         'returns-policy',
         'shipping-policy',
         'privacy-policy',
+        'terms-conditions',
     ],
 ];

@@ -699,6 +699,7 @@ class SeoPublicPayloadTest extends TestCase
             'returns-policy' => ['/return-policy', ['en' => null]],
             'shipping-policy' => ['/shipping-policy', ['en' => '/shipping-policy-old']],
             'privacy-policy' => [null, ['en' => '/privacy-policy']],
+            'terms-conditions' => ['/terms-conditions', ['en' => null]],
         ];
 
         foreach ($pages as $slug => [$expectedPath, $canonicalPaths]) {

@@ -40,7 +40,7 @@ class ContentPageApiTest extends TestCase
     {
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
             ->assertOk()
-            ->assertJsonCount(4, 'data')
+            ->assertJsonCount(5, 'data')
             ->assertJsonPath('data.0.slug', 'about-us')
             ->assertJsonPath('data.0.id', null)
             ->assertJsonPath('data.0.titleAr', null)
@@ -48,7 +48,11 @@ class ContentPageApiTest extends TestCase
             ->assertJsonPath('data.2.slug', 'shipping-policy')
             ->assertJsonPath('data.3.slug', 'privacy-policy')
             ->assertJsonPath('data.3.titleEn', null)
-            ->assertJsonPath('data.3.bodyAr', null);
+            ->assertJsonPath('data.3.bodyAr', null)
+            ->assertJsonPath('data.4.slug', 'terms-conditions')
+            ->assertJsonPath('data.4.id', null)
+            ->assertJsonPath('data.4.titleEn', null)
+            ->assertJsonPath('data.4.bodyAr', null);
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/returns-policy')
             ->assertOk()
@@ -73,6 +77,16 @@ class ContentPageApiTest extends TestCase
                     'bodyEn' => null,
                 ],
             ]);
+
+        $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages/terms-conditions')
+            ->assertOk()
+            ->assertJson(['data' => [
+                'slug' => 'terms-conditions',
+                'titleAr' => null,
+                'titleEn' => null,
+                'bodyAr' => null,
+                'bodyEn' => null,
+            ]]);
     }
 
     public function test_admin_content_page_responses_expose_the_persistent_id_without_changing_slug_routes(): void
@@ -175,7 +189,7 @@ class ContentPageApiTest extends TestCase
 
     public function test_each_supported_slug_can_be_saved_and_admin_returns_both_languages(): void
     {
-        foreach (['about-us', 'returns-policy', 'shipping-policy', 'privacy-policy'] as $slug) {
+        foreach (['about-us', 'returns-policy', 'shipping-policy', 'privacy-policy', 'terms-conditions'] as $slug) {
             $this->withToken($this->adminToken)
                 ->putJson('/api/v1/admin/content-pages/'.$slug, $this->payload(['titleEn' => $slug]))
                 ->assertOk()->assertJsonPath('data.slug', $slug)
@@ -184,10 +198,11 @@ class ContentPageApiTest extends TestCase
         }
 
         $this->withToken($this->adminToken)->getJson('/api/v1/admin/content-pages')
-            ->assertOk()->assertJsonCount(4, 'data')
+            ->assertOk()->assertJsonCount(5, 'data')
             ->assertJsonPath('data.1.slug', 'returns-policy')
             ->assertJsonPath('data.1.bodyAr', 'النص العربي')
-            ->assertJsonPath('data.3.slug', 'privacy-policy');
+            ->assertJsonPath('data.3.slug', 'privacy-policy')
+            ->assertJsonPath('data.4.slug', 'terms-conditions');
     }
 
     public function test_privacy_policy_is_localized_and_preserves_body_line_breaks(): void
@@ -229,6 +244,58 @@ class ContentPageApiTest extends TestCase
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('extra');
+    }
+
+    public function test_terms_conditions_requires_all_fields_and_returns_saved_localized_content(): void
+    {
+        foreach (['titleAr', 'titleEn', 'bodyAr', 'bodyEn'] as $field) {
+            $payload = $this->payload();
+            unset($payload[$field]);
+
+            $this->withToken($this->adminToken)
+                ->putJson('/api/v1/admin/content-pages/terms-conditions', $payload)
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors($field);
+
+            $this->app['auth']->forgetGuards();
+            $this->withToken($this->adminToken)
+                ->putJson('/api/v1/admin/content-pages/terms-conditions', $this->payload([$field => " \n\t "]))
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors($field);
+        }
+
+        $payload = $this->payload([
+            'titleAr' => 'الشروط والأحكام',
+            'titleEn' => 'Terms and Conditions',
+            'bodyAr' => 'النص العربي للشروط',
+            'bodyEn' => 'English terms and conditions',
+        ]);
+
+        $this->app['auth']->forgetGuards();
+        $this->withToken($this->adminToken)
+            ->putJson('/api/v1/admin/content-pages/terms-conditions', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.slug', 'terms-conditions')
+            ->assertJsonPath('data.titleAr', 'الشروط والأحكام')
+            ->assertJsonPath('data.titleEn', 'Terms and Conditions')
+            ->assertJsonPath('data.bodyAr', 'النص العربي للشروط')
+            ->assertJsonPath('data.bodyEn', 'English terms and conditions');
+
+        $this->withHeader('Accept-Language', 'ar')
+            ->getJson('/api/v1/content-pages/terms-conditions')
+            ->assertOk()
+            ->assertHeader('Content-Language', 'ar')
+            ->assertJsonPath('data.title', 'الشروط والأحكام')
+            ->assertJsonPath('data.body', 'النص العربي للشروط');
+
+        $this->withHeader('Accept-Language', 'en-US')
+            ->getJson('/api/v1/content-pages/terms-conditions')
+            ->assertOk()
+            ->assertHeader('Content-Language', 'en')
+            ->assertJsonPath('data.title', 'Terms and Conditions')
+            ->assertJsonPath('data.body', 'English terms and conditions');
+
+        $this->getJson('/api/v1/content-pages/not-a-page')->assertNotFound();
     }
 
     private function payload(array $overrides = []): array
