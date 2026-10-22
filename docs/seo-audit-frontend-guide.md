@@ -114,3 +114,13 @@ Current `not_sitemap_eligible.reason` values:
 - Treat issue `code` and `reason` as stable machine-readable values; show friendly text in the UI rather than exposing these codes directly.
 - Use `path` to link to the affected localized page. Treat `canonical_path` as audit data only; this endpoint does not provide the Arabic and English alternate paths needed to build `hreflang` links. A `null` path means the backend could not resolve it.
 - This endpoint is read-only. SEO change history, including `seo_setting` events, is returned separately by `GET /api/v1/admin/seo/history` and is not part of findings.
+
+### Open a product in the admin dashboard
+
+The API already returns the product identity: `record_type: "product"` and `record_id` (a string). Build the edit path using the finding locale and ID:
+
+```text
+/{locale}/dashboard/products/{record_id}/edit
+```
+
+Example: `/ar/dashboard/products/27/edit`. Use the storefront origin for this dashboard link. Keep `path` for the public product page; no extra API field is needed.
