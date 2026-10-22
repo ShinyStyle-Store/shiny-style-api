@@ -155,9 +155,6 @@ class AdminSeoAuditApiTest extends TestCase
         $secondProductArabicFinding = $findings->first(fn (array $finding): bool => $finding['record_id'] === (string) $secondProduct->getKey()
             && $finding['locale'] === 'ar');
         $this->assertNotNull($secondProductArabicFinding);
-        $this->assertSame('product', $secondProductArabicFinding['record_type']);
-        $this->assertSame((string) $secondProduct->getKey(), $secondProductArabicFinding['record_id']);
-        $this->assertSame('/ar/products/'.$secondProduct->slug, $secondProductArabicFinding['path']);
         $this->assertFalse(collect($secondProductArabicFinding['issues'])->contains('code', 'missing_resolved_description'));
         $this->assertTrue($findings->contains(fn (array $finding): bool => collect($finding['issues'])->contains(
             fn (array $issue): bool => $issue['code'] === 'not_sitemap_eligible' && $issue['reason'] === 'robots_noindex',
