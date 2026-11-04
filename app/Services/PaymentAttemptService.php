@@ -127,6 +127,8 @@ class PaymentAttemptService
                     'idempotency_key' => $idempotencyKey,
                     'request_fingerprint' => $fingerprint,
                     'expires_at' => $expiresAt,
+                    'integration_id' => $method === PaymentMethod::Card ? $this->configuredCardIntegrationId() : null,
+                    'provider_is_live' => $method === PaymentMethod::Card ? $this->configuredEnvironment() : null,
                 ]);
             });
         } catch (QueryException $exception) {
@@ -201,5 +203,39 @@ class PaymentAttemptService
         $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
 
         return in_array($sqlState, ['19', '23000', '23505'], true);
+    }
+
+    private function configuredCardIntegrationId(): ?int
+    {
+        $value = config('services.paymob.card_integration_id');
+        if (is_int($value) && $value > 0) {
+            return $value;
+        }
+
+        if (! is_string($value) || preg_match('/^[1-9][0-9]*$/', trim($value)) !== 1) {
+            return null;
+        }
+
+        $validated = filter_var(trim($value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return $validated === false ? null : (int) $validated;
+    }
+
+    private function configuredEnvironment(): ?bool
+    {
+        $value = config('services.paymob.is_live');
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        return match (strtolower(trim($value))) {
+            '1', 'true', 'yes', 'on' => true,
+            '0', 'false', 'no', 'off' => false,
+            default => null,
+        };
     }
 }

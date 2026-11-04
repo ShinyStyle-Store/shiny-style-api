@@ -4,6 +4,7 @@ namespace Tests\Feature\Database;
 
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Exceptions\PaymobConfigurationException;
 use App\Exceptions\PaymentAttemptException;
 use App\Models\Order;
@@ -37,7 +38,7 @@ class PaymobCardIntentionTest extends TestCase
         ]);
     }
 
-    public function test_it_builds_and_persists_a_card_intention_without_mutating_the_order(): void
+    public function test_it_builds_and_persists_a_card_intention_without_changing_order_lifecycle(): void
     {
         $attempt = $this->makeAttempt();
         $orderBefore = $attempt->order->fresh();
@@ -64,7 +65,7 @@ class PaymobCardIntentionTest extends TestCase
         $this->assertStringContainsString('publicKey=test-public', $result->checkoutUrl);
         $this->assertStringContainsString('clientSecret=client-secret-value', $result->checkoutUrl);
         $this->assertSame($orderBefore->status, $stored->order->fresh()->status);
-        $this->assertSame($orderBefore->payment_status, $stored->order->fresh()->payment_status);
+        $this->assertSame(PaymentStatus::Pending, $stored->order->fresh()->payment_status);
         Http::assertSentCount(1);
         Http::assertSent(function ($request) use ($attempt): bool {
             $data = $request->data();
@@ -117,6 +118,7 @@ class PaymobCardIntentionTest extends TestCase
             Http::fake(['https://paymob.test/*' => Http::response([
                 'id' => 'int_fractional_expiration',
                 'client_secret' => 'client-secret',
+                'intention_order_id' => 457,
                 'amount' => 17000,
                 'currency' => 'EGP',
             ], 201)]);
@@ -141,7 +143,8 @@ class PaymobCardIntentionTest extends TestCase
     {
         $attempt = $this->makeAttempt();
         Http::fake(['https://paymob.test/*' => Http::response([
-            'id' => 'int_123', 'client_secret' => 'client-secret', 'amount' => 17000, 'currency' => 'EGP',
+            'id' => 'int_123', 'client_secret' => 'client-secret', 'intention_order_id' => 456,
+            'amount' => 17000, 'currency' => 'EGP',
         ], 201)]);
         $service = app(PaymobCardIntentionService::class);
 
@@ -150,6 +153,79 @@ class PaymobCardIntentionTest extends TestCase
 
         $this->assertSame($first->checkoutUrl, $second->checkoutUrl);
         Http::assertSentCount(1);
+    }
+
+    public function test_intention_without_a_matchable_provider_order_id_requires_review_and_cannot_be_replayed(): void
+    {
+        $attempt = $this->makeAttempt();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int_missing_order',
+            'client_secret' => 'client-secret-missing-order',
+            'checkoutUrl' => 'https://paymob.test/checkout/unmatchable',
+        ], 201)]);
+        $service = app(PaymobCardIntentionService::class);
+
+        try {
+            $service->initiate($attempt);
+            $this->fail('An intention without a matchable order ID must not return a checkout URL.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_outcome_uncertain', $exception->errorCode);
+        }
+
+        $stored = $attempt->fresh();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $stored->status);
+        $this->assertNull($stored->provider_order_id);
+        $this->assertNull($stored->provider_client_secret);
+
+        try {
+            $service->initiate($stored);
+            $this->fail('A requires-review attempt must not create another intention.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_attempt_not_retryable', $exception->errorCode);
+        }
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_stored_pending_attempt_without_a_matchable_order_id_is_not_replayed_to_the_customer(): void
+    {
+        $attempt = $this->makeAttempt();
+        $attempt->update([
+            'status' => PaymentAttemptStatus::Pending,
+            'provider_intention_id' => 'legacy-intention',
+            'provider_order_id' => null,
+            'provider_client_secret' => 'legacy-client-secret',
+        ]);
+        Http::fake();
+
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt->fresh());
+            $this->fail('A stored intention without a matchable provider order ID must not return a checkout URL.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_outcome_uncertain', $exception->errorCode);
+        }
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        Http::assertNothingSent();
+    }
+
+    public function test_retrying_a_failed_attempt_starts_pending_on_the_order(): void
+    {
+        $previous = $this->makeAttempt();
+        $order = $previous->order;
+        $order->update(['payment_status' => PaymentStatus::Failed]);
+        $previous->update(['status' => PaymentAttemptStatus::Failed]);
+        $retry = app(PaymentAttemptService::class)->create($order->fresh(), PaymentMethod::Card, (string) Str::uuid());
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int_retry_pending',
+            'client_secret' => 'client-secret-retry',
+            'intention_order_id' => 458,
+        ], 201)]);
+
+        app(PaymobCardIntentionService::class)->initiate($retry);
+
+        $this->assertSame(PaymentAttemptStatus::Pending, $retry->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
     }
 
     public function test_ambiguous_provider_outcomes_block_resubmission(): void

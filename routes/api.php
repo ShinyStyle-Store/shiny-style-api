@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AdminDashboardController;
 use App\Http\Controllers\Api\AdminMediaController;
 use App\Http\Controllers\Api\AdminOfferController;
 use App\Http\Controllers\Api\AdminOrderController;
+use App\Http\Controllers\Api\AdminPaymentReviewController;
 use App\Http\Controllers\Api\AdminProductController;
 use App\Http\Controllers\Api\AdminProductConversionController;
 use App\Http\Controllers\Api\AdminProductOptionController;
@@ -85,6 +86,10 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::get('payment-attempts/requires-review', [AdminPaymentReviewController::class, 'index']);
+        Route::post('payment-attempts/{public_id}/verify', [AdminPaymentReviewController::class, 'verify'])
+            ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')
+            ->middleware('throttle:admin-paymob-inquiry');
         Route::get('catalog/colors', [ProductColorController::class, 'adminIndex']);
         Route::get('seo/audit', [AdminSeoAuditController::class, 'show']);
         Route::post('seo/default-og-image', [AdminDefaultOgImageController::class, 'store']);

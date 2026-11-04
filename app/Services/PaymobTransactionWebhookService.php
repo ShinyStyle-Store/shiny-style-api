@@ -53,10 +53,6 @@ final class PaymobTransactionWebhookService
                 return new PaymobWebhookResult;
             }
 
-            if ($transactionOwner?->getKey() === $attempt->getKey()) {
-                return new PaymobWebhookResult;
-            }
-
             if (! $this->identityMatches($attempt, $transaction, $cardIntegrationId)) {
                 $this->review($attempt, 'callback_identity_mismatch', $transaction->transactionId);
 
@@ -79,6 +75,12 @@ final class PaymobTransactionWebhookService
                         'status' => PaymentAttemptStatus::Pending,
                         'provider_transaction_id' => (string) $transaction->transactionId,
                     ])->save();
+                    $latestAttemptId = PaymentAttempt::query()
+                        ->where('order_id', $order->getKey())
+                        ->max('id');
+                    if ((int) $latestAttemptId === $attempt->getKey()) {
+                        $order->forceFill(['payment_status' => PaymentStatus::Pending])->save();
+                    }
                 }
 
                 return new PaymobWebhookResult;
@@ -94,7 +96,7 @@ final class PaymobTransactionWebhookService
                 }
 
                 if ($this->orderIsLateOrClosed($order)
-                    || in_array($attempt->status, [PaymentAttemptStatus::Failed, PaymentAttemptStatus::Expired], true)) {
+                    || $attempt->status === PaymentAttemptStatus::Expired) {
                     $this->review($attempt, 'late_payment_callback', $transaction->transactionId);
 
                     return new PaymobWebhookResult;
@@ -123,7 +125,10 @@ final class PaymobTransactionWebhookService
                     'failure_code' => 'provider_transaction_failed',
                     'failure_message' => null,
                 ])->save();
-                if ($order->payment_status !== PaymentStatus::Paid) {
+                $latestAttemptId = PaymentAttempt::query()
+                    ->where('order_id', $order->getKey())
+                    ->max('id');
+                if ((int) $latestAttemptId === $attempt->getKey() && $order->payment_status !== PaymentStatus::Paid) {
                     $order->forceFill(['payment_status' => PaymentStatus::Failed])->save();
                 }
             }

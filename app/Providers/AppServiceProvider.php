@@ -111,5 +111,9 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('payment-status', function (Request $request): Limit {
             return Limit::perMinute(60)->by((string) $request->ip());
         });
+
+        RateLimiter::for('admin-paymob-inquiry', function (Request $request): Limit {
+            return Limit::perMinute(6)->by((string) ($request->user()?->getAuthIdentifier() ?? $request->ip()));
+        });
     }
 }

@@ -67,6 +67,91 @@ final class PaymobClient
         return $decoded;
     }
 
+    /**
+     * @return array<string, mixed>|null Null means Paymob did not find a transaction.
+     */
+    public function inquireTransactionByOrder(?string $providerOrderId, string $merchantReference): ?array
+    {
+        $apiKey = config('services.paymob.api_key');
+        if (! is_string($apiKey) || trim($apiKey) === '') {
+            throw new PaymobConfigurationException('missing_inquiry_api_key', 'Paymob inquiry is not configured.');
+        }
+
+        $baseUrl = $this->requiredHttpsUrl('api_base_url');
+        $timeout = (int) config('services.paymob.timeout_seconds', 30);
+        $connectTimeout = (int) config('services.paymob.connect_timeout_seconds', 10);
+
+        try {
+            $authResponse = Http::baseUrl($baseUrl)
+                ->asJson()
+                ->acceptJson()
+                ->connectTimeout($connectTimeout)
+                ->timeout($timeout)
+                ->post('/api/auth/tokens', ['api_key' => trim($apiKey)]);
+            if (! $authResponse->successful()) {
+                throw new PaymobRequestException(
+                    'inquiry_authentication_failed',
+                    'Paymob transaction inquiry could not be authenticated.',
+                    'transaction_inquiry',
+                    $authResponse->status(),
+                );
+            }
+
+            $token = $authResponse->json('token');
+            if (! is_string($token) || trim($token) === '') {
+                throw new PaymobRequestException(
+                    'inquiry_authentication_failed',
+                    'Paymob transaction inquiry could not be authenticated.',
+                    'transaction_inquiry',
+                    $authResponse->status(),
+                );
+            }
+
+            $payload = ['auth_token' => trim($token), 'merchant_order_id' => $merchantReference];
+            if ($providerOrderId !== null && trim($providerOrderId) !== '') {
+                $payload['order_id'] = trim($providerOrderId);
+            }
+
+            $response = Http::baseUrl($baseUrl)
+                ->asJson()
+                ->acceptJson()
+                ->connectTimeout($connectTimeout)
+                ->timeout($timeout)
+                ->post('/api/ecommerce/orders/transaction_inquiry', $payload);
+        } catch (ConnectionException $exception) {
+            throw new PaymobRequestException(
+                'inquiry_unavailable',
+                'Paymob transaction inquiry is temporarily unavailable.',
+                'transaction_inquiry',
+                previous: $exception,
+            );
+        }
+
+        if ($response->notFound()) {
+            return null;
+        }
+        if (! $response->successful()) {
+            throw new PaymobRequestException(
+                'inquiry_unavailable',
+                'Paymob transaction inquiry is temporarily unavailable.',
+                'transaction_inquiry',
+                $response->status(),
+            );
+        }
+
+        $decoded = $response->json();
+        if (! is_array($decoded)) {
+            throw new PaymobRequestException(
+                'malformed_inquiry_response',
+                'Paymob transaction inquiry returned an invalid response.',
+                'transaction_inquiry',
+                $response->status(),
+            );
+        }
+
+        return $decoded;
+    }
+
     private function requiredSecretKey(): string
     {
         $secretKey = config('services.paymob.secret_key');
