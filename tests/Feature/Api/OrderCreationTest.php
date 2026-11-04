@@ -323,6 +323,7 @@ class OrderCreationTest extends TestCase
             Http::fake(['https://paymob.test/*' => Http::response([
                 'id' => 'int-forwarded-https',
                 'client_secret' => 'client-secret-forwarded-https',
+                'intention_order_id' => 987005,
             ], 201)]);
 
             $this->withServerVariables($server)

@@ -151,6 +151,7 @@ class OfferCheckoutPricingTest extends TestCase
         Http::fake(['https://paymob.test/*' => Http::response([
             'id' => 'int-offer',
             'client_secret' => 'client-secret-offer',
+            'intention_order_id' => 987004,
         ], 201)]);
 
         [$product, $item] = $this->productWithVariants();

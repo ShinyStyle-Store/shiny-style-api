@@ -80,7 +80,54 @@ class PaymobWebhookTest extends TestCase
 
         $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$hmac, $payload)->assertOk();
         $this->assertSame(PaymentAttemptStatus::Pending, $attempt->fresh()->status);
-        $this->assertSame(PaymentStatus::Unpaid, $attempt->order->fresh()->payment_status);
+        $this->assertSame(PaymentStatus::Pending, $attempt->order->fresh()->payment_status);
+    }
+
+    public function test_success_callback_after_pending_callback_for_the_same_transaction_marks_payment_paid(): void
+    {
+        $attempt = $this->attempt();
+        $pending = $this->transactionCallbackPayload($attempt, false);
+        $pending['obj']['pending'] = true;
+        $pending['obj']['success'] = false;
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($pending['obj']), $pending)->assertOk();
+
+        $success = $this->transactionCallbackPayload($attempt, true);
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($success['obj']), $success)->assertOk();
+
+        $this->assertSame(PaymentAttemptStatus::Paid, $attempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Paid, $attempt->order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::PendingConfirmation, $attempt->order->fresh()->status);
+    }
+
+    public function test_late_failure_from_previous_attempt_does_not_downgrade_newer_pending_payment(): void
+    {
+        $previous = $this->attempt();
+        $order = $previous->order;
+        $previous->update(['status' => PaymentAttemptStatus::Failed]);
+        $order->update(['payment_status' => PaymentStatus::Pending]);
+        $this->createNewerPendingAttempt($order);
+
+        $failure = $this->transactionCallbackPayload($previous, false);
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($failure['obj']), $failure)->assertOk();
+
+        $this->assertSame(PaymentAttemptStatus::Failed, $previous->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+    }
+
+    public function test_successful_earlier_attempt_is_recorded_even_when_a_newer_attempt_is_pending(): void
+    {
+        $previous = $this->attempt();
+        $order = $previous->order;
+        $previous->update(['status' => PaymentAttemptStatus::Failed]);
+        $order->update(['payment_status' => PaymentStatus::Pending]);
+        $this->createNewerPendingAttempt($order);
+
+        $success = $this->transactionCallbackPayload($previous, true);
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($success['obj']), $success)->assertOk();
+
+        $this->assertSame(PaymentAttemptStatus::Paid, $previous->fresh()->status);
+        $this->assertSame(PaymentStatus::Paid, $order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::PendingConfirmation, $order->fresh()->status);
     }
 
     public function test_wrong_amount_requires_review_and_never_marks_paid(): void
@@ -146,6 +193,24 @@ class PaymobWebhookTest extends TestCase
             'idempotency_key' => (string) Str::uuid(),
             'request_fingerprint' => hash('sha256', 'card'),
             'provider_order_id' => '987654321',
+            'integration_id' => 456,
+            'expires_at' => now()->addMinutes(30),
+        ]);
+    }
+
+    private function createNewerPendingAttempt(Order $order): PaymentAttempt
+    {
+        return PaymentAttempt::create([
+            'order_id' => $order->getKey(),
+            'provider' => 'paymob',
+            'method' => 'card',
+            'status' => PaymentAttemptStatus::Pending,
+            'amount_minor' => 17000,
+            'currency' => 'EGP',
+            'merchant_reference' => 'SS-PAY-'.Str::ulid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => hash('sha256', 'card-newer'),
+            'provider_order_id' => '987654322',
             'integration_id' => 456,
             'expires_at' => now()->addMinutes(30),
         ]);

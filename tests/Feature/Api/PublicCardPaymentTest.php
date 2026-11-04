@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Api;
 
+use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\PaymentAttempt;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -39,6 +41,7 @@ class PublicCardPaymentTest extends TestCase
         Http::fake(['https://paymob.test/*' => Http::response([
             'id' => 'int-public-1',
             'client_secret' => 'client-secret',
+            'intention_order_id' => 987001,
         ], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
         $key = (string) Str::uuid();
@@ -64,6 +67,7 @@ class PublicCardPaymentTest extends TestCase
         Http::fake(['https://paymob.test/*' => Http::response([
             'id' => 'int-public-empty-object',
             'client_secret' => 'client-secret-empty-object',
+            'intention_order_id' => 987002,
         ], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
 
@@ -93,6 +97,8 @@ class PublicCardPaymentTest extends TestCase
         $this->assertStringNotContainsString('Raw provider detail', $response->getContent());
         $this->assertStringNotContainsString('client-secret-value', $response->getContent());
         $this->assertStringNotContainsString('customer@example.com', $response->getContent());
+        $this->assertSame(PaymentAttemptStatus::Failed, PaymentAttempt::query()->firstOrFail()->status);
+        $this->assertSame(PaymentStatus::Failed, $order->fresh()->payment_status);
     }
 
     public function test_reusing_a_key_after_provider_rejection_conflicts_but_a_new_key_can_retry(): void
@@ -100,7 +106,7 @@ class PublicCardPaymentTest extends TestCase
         $order = $this->cardOrder();
         Http::fake(['https://paymob.test/*' => Http::sequence()
             ->push(['detail' => 'Invalid request'], 422)
-            ->push(['id' => 'int-retry', 'client_secret' => 'client-secret-retry'], 201)]);
+            ->push(['id' => 'int-retry', 'client_secret' => 'client-secret-retry', 'intention_order_id' => 987003], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
         $key = (string) Str::uuid();
 
@@ -121,6 +127,36 @@ class PublicCardPaymentTest extends TestCase
 
         Http::assertSentCount(2);
         $this->assertDatabaseCount('payment_attempts', 2);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+    }
+
+    public function test_missing_provider_order_id_returns_safe_uncertain_error_and_replay_does_not_resubmit(): void
+    {
+        $order = $this->cardOrder();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int-public-unmatchable',
+            'client_secret' => 'client-secret-unmatchable',
+            'checkoutUrl' => 'https://paymob.test/checkout/unmatchable',
+        ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $key = (string) Str::uuid();
+
+        $first = $this->withHeader('Idempotency-Key', $key)->post($url);
+        $first->assertServiceUnavailable()
+            ->assertJson([
+                'code' => 'payment_outcome_uncertain',
+                'message' => 'The payment request could not be completed.',
+            ])
+            ->assertJsonMissingPath('data.checkoutUrl');
+
+        $attempt = PaymentAttempt::query()->firstOrFail();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->status);
+        $this->assertNull($attempt->provider_order_id);
+
+        $this->withHeader('Idempotency-Key', $key)->post($url)
+            ->assertConflict()
+            ->assertJson(['code' => 'payment_attempt_not_retryable']);
+        Http::assertSentCount(1);
     }
 
     public function test_signed_initiation_rejects_any_request_body_field(): void

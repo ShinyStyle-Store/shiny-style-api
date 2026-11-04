@@ -59,6 +59,15 @@ final class PaymobCardIntentionService
                 if ($order->payment_expires_at === null || $order->payment_expires_at->isPast()) {
                     throw new PaymentAttemptException('payment_window_expired', 'The payment window has expired.');
                 }
+                if (! $this->hasValidProviderOrderId($lockedAttempt->provider_order_id)) {
+                    $lockedAttempt->forceFill([
+                        'status' => PaymentAttemptStatus::RequiresReview,
+                        'failure_code' => 'missing_provider_order_id',
+                        'failure_message' => null,
+                    ])->save();
+
+                    return ['attempt' => $lockedAttempt->fresh(), 'snapshot' => null];
+                }
                 if ($lockedAttempt->provider_client_secret === null || $lockedAttempt->provider_intention_id === null) {
                     throw new PaymentAttemptException('payment_attempt_result_incomplete', 'The payment result is incomplete.');
                 }
@@ -80,6 +89,7 @@ final class PaymobCardIntentionService
                 'status' => PaymentAttemptStatus::Submitting,
                 'submission_claimed_at' => now(),
             ])->save();
+            $order->forceFill(['payment_status' => PaymentStatus::Pending])->save();
 
             return ['attempt' => $lockedAttempt->fresh(), 'snapshot' => $snapshot];
         });
@@ -329,7 +339,7 @@ final class PaymobCardIntentionService
         ];
     }
 
-    /** @param array<string, mixed> $response @return array{intention_id:string, client_secret:string, order_id:?string} */
+    /** @param array<string, mixed> $response @return array{intention_id:string, client_secret:string, order_id:string} */
     private function validateResponse(array $response, PaymobIntentionSnapshot $snapshot, int $integrationId): array
     {
         $id = $response['id'] ?? null;
@@ -363,15 +373,19 @@ final class PaymobCardIntentionService
             ?? $response['order']['id']
             ?? $response['order_id']
             ?? null;
-        if ($orderId !== null && (! is_string($orderId) && ! is_int($orderId))) {
+        if (! $this->hasValidProviderOrderId($orderId)) {
             throw new PaymentAttemptException('malformed_provider_response', 'The payment provider order is invalid.');
         }
 
-        return ['intention_id' => (string) $id, 'client_secret' => $secret, 'order_id' => $orderId === null ? null : (string) $orderId];
+        return ['intention_id' => (string) $id, 'client_secret' => $secret, 'order_id' => (string) $orderId];
     }
 
     private function resultFromStored(PaymentAttempt $attempt): PaymobIntentionResult
     {
+        if (! $this->hasValidProviderOrderId($attempt->provider_order_id)) {
+            throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
+        }
+
         if ($attempt->provider_client_secret === null || $attempt->provider_intention_id === null || $attempt->expires_at === null) {
             throw new PaymentAttemptException('payment_attempt_result_incomplete', 'The payment result is incomplete.');
         }
@@ -403,6 +417,17 @@ final class PaymobCardIntentionService
         return trim($key);
     }
 
+    private function hasValidProviderOrderId(mixed $orderId): bool
+    {
+        if ((! is_string($orderId) && ! is_int($orderId))
+            || (is_int($orderId) && $orderId < 1)
+            || (is_string($orderId) && preg_match('/^[1-9][0-9]*$/', $orderId) !== 1)) {
+            return false;
+        }
+
+        return filter_var((string) $orderId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
+    }
+
     private function requiredHttpsUrl(string $key): string
     {
         $url = config("services.paymob.{$key}");
@@ -426,9 +451,21 @@ final class PaymobCardIntentionService
     private function markFailed(int $id, string $code): void
     {
         DB::transaction(function () use ($id, $code): void {
+            $candidate = PaymentAttempt::query()->whereKey($id)->first();
+            if ($candidate === null) {
+                return;
+            }
+            $order = Order::query()->whereKey($candidate->order_id)->lockForUpdate()->first();
+            if ($order === null) {
+                return;
+            }
             $attempt = PaymentAttempt::query()->whereKey($id)->lockForUpdate()->first();
             if ($attempt?->status === PaymentAttemptStatus::Submitting) {
                 $attempt->forceFill(['status' => PaymentAttemptStatus::Failed, 'failure_code' => $code, 'failure_message' => null])->save();
+                $latestAttemptId = PaymentAttempt::query()->where('order_id', $order->getKey())->max('id');
+                if ((int) $latestAttemptId === $attempt->getKey() && $order->payment_status !== PaymentStatus::Paid) {
+                    $order->forceFill(['payment_status' => PaymentStatus::Failed])->save();
+                }
             }
         });
     }
@@ -436,6 +473,14 @@ final class PaymobCardIntentionService
     private function markUncertain(int $id, string $code): void
     {
         DB::transaction(function () use ($id, $code): void {
+            $candidate = PaymentAttempt::query()->whereKey($id)->first();
+            if ($candidate === null) {
+                return;
+            }
+            $order = Order::query()->whereKey($candidate->order_id)->lockForUpdate()->first();
+            if ($order === null) {
+                return;
+            }
             $attempt = PaymentAttempt::query()->whereKey($id)->lockForUpdate()->first();
             if ($attempt?->status === PaymentAttemptStatus::Submitting) {
                 $attempt->forceFill(['status' => PaymentAttemptStatus::RequiresReview, 'failure_code' => $code, 'failure_message' => null])->save();
