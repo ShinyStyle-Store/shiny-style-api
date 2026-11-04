@@ -887,3 +887,56 @@ order transaction that acquired and validated that lock before archive may
 finish; a transaction that acquires it after archive completes rejects the
 product. A quote does not reserve purchase permission. Product locks precede
 sellable-item locks and use deterministic ID order for multi-product orders.
+
+## Paymob payment attempts requiring review
+
+The payment review APIs use the existing admin bearer authentication and
+`admin.access` middleware. The admin list is paginated (20 rows by default,
+`per_page` from 1 to 100) and only includes Paymob card attempts whose status is
+`requires_review`:
+
+```http
+GET /api/v1/admin/payment-attempts/requires-review?per_page=20
+```
+
+Each item exposes the attempt public ID, order number, amount, currency, safe
+failure code as `reason`, last update time, and the available Paymob order,
+transaction, or merchant reference. Secret keys, client secrets, card data,
+and raw webhook or inquiry payloads are not returned.
+
+Request a one-time verification for an attempt with:
+
+```http
+POST /api/v1/admin/payment-attempts/{payment_attempt_id}/verify
+```
+
+No request body is needed. The API returns `200` with a `data.result` of
+`verified_success`, `verified_failure`, `not_found`, or `unverified`, and the
+current attempt `status`. Only a confirmed result that matches the saved
+amount, currency, provider order/reference, configured integration, and saved
+Paymob environment changes payment state. Pending, missing, mismatched, and
+otherwise unverifiable results remain `requires_review`. The order lifecycle
+and inventory are not changed by verification. A verified late success may set
+`payment_status` to `paid` while leaving a cancelled order cancelled. The
+endpoint is limited to six inquiries per minute per admin.
+
+When Paymob's inquiry returns HTTP `404`, the API returns `200` with
+`data.result: not_found`; this means no transaction was found and does not
+confirm that payment failed. The attempt remains `requires_review`.
+
+If the inquiry credential or provider is unavailable, the endpoint returns
+`503` with the safe `transaction_inquiry_unavailable` code and leaves the
+attempt under review. A `404` means the supplied attempt is no longer in
+`requires_review`; refresh the list. `429` means the per-admin inquiry limit was
+reached; wait before requesting again.
+
+Verification uses Paymob's Transaction Inquiry API. Configure `PAYMOB_API_KEY`
+separately from `PAYMOB_SECRET_KEY`; Paymob's inquiry API generates a short
+lived auth token from the API Key, which the backend uses for the inquiry. Set
+`PAYMOB_IS_LIVE` explicitly to `true` or `false` to match the integration
+environment. Attempts created before environment snapshots were added, or
+attempts with missing integration/environment data, remain under review rather
+than being guessed as successful or failed. The frontend never receives either
+credential.
+
+Paymob references: [Transaction Inquiry by Order ID or Merchant Order ID](https://developers.paymob.com/paymob-docs/developers/transaction-inquiry-apis/transaction-inquiry/by-order-id-or-reference), [Authentication Request](https://developers.paymob.com/paymob-docs/developers/authentication-request-generate-auth-token-1).

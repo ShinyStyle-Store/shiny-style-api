@@ -37,6 +37,8 @@ return [
 
     'paymob' => [
         'secret_key' => env('PAYMOB_SECRET_KEY'),
+        'api_key' => env('PAYMOB_API_KEY'),
+        'is_live' => env('PAYMOB_IS_LIVE'),
         'public_key' => env('PAYMOB_PUBLIC_KEY'),
         'hmac_secret' => env('PAYMOB_HMAC_SECRET'),
         'card_integration_id' => env('PAYMOB_CARD_INTEGRATION_ID'),
