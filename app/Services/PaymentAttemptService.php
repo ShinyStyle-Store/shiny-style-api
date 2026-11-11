@@ -20,6 +20,8 @@ use OverflowException;
 
 class PaymentAttemptService
 {
+    public function __construct(private readonly PaymobIntegrationResolver $integrations) {}
+
     public function create(Order $order, PaymentMethod $method, string $idempotencyKey): PaymentAttempt
     {
         if (! $method->isOnline()) {
@@ -56,6 +58,13 @@ class PaymentAttemptService
 
                 $this->assertPayable($lockedOrder);
 
+                if ($lockedOrder->payment_method !== $method) {
+                    throw new PaymentAttemptException(
+                        'unsupported_payment_method',
+                        'The payment method must match the method selected for the order.',
+                    );
+                }
+
                 $activeAttempt = PaymentAttempt::query()
                     ->where('order_id', $lockedOrder->getKey())
                     ->whereIn('status', array_map(
@@ -88,6 +97,22 @@ class PaymentAttemptService
                     );
                 }
 
+                if ($method === PaymentMethod::Wallet) {
+                    $latestAttempt = PaymentAttempt::query()
+                        ->where('order_id', $lockedOrder->getKey())
+                        ->latest('id')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($latestAttempt?->status === PaymentAttemptStatus::Failed
+                        && ! $latestAttempt->isDefinitiveProviderRejection()) {
+                        throw new PaymentAttemptException(
+                            'payment_attempt_not_retryable',
+                            'The failed Wallet attempt does not have a definitive provider rejection.',
+                        );
+                    }
+                }
+
                 $submittingAttempt = PaymentAttempt::query()
                     ->where('order_id', $lockedOrder->getKey())
                     ->where('status', PaymentAttemptStatus::Submitting->value)
@@ -111,6 +136,7 @@ class PaymentAttemptService
 
                 $amountMinor = $this->amountMinor($lockedOrder);
                 $currency = strtoupper(trim((string) $lockedOrder->currency));
+                $integrationId = $this->integrations->resolve($method);
 
                 if (! preg_match('/^[A-Z]{3}$/', $currency)) {
                     throw new PaymentAttemptException('order_not_payable', 'The order currency is invalid.');
@@ -127,8 +153,8 @@ class PaymentAttemptService
                     'idempotency_key' => $idempotencyKey,
                     'request_fingerprint' => $fingerprint,
                     'expires_at' => $expiresAt,
-                    'integration_id' => $method === PaymentMethod::Card ? $this->configuredCardIntegrationId() : null,
-                    'provider_is_live' => $method === PaymentMethod::Card ? $this->configuredEnvironment() : null,
+                    'integration_id' => $integrationId,
+                    'provider_is_live' => $this->configuredEnvironment(),
                 ]);
             });
         } catch (QueryException $exception) {
@@ -203,22 +229,6 @@ class PaymentAttemptService
         $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
 
         return in_array($sqlState, ['19', '23000', '23505'], true);
-    }
-
-    private function configuredCardIntegrationId(): ?int
-    {
-        $value = config('services.paymob.card_integration_id');
-        if (is_int($value) && $value > 0) {
-            return $value;
-        }
-
-        if (! is_string($value) || preg_match('/^[1-9][0-9]*$/', trim($value)) !== 1) {
-            return null;
-        }
-
-        $validated = filter_var(trim($value), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-
-        return $validated === false ? null : (int) $validated;
     }
 
     private function configuredEnvironment(): ?bool

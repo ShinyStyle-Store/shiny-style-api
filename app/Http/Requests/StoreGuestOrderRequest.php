@@ -64,7 +64,7 @@ class StoreGuestOrderRequest extends FormRequest
             'items.*' => ['required', 'array'],
             'items.*.sellable_item_id' => ['required', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:2147483647'],
-            'payment_method' => ['required', 'in:cash_on_delivery,card'],
+            'payment_method' => ['required', 'in:cash_on_delivery,card,wallet'],
             'order_note' => ['nullable', 'string', 'max:1000'],
         ];
     }
@@ -94,9 +94,9 @@ class StoreGuestOrderRequest extends FormRequest
                 $validator->errors()->add('idempotency_key', 'The Idempotency-Key header must be a valid UUID.');
             }
 
-            if (($data['payment_method'] ?? null) === 'card'
+            if (in_array($data['payment_method'] ?? null, ['card', 'wallet'], true)
                 && (! is_string($data['customer']['email'] ?? null) || trim($data['customer']['email']) === '')) {
-                $validator->errors()->add('customer.email', 'An email address is required for card payments.');
+                $validator->errors()->add('customer.email', 'An email address is required for online payments.');
             }
         });
     }

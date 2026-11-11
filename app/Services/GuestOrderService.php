@@ -230,8 +230,8 @@ class GuestOrderService
             'status' => 'pending_confirmation',
             'contact_status' => 'not_contacted',
             'payment_method' => $paymentMethod,
-            'payment_status' => $paymentMethod === PaymentMethod::Card ? PaymentStatus::Pending : PaymentStatus::Unpaid,
-            'payment_expires_at' => $paymentMethod === PaymentMethod::Card
+            'payment_status' => $paymentMethod->isOnline() ? PaymentStatus::Pending : PaymentStatus::Unpaid,
+            'payment_expires_at' => $paymentMethod->isOnline()
                 ? now()->addMinutes((int) config('payments.reservation_minutes', 30))
                 : null,
         ]);

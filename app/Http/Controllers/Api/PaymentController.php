@@ -31,12 +31,13 @@ class PaymentController extends Controller
         if ($order === null) {
             return $this->error('order_not_found', 'Order not found.', 404);
         }
-        if ($order->payment_method !== PaymentMethod::Card) {
+        if (! $order->payment_method->isOnline()) {
             return $this->error('unsupported_payment_method', 'Card payment is not available for this order.', 422);
         }
 
         try {
-            $attempt = $attempts->create($order, PaymentMethod::Card, $request->idempotencyKey());
+            $intentions->validateCheckoutConfiguration($order->payment_method);
+            $attempt = $attempts->create($order, $order->payment_method, $request->idempotencyKey());
             $result = $intentions->initiate($attempt);
         } catch (IdempotencyConflictException) {
             return $this->error('idempotency_conflict', 'The idempotency key conflicts with another payment request.', 409);
@@ -76,10 +77,14 @@ class PaymentController extends Controller
 
         $attempt = $order->paymentAttempts()->latest('id')->first();
         $attemptStatus = $attempt?->status;
-        $retryable = $order->payment_method === PaymentMethod::Card
+        $walletFailureRetryable = $order->payment_method !== PaymentMethod::Wallet
+            || $attemptStatus !== PaymentAttemptStatus::Failed
+            || $attempt?->isDefinitiveProviderRejection() === true;
+        $retryable = $order->payment_method->isOnline()
             && $order->payment_status !== PaymentStatus::Paid
             && $order->status->value === 'pending_confirmation'
             && $order->payment_expires_at?->isFuture() === true
+            && $walletFailureRetryable
             && ! in_array($attemptStatus, [PaymentAttemptStatus::Pending, PaymentAttemptStatus::Submitting, PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true);
 
         return response()->json([

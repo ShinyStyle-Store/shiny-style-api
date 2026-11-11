@@ -18,6 +18,7 @@ use InvalidArgumentException;
 use OverflowException;
 use Throwable;
 
+// Retain this historical name; the service creates intentions for Card and Wallet payments.
 final class PaymobCardIntentionService
 {
     public function __construct(
@@ -28,7 +29,7 @@ final class PaymobCardIntentionService
 
     public function initiate(PaymentAttempt $paymentAttempt): PaymobIntentionResult
     {
-        $configuration = $this->validateCardCheckoutConfiguration();
+        $configuration = $this->validateCheckoutConfiguration($paymentAttempt->method);
         $endpoint = $configuration['endpoint'];
         $integrationId = $configuration['integration_id'];
 
@@ -167,9 +168,22 @@ final class PaymobCardIntentionService
     /** @return array{endpoint:string,integration_id:int} */
     public function validateCardCheckoutConfiguration(): array
     {
+        return $this->validateCheckoutConfiguration(PaymentMethod::Card);
+    }
+
+    /** @return array{endpoint:string,integration_id:int} */
+    public function validateCheckoutConfiguration(PaymentMethod $method): array
+    {
+        if (! $method->isOnline()) {
+            throw new PaymobConfigurationException(
+                'unsupported_payment_method',
+                'Cash on delivery is not a Paymob payment method.',
+            );
+        }
+
         $endpoint = (string) config('services.paymob.intention_endpoint', '/v1/intention/');
         $this->client->validateConfiguration($endpoint);
-        $integrationId = $this->integrations->resolve(PaymentMethod::Card);
+        $integrationId = $this->integrations->resolve($method);
         $this->requiredHttpsUrl('redirect_url');
         $this->requiredHttpsUrl('webhook_url');
         $this->requiredPublicKey();
@@ -180,8 +194,10 @@ final class PaymobCardIntentionService
 
     private function assertEligible(PaymentAttempt $attempt, Order $order, int $integrationId): void
     {
-        if ($attempt->provider !== PaymentProvider::Paymob || $attempt->method !== PaymentMethod::Card) {
-            throw new PaymentAttemptException('unsupported_payment_method', 'Only Paymob card attempts can be initiated.');
+        if ($attempt->provider !== PaymentProvider::Paymob
+            || ! $attempt->method->isOnline()
+            || $order->payment_method !== $attempt->method) {
+            throw new PaymentAttemptException('unsupported_payment_method', 'The Paymob attempt does not match the order payment method.');
         }
         if ($attempt->status !== PaymentAttemptStatus::Created) {
             if ($attempt->status === PaymentAttemptStatus::Paid || $order->payment_status === PaymentStatus::Paid) {
@@ -218,13 +234,23 @@ final class PaymobCardIntentionService
             throw new PaymentAttemptException('order_not_payable', 'The payment currency is invalid.');
         }
         if ($integrationId <= 0) {
-            throw new PaymobConfigurationException('invalid_card_integration_id', 'Paymob card integration is invalid.');
+            throw new PaymobConfigurationException(
+                'invalid_payment_integration_id',
+                'The configured Paymob payment integration is invalid.',
+            );
+        }
+        if ($attempt->integration_id !== $integrationId) {
+            throw new PaymobConfigurationException(
+                'payment_integration_changed',
+                'The payment integration does not match the saved payment attempt.',
+            );
         }
     }
 
     private function assertStillPersistable(PaymentAttempt $attempt, Order $order): void
     {
         if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)
+            || $order->payment_method !== $attempt->method
             || $order->payment_status === PaymentStatus::Paid
             || $order->payment_expires_at === null
             || $order->payment_expires_at->isPast()

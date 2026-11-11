@@ -232,7 +232,7 @@ class OrderCreationTest extends TestCase
         $area = $this->shippingArea(10);
         $item = $this->sellableItem();
         $payload = $this->payload($area, $item, 1);
-        $payload['payment_method'] = 'wallet';
+        $payload['payment_method'] = 'bitcoin';
 
         $this->withHeader('Idempotency-Key', $this->key())
             ->postJson('/api/v1/orders', $payload)
@@ -280,6 +280,98 @@ class OrderCreationTest extends TestCase
         $this->assertNotNull($response->json('data.payment.expiresAt'));
         $this->assertNotEmpty($response->json('data.payment.initiateUrl'));
         $this->assertNotEmpty($response->json('data.payment.statusUrl'));
+    }
+
+    public function test_wallet_order_is_pending_and_returns_wallet_payment_urls(): void
+    {
+        config([
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.public_key' => 'test-public',
+            'services.paymob.card_integration_id' => '456',
+            'services.paymob.wallet_integration_id' => '789',
+            'services.paymob.api_base_url' => 'https://paymob.test',
+            'services.paymob.intention_endpoint' => '/v1/intention/',
+            'services.paymob.redirect_url' => 'https://shop.test/return',
+            'services.paymob.webhook_url' => 'https://shop.test/api/v1/payments/paymob/webhook',
+            'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
+        ]);
+        $area = $this->shippingArea(20);
+        $item = $this->sellableItem('100.00', 5);
+        $payload = $this->payload($area, $item, 2);
+        $payload['payment_method'] = 'wallet';
+        $payload['customer']['email'] = 'customer@example.com';
+        $payload['customer']['phone'] = '+20 1110007513';
+
+        $response = $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.payment_method', 'wallet')
+            ->assertJsonPath('data.payment_status', 'pending')
+            ->assertJsonPath('data.payment.required', true)
+            ->assertJsonPath('data.payment.method', 'wallet')
+            ->assertJsonPath('data.customer.phone', '01110007513');
+        $this->assertSame(2, $item->refresh()->reserved_quantity);
+        $this->assertNotNull($response->json('data.payment.expiresAt'));
+        $this->assertNotEmpty($response->json('data.payment.initiateUrl'));
+        $this->assertNotEmpty($response->json('data.payment.statusUrl'));
+    }
+
+    public function test_wallet_order_requires_project_formatted_phone_and_email(): void
+    {
+        config([
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.public_key' => 'test-public',
+            'services.paymob.wallet_integration_id' => '789',
+            'services.paymob.api_base_url' => 'https://paymob.test',
+            'services.paymob.intention_endpoint' => '/v1/intention/',
+            'services.paymob.redirect_url' => 'https://shop.test/return',
+            'services.paymob.webhook_url' => 'https://shop.test/api/v1/payments/paymob/webhook',
+            'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
+        ]);
+        $area = $this->shippingArea(20);
+        $item = $this->sellableItem('100.00', 5);
+        $payload = $this->payload($area, $item, 1);
+        $payload['payment_method'] = 'wallet';
+        $payload['customer']['phone'] = '01610007513';
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer.phone');
+
+        $payload = $this->payload($area, $item, 1);
+        $payload['payment_method'] = 'wallet';
+        $payload['customer']['email'] = '';
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer.email');
+
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertSame(0, $item->refresh()->reserved_quantity);
+    }
+
+    public function test_missing_wallet_configuration_rejects_before_order_or_reservation_creation(): void
+    {
+        config([
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.wallet_integration_id' => '',
+        ]);
+        $area = $this->shippingArea(20);
+        $item = $this->sellableItem('100.00', 5);
+        $payload = $this->payload($area, $item, 1);
+        $payload['payment_method'] = 'wallet';
+        $payload['customer']['email'] = 'customer@example.com';
+
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload)
+            ->assertStatus(503)
+            ->assertJsonPath('code', 'payment_configuration_unavailable');
+
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertSame(0, $item->refresh()->reserved_quantity);
     }
 
     public function test_card_payment_urls_use_forwarded_https_and_validate_with_the_same_scheme(): void

@@ -30,6 +30,7 @@ class PaymobCardIntentionTest extends TestCase
             'services.paymob.secret_key' => 'test-secret',
             'services.paymob.public_key' => 'test-public',
             'services.paymob.card_integration_id' => '123',
+            'services.paymob.wallet_integration_id' => '456',
             'services.paymob.api_base_url' => 'https://paymob.test',
             'services.paymob.intention_endpoint' => '/v1/intention/',
             'services.paymob.redirect_url' => 'https://shop.test/payments/return',
@@ -85,6 +86,39 @@ class PaymobCardIntentionTest extends TestCase
                 && $data['items'][0]['quantity'] === 1
                 && $data['items'][1]['name'] === 'Shipping'
                 && $data['items'][1]['amount'] === 7000;
+        });
+    }
+
+    public function test_it_builds_a_wallet_intention_with_the_server_selected_wallet_integration(): void
+    {
+        $attempt = $this->makeAttempt([
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Pending,
+            'customer_email' => 'wallet.customer@example.com',
+            'customer_phone' => '01110007513',
+        ], PaymentMethod::Wallet);
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'wallet-int-123',
+            'client_secret' => 'wallet-client-secret',
+            'intention_order_id' => 457,
+            'payment_methods' => [['integration_id' => 456]],
+        ], 201)]);
+
+        $result = app(PaymobCardIntentionService::class)->initiate($attempt);
+
+        $this->assertSame(PaymentMethod::Wallet, $attempt->fresh()->method);
+        $this->assertSame(456, $attempt->fresh()->integration_id);
+        $this->assertSame(PaymentAttemptStatus::Pending, $attempt->fresh()->status);
+        $this->assertStringContainsString('clientSecret=wallet-client-secret', $result->checkoutUrl);
+        Http::assertSent(function ($request) use ($attempt): bool {
+            $data = $request->data();
+
+            return $data['payment_methods'] === [456]
+                && $data['billing_data']['phone_number'] === '01110007513'
+                && $data['billing_data']['email'] === 'wallet.customer@example.com'
+                && $data['notification_url'] === 'https://shop.test/api/v1/payments/paymob/webhook'
+                && str_starts_with($data['redirection_url'], 'https://shop.test/payments/return#payment_return=')
+                && $attempt->fresh()->provider_intention_id === 'wallet-int-123';
         });
     }
 
@@ -295,11 +329,11 @@ class PaymobCardIntentionTest extends TestCase
         Http::assertNothingSent();
     }
 
-    private function makeAttempt(array $orderOverrides = []): PaymentAttempt
+    private function makeAttempt(array $orderOverrides = [], PaymentMethod $method = PaymentMethod::Card): PaymentAttempt
     {
         $order = Order::factory()->create(array_merge([
             'customer_name' => 'Test Customer',
-            'payment_method' => PaymentMethod::Card,
+            'payment_method' => $method,
             'subtotal' => '100.00',
             'shipping_fee' => '70.00',
             'total' => '170.00',
@@ -315,6 +349,6 @@ class PaymobCardIntentionTest extends TestCase
             'line_total' => '100.00',
         ]);
 
-        return app(PaymentAttemptService::class)->create($order, PaymentMethod::Card, (string) Str::uuid());
+        return app(PaymentAttemptService::class)->create($order, $method, (string) Str::uuid());
     }
 }

@@ -19,6 +19,12 @@ class PaymentReturnTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config(['services.paymob.card_integration_id' => '12345']);
+    }
+
     public function test_a_return_token_is_required_and_public_id_alone_is_not_authorization(): void
     {
         [$order] = $this->cardOrder();
