@@ -8,6 +8,8 @@ use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
+use App\Services\PaymobTransaction;
+use App\Services\PaymobTransactionWebhookService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -173,6 +175,109 @@ class PaymobWebhookTest extends TestCase
         $this->assertSame(PaymentStatus::Unpaid, $attempt->order->fresh()->payment_status);
     }
 
+    public function test_wallet_transaction_success_updates_payment_without_confirming_order(): void
+    {
+        $attempt = $this->walletAttempt();
+
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction($attempt, success: true));
+
+        $this->assertSame(PaymentAttemptStatus::Paid, $attempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Paid, $attempt->order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::PendingConfirmation, $attempt->order->fresh()->status);
+    }
+
+    public function test_duplicate_wallet_success_and_failure_after_success_do_not_change_paid_state(): void
+    {
+        $attempt = $this->walletAttempt();
+        $success = $this->walletTransaction($attempt, success: true);
+        $service = app(PaymobTransactionWebhookService::class);
+
+        $service->process($success);
+        $paidAt = $attempt->fresh()->paid_at->toISOString();
+        $service->process($success);
+        $service->process($this->walletTransaction($attempt, errorOccurred: true));
+
+        $this->assertSame(PaymentAttemptStatus::Paid, $attempt->fresh()->status);
+        $this->assertSame($paidAt, $attempt->fresh()->paid_at->toISOString());
+        $this->assertSame(PaymentStatus::Paid, $attempt->order->fresh()->payment_status);
+    }
+
+    public function test_wallet_failure_and_pending_are_applied_only_for_consistent_flags(): void
+    {
+        $failedAttempt = $this->walletAttempt();
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction($failedAttempt, errorOccurred: true));
+        $this->assertSame(PaymentAttemptStatus::Failed, $failedAttempt->fresh()->status);
+        $this->assertTrue($failedAttempt->fresh()->isDefinitiveFailure());
+        $this->assertSame(PaymentStatus::Failed, $failedAttempt->order->fresh()->payment_status);
+
+        $pendingAttempt = $this->walletAttempt();
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction($pendingAttempt, pending: true));
+        $this->assertSame(PaymentAttemptStatus::Pending, $pendingAttempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $pendingAttempt->order->fresh()->payment_status);
+
+        $inconsistentAttempt = $this->walletAttempt();
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction(
+            $inconsistentAttempt,
+            success: true,
+            errorOccurred: true,
+        ));
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $inconsistentAttempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Unpaid, $inconsistentAttempt->order->fresh()->payment_status);
+    }
+
+    public function test_wallet_mismatched_merchant_reference_and_old_success_require_review(): void
+    {
+        $mismatchedAttempt = $this->walletAttempt();
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction(
+            $mismatchedAttempt,
+            success: true,
+            merchantOrderId: 'different-reference',
+        ));
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $mismatchedAttempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Unpaid, $mismatchedAttempt->order->fresh()->payment_status);
+
+        $oldAttempt = $this->walletAttempt();
+        $order = $oldAttempt->order;
+        $oldAttempt->update(['status' => PaymentAttemptStatus::Failed]);
+        $order->update(['payment_status' => PaymentStatus::Pending]);
+        $this->createNewerWalletPendingAttempt($order);
+
+        app(PaymobTransactionWebhookService::class)->process($this->walletTransaction($oldAttempt, success: true));
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $oldAttempt->fresh()->status);
+        $this->assertSame('late_wallet_success_with_newer_attempt', $oldAttempt->fresh()->failure_code);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+    }
+
+    public function test_wallet_method_integration_amount_and_currency_mismatches_never_mark_paid(): void
+    {
+        $cases = [
+            ['transaction' => ['integrationId' => 790]],
+            ['transaction' => ['amountMinor' => 17001]],
+            ['transaction' => ['currency' => 'USD']],
+            ['order_method' => PaymentMethod::Card],
+        ];
+
+        foreach ($cases as $case) {
+            $attempt = $this->walletAttempt();
+            $transactionOverrides = $case['transaction'] ?? [];
+            if (isset($case['order_method'])) {
+                $attempt->order->update(['payment_method' => $case['order_method']]);
+            }
+
+            app(PaymobTransactionWebhookService::class)->process($this->walletTransaction(
+                $attempt,
+                success: true,
+                integrationId: $transactionOverrides['integrationId'] ?? null,
+                amountMinor: $transactionOverrides['amountMinor'] ?? null,
+                currency: $transactionOverrides['currency'] ?? null,
+            ));
+
+            $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+            $this->assertSame(PaymentStatus::Unpaid, $attempt->order->fresh()->payment_status);
+        }
+    }
+
     private function attempt(): PaymentAttempt
     {
         $order = Order::factory()->create([
@@ -196,6 +301,78 @@ class PaymobWebhookTest extends TestCase
             'integration_id' => 456,
             'expires_at' => now()->addMinutes(30),
         ]);
+    }
+
+    private function walletAttempt(): PaymentAttempt
+    {
+        $order = Order::factory()->create([
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_expires_at' => now()->addMinutes(30),
+            'total' => '170.00',
+            'payment_status' => PaymentStatus::Unpaid,
+        ]);
+
+        return PaymentAttempt::create([
+            'order_id' => $order->getKey(),
+            'provider' => 'paymob',
+            'method' => PaymentMethod::Wallet,
+            'status' => PaymentAttemptStatus::Pending,
+            'amount_minor' => 17000,
+            'currency' => 'EGP',
+            'merchant_reference' => 'SS-PAY-'.Str::ulid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => hash('sha256', 'wallet'),
+            'provider_order_id' => (string) (980000000 + $order->getKey()),
+            'integration_id' => 789,
+            'expires_at' => now()->addMinutes(30),
+        ]);
+    }
+
+    private function createNewerWalletPendingAttempt(Order $order): PaymentAttempt
+    {
+        return PaymentAttempt::create([
+            'order_id' => $order->getKey(),
+            'provider' => 'paymob',
+            'method' => PaymentMethod::Wallet,
+            'status' => PaymentAttemptStatus::Pending,
+            'amount_minor' => 17000,
+            'currency' => 'EGP',
+            'merchant_reference' => 'SS-PAY-'.Str::ulid(),
+            'idempotency_key' => (string) Str::uuid(),
+            'request_fingerprint' => hash('sha256', 'wallet-newer'),
+            'provider_order_id' => (string) (990000000 + $order->getKey()),
+            'integration_id' => 789,
+            'expires_at' => now()->addMinutes(30),
+        ]);
+    }
+
+    private function walletTransaction(
+        PaymentAttempt $attempt,
+        bool $success = false,
+        bool $pending = false,
+        bool $errorOccurred = false,
+        ?string $merchantOrderId = null,
+        ?int $integrationId = null,
+        ?int $amountMinor = null,
+        ?string $currency = null,
+    ): PaymobTransaction {
+        return new PaymobTransaction(
+            transactionId: 123456790 + (int) $attempt->getKey(),
+            providerOrderId: (int) $attempt->provider_order_id,
+            integrationId: $integrationId ?? (int) $attempt->integration_id,
+            amountMinor: $amountMinor ?? $attempt->amount_minor,
+            currency: $currency ?? $attempt->currency,
+            success: $success,
+            pending: $pending,
+            errorOccurred: $errorOccurred,
+            refunded: false,
+            voided: false,
+            sourceType: '',
+            sourceSubtype: '',
+            merchantOrderId: $merchantOrderId ?? $attempt->merchant_reference,
+            createdAt: null,
+            updatedAt: null,
+        );
     }
 
     private function createNewerPendingAttempt(Order $order): PaymentAttempt

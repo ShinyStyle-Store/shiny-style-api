@@ -108,6 +108,7 @@ final class PaymobCardIntentionService
             $response = $this->client->postJson('create_intention', $endpoint, $snapshot->payload, [
                 'payment_attempt_public_id' => $preparedAttempt->public_id,
                 'merchant_reference' => $preparedAttempt->merchant_reference,
+                'payment_method' => $preparedAttempt->method->value,
             ]);
             $validated = $this->validateResponse($response, $snapshot, $integrationId);
         } catch (PaymobRequestException $exception) {

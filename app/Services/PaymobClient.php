@@ -19,7 +19,7 @@ final class PaymobClient
     }
 
     /**
-     * @param array{payment_attempt_public_id?:string, merchant_reference?:string} $diagnosticContext
+     * @param array{payment_attempt_public_id?:string, merchant_reference?:string, payment_method?:string} $diagnosticContext
      * @return array<string, mixed>
      */
     public function postJson(string $operation, string $path, array $payload, array $diagnosticContext = []): array
@@ -201,7 +201,7 @@ final class PaymobClient
     }
 
     /**
-     * @param array{payment_attempt_public_id?:string, merchant_reference?:string} $diagnosticContext
+     * @param array{payment_attempt_public_id?:string, merchant_reference?:string, payment_method?:string} $diagnosticContext
      */
     private function throwForHttpFailure(Response $response, string $operation, array $diagnosticContext): void
     {
@@ -210,9 +210,14 @@ final class PaymobClient
         if ($response->clientError()) {
             $this->logClientError($response, $operation, $diagnosticContext);
 
+            $definitiveRejection = ($diagnosticContext['payment_method'] ?? null) !== 'wallet'
+                || in_array($status, [400, 401, 403, 404, 422], true);
+
             throw new PaymobRequestException(
-                'provider_client_error',
-                "Paymob {$operation} was rejected by the provider.",
+                $definitiveRejection ? 'provider_client_error' : 'provider_outcome_uncertain',
+                $definitiveRejection
+                    ? "Paymob {$operation} was rejected by the provider."
+                    : "Paymob {$operation} returned an ambiguous response.",
                 $operation,
                 $status,
             );
@@ -238,7 +243,7 @@ final class PaymobClient
     }
 
     /**
-     * @param array{payment_attempt_public_id?:string, merchant_reference?:string} $diagnosticContext
+     * @param array{payment_attempt_public_id?:string, merchant_reference?:string, payment_method?:string} $diagnosticContext
      */
     private function logClientError(Response $response, string $operation, array $diagnosticContext): void
     {

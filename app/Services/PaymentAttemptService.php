@@ -105,7 +105,7 @@ class PaymentAttemptService
                         ->first();
 
                     if ($latestAttempt?->status === PaymentAttemptStatus::Failed
-                        && ! $latestAttempt->isDefinitiveProviderRejection()) {
+                        && ! $latestAttempt->isDefinitiveFailure()) {
                         throw new PaymentAttemptException(
                             'payment_attempt_not_retryable',
                             'The failed Wallet attempt does not have a definitive provider rejection.',

@@ -9,6 +9,9 @@ use App\Enums\PaymentProvider;
 use App\Enums\PaymentStatus;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
+use App\Support\ExactMoney;
+use InvalidArgumentException;
+use OverflowException;
 use Illuminate\Support\Facades\DB;
 
 final class PaymobTransactionWebhookService
@@ -17,17 +20,34 @@ final class PaymobTransactionWebhookService
 
     public function process(PaymobTransaction $transaction): PaymobWebhookResult
     {
-        $cardIntegrationId = $this->integrations->resolve(PaymentMethod::Card);
-
-        return DB::transaction(function () use ($transaction, $cardIntegrationId): PaymobWebhookResult {
-            $candidate = PaymentAttempt::query()
+        return DB::transaction(function () use ($transaction): PaymobWebhookResult {
+            $candidates = PaymentAttempt::query()
                 ->where('provider', PaymentProvider::Paymob->value)
                 ->where('provider_order_id', (string) $transaction->providerOrderId)
-                ->first();
+                ->get();
 
-            if ($candidate === null) {
+            if ($candidates->isEmpty()) {
                 return new PaymobWebhookResult(202);
             }
+
+            if ($candidates->count() > 1) {
+                $candidateIds = $candidates->modelKeys();
+                $orderIds = $candidates->pluck('order_id')->unique()->sort()->values();
+                Order::query()->whereKey($orderIds)->orderBy('id')->lockForUpdate()->get();
+
+                $lockedCandidates = PaymentAttempt::query()
+                    ->whereKey($candidateIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+                foreach ($lockedCandidates as $candidate) {
+                    $this->review($candidate, 'callback_order_id_ambiguous', $transaction->transactionId);
+                }
+
+                return new PaymobWebhookResult;
+            }
+
+            $candidate = $candidates->first();
 
             $order = Order::query()->whereKey($candidate->order_id)->lockForUpdate()->first();
             if ($order === null) {
@@ -53,7 +73,7 @@ final class PaymobTransactionWebhookService
                 return new PaymobWebhookResult;
             }
 
-            if (! $this->identityMatches($attempt, $transaction, $cardIntegrationId)) {
+            if (! $this->identityMatches($attempt, $order, $transaction)) {
                 $this->review($attempt, 'callback_identity_mismatch', $transaction->transactionId);
 
                 return new PaymobWebhookResult;
@@ -61,6 +81,12 @@ final class PaymobTransactionWebhookService
 
             if ($transaction->refunded || $transaction->voided) {
                 $this->review($attempt, 'provider_refund_or_void', $transaction->transactionId);
+
+                return new PaymobWebhookResult;
+            }
+
+            if ($attempt->method === PaymentMethod::Wallet && ! $this->walletOutcomeIsConsistent($transaction)) {
+                $this->review($attempt, 'callback_status_flags_inconsistent', $transaction->transactionId);
 
                 return new PaymobWebhookResult;
             }
@@ -102,6 +128,12 @@ final class PaymobTransactionWebhookService
                     return new PaymobWebhookResult;
                 }
 
+                if ($attempt->method === PaymentMethod::Wallet && $this->hasNewerAttempt($attempt)) {
+                    $this->review($attempt, 'late_wallet_success_with_newer_attempt', $transaction->transactionId);
+
+                    return new PaymobWebhookResult;
+                }
+
                 $attempt->forceFill([
                     'status' => PaymentAttemptStatus::Paid,
                     'provider_transaction_id' => (string) $transaction->transactionId,
@@ -114,7 +146,9 @@ final class PaymobTransactionWebhookService
                 return new PaymobWebhookResult;
             }
 
-            if (in_array($attempt->status, [PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true)) {
+            if ($attempt->status === PaymentAttemptStatus::Paid
+                || ($attempt->status === PaymentAttemptStatus::RequiresReview
+                    && $attempt->method !== PaymentMethod::Wallet)) {
                 return new PaymobWebhookResult;
             }
 
@@ -137,15 +171,63 @@ final class PaymobTransactionWebhookService
         });
     }
 
-    private function identityMatches(PaymentAttempt $attempt, PaymobTransaction $transaction, int $cardIntegrationId): bool
+    private function identityMatches(PaymentAttempt $attempt, Order $order, PaymobTransaction $transaction): bool
     {
-        return $attempt->provider === PaymentProvider::Paymob
-            && $attempt->method === PaymentMethod::Card
-            && $attempt->provider_order_id === (string) $transaction->providerOrderId
-            && $attempt->integration_id === $transaction->integrationId
-            && $attempt->integration_id === $cardIntegrationId
-            && $attempt->amount_minor === $transaction->amountMinor
-            && strtoupper($attempt->currency) === $transaction->currency;
+        if ($attempt->provider !== PaymentProvider::Paymob
+            || ! in_array($attempt->method, [PaymentMethod::Card, PaymentMethod::Wallet], true)
+        ) {
+            return false;
+        }
+
+        if ($attempt->method !== $order->payment_method
+            || $attempt->provider_order_id !== (string) $transaction->providerOrderId
+            || $attempt->integration_id !== $transaction->integrationId
+            || $attempt->amount_minor !== $transaction->amountMinor
+            || strtoupper($attempt->currency) !== $transaction->currency) {
+            return false;
+        }
+
+        if ($attempt->method === PaymentMethod::Card) {
+            try {
+                if ($attempt->integration_id !== $this->integrations->resolve(PaymentMethod::Card)) {
+                    return false;
+                }
+            } catch (\App\Exceptions\PaymobConfigurationException) {
+                return false;
+            }
+        }
+
+        if ($attempt->method === PaymentMethod::Wallet
+            && $transaction->merchantOrderId !== $attempt->merchant_reference) {
+            return false;
+        }
+
+        if ($transaction->merchantOrderId !== null
+            && $transaction->merchantOrderId !== $attempt->merchant_reference) {
+            return false;
+        }
+
+        try {
+            return ExactMoney::toMinorUnitInteger((string) $order->total) === $attempt->amount_minor
+                && strtoupper((string) $order->currency) === strtoupper($attempt->currency);
+        } catch (InvalidArgumentException|OverflowException) {
+            return false;
+        }
+    }
+
+    private function walletOutcomeIsConsistent(PaymobTransaction $transaction): bool
+    {
+        return ($transaction->success && ! $transaction->pending && ! $transaction->errorOccurred)
+            || (! $transaction->success && $transaction->pending && ! $transaction->errorOccurred)
+            || (! $transaction->success && ! $transaction->pending && $transaction->errorOccurred);
+    }
+
+    private function hasNewerAttempt(PaymentAttempt $attempt): bool
+    {
+        return PaymentAttempt::query()
+            ->where('order_id', $attempt->order_id)
+            ->where('id', '>', $attempt->getKey())
+            ->exists();
     }
 
     private function orderIsLateOrClosed(Order $order): bool

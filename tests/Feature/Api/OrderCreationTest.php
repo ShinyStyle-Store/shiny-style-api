@@ -353,6 +353,45 @@ class OrderCreationTest extends TestCase
         $this->assertSame(0, $item->refresh()->reserved_quantity);
     }
 
+    public function test_arabic_and_persian_wallet_phone_digits_are_normalized_before_validation(): void
+    {
+        config([
+            'services.paymob.secret_key' => 'test-secret',
+            'services.paymob.wallet_integration_id' => '789',
+            'services.paymob.api_base_url' => 'https://paymob.test',
+            'services.paymob.intention_endpoint' => '/v1/intention/',
+            'services.paymob.redirect_url' => 'https://shop.test/return',
+            'services.paymob.webhook_url' => 'https://shop.test/api/v1/payments/paymob/webhook',
+            'services.paymob.unified_checkout_base_url' => 'https://paymob.test/unifiedcheckout/',
+        ]);
+        $area = $this->shippingArea(20);
+        $item = $this->sellableItem('100.00', 5);
+
+        foreach ([
+            ['٠١٠١٢٣٤٥٦٧٨', '01012345678'],
+            ['۰۱۱۱۲۳۴۵۶۷۸', '01112345678'],
+        ] as [$localizedPhone, $normalizedPhone]) {
+            $payload = $this->payload($area, $item, 1);
+            $payload['payment_method'] = 'wallet';
+            $payload['customer']['phone'] = $localizedPhone;
+            $payload['customer']['email'] = 'wallet@example.com';
+
+            $this->withHeader('Idempotency-Key', $this->key())
+                ->postJson('/api/v1/orders', $payload)
+                ->assertCreated()
+                ->assertJsonPath('data.customer.phone', $normalizedPhone);
+        }
+
+        $payload = $this->payload($area, $item, 1);
+        $payload['payment_method'] = 'wallet';
+        $payload['customer']['phone'] = '٠١٦١٢٣٤٥٦٧٨';
+        $payload['customer']['email'] = 'wallet@example.com';
+        $this->withHeader('Idempotency-Key', $this->key())
+            ->postJson('/api/v1/orders', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('customer.phone');
+    }
+
     public function test_missing_wallet_configuration_rejects_before_order_or_reservation_creation(): void
     {
         config([

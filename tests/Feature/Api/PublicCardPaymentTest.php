@@ -120,8 +120,9 @@ class PublicCardPaymentTest extends TestCase
         Http::fake(['https://paymob.test/*' => Http::failedConnection('connection refused')]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
         $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $idempotencyKey = (string) Str::uuid();
 
-        $response = $this->withHeader('Idempotency-Key', (string) Str::uuid())->post($url);
+        $response = $this->withHeader('Idempotency-Key', $idempotencyKey)->post($url);
 
         $response->assertStatus(503)->assertJsonPath('code', 'payment_outcome_uncertain');
         $attempt = PaymentAttempt::query()->firstOrFail();
@@ -131,6 +132,11 @@ class PublicCardPaymentTest extends TestCase
         $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
 
         $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', false);
+        $this->withHeader('Idempotency-Key', $idempotencyKey)
+            ->post($url)
+            ->assertStatus(503)
+            ->assertJsonPath('code', 'payment_outcome_uncertain');
+        Http::assertSentCount(1);
         $this->withHeader('Idempotency-Key', (string) Str::uuid())
             ->post($url)
             ->assertConflict()
@@ -163,11 +169,14 @@ class PublicCardPaymentTest extends TestCase
         $this->assertSame(PaymentAttemptStatus::Failed, $failedAttempt->status);
         $this->assertSame('provider_client_error', $failedAttempt->failure_code);
         $this->assertSame(PaymentStatus::Failed, $order->fresh()->payment_status);
-        $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', true);
+        $this->get($statusUrl)->assertOk()
+            ->assertJsonPath('data.retryable', true)
+            ->assertJsonPath('data.resultCode', 'payment_failed_retryable');
         $this->withHeader('Idempotency-Key', $firstKey)
             ->post($url)
-            ->assertConflict()
-            ->assertJsonPath('code', 'payment_attempt_not_retryable');
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'payment_provider_rejected');
+        Http::assertSentCount(1);
 
         $this->withHeader('Idempotency-Key', $retryKey)
             ->post($url)
@@ -198,9 +207,14 @@ class PublicCardPaymentTest extends TestCase
         ], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
         $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $idempotencyKey = (string) Str::uuid();
 
-        $this->withHeader('Idempotency-Key', (string) Str::uuid())->post($url)->assertCreated();
+        $this->withHeader('Idempotency-Key', $idempotencyKey)->post($url)->assertCreated();
         $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', false);
+        $this->withHeader('Idempotency-Key', $idempotencyKey)
+            ->post($url)
+            ->assertOk()
+            ->assertJsonPath('data.status', 'pending');
         $this->withHeader('Idempotency-Key', (string) Str::uuid())
             ->post($url)
             ->assertConflict()
@@ -210,19 +224,27 @@ class PublicCardPaymentTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_wallet_failure_without_a_definitive_rejection_cannot_be_retried(): void
+    public function test_confirmed_wallet_transaction_failure_can_be_retried(): void
     {
         $order = $this->walletOrder();
-        Http::fake(['https://paymob.test/*' => Http::response([
-            'id' => 'int-wallet-failed-transaction',
-            'client_secret' => 'wallet-failed-transaction-secret',
-            'intention_order_id' => 987105,
-            'payment_methods' => [['integration_id' => 789]],
-        ], 201)]);
+        Http::fake(['https://paymob.test/*' => Http::sequence()
+            ->push([
+                'id' => 'int-wallet-failed-transaction',
+                'client_secret' => 'wallet-failed-transaction-secret',
+                'intention_order_id' => 987105,
+                'payment_methods' => [['integration_id' => 789]],
+            ], 201)
+            ->push([
+                'id' => 'int-wallet-after-confirmed-failure',
+                'client_secret' => 'wallet-after-confirmed-failure-secret',
+                'intention_order_id' => 987106,
+                'payment_methods' => [['integration_id' => 789]],
+            ], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
         $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
 
-        $this->withHeader('Idempotency-Key', (string) Str::uuid())->post($url)->assertCreated();
+        $initialKey = (string) Str::uuid();
+        $this->withHeader('Idempotency-Key', $initialKey)->post($url)->assertCreated();
         $attempt = PaymentAttempt::query()->firstOrFail();
         $attempt->update([
             'status' => PaymentAttemptStatus::Failed,
@@ -230,14 +252,21 @@ class PublicCardPaymentTest extends TestCase
         ]);
         $order->update(['payment_status' => PaymentStatus::Failed]);
 
-        $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', false);
-        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+        $this->get($statusUrl)->assertOk()
+            ->assertJsonPath('data.retryable', true)
+            ->assertJsonPath('data.resultCode', 'payment_failed_retryable');
+        $this->withHeader('Idempotency-Key', $initialKey)
             ->post($url)
             ->assertConflict()
-            ->assertJsonPath('code', 'payment_attempt_not_retryable');
-
-        $this->assertDatabaseCount('payment_attempts', 1);
+            ->assertJsonPath('code', 'payment_failed_retryable');
         Http::assertSentCount(1);
+
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->post($url)
+            ->assertCreated();
+
+        $this->assertDatabaseCount('payment_attempts', 2);
+        Http::assertSentCount(2);
     }
 
     public function test_malformed_wallet_provider_response_requires_review_without_persisting_an_incomplete_result(): void

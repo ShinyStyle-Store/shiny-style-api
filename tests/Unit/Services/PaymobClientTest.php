@@ -124,6 +124,33 @@ class PaymobClientTest extends TestCase
         ];
     }
 
+    #[DataProvider('ambiguousWalletErrorResponses')]
+    public function test_ambiguous_wallet_http_errors_are_not_classified_as_final_rejections(int $status): void
+    {
+        Http::fake([
+            'https://paymob.test/*' => Http::response(['detail' => 'Provider response'], $status),
+        ]);
+
+        try {
+            app(PaymobClient::class)->postJson('create_intention', '/v1/intention/', [], [
+                'payment_method' => 'wallet',
+            ]);
+            $this->fail('An ambiguous Wallet response should not be treated as a final rejection.');
+        } catch (PaymobRequestException $exception) {
+            $this->assertSame('provider_outcome_uncertain', $exception->errorCode);
+            $this->assertSame($status, $exception->statusCode);
+        }
+    }
+
+    public static function ambiguousWalletErrorResponses(): array
+    {
+        return [
+            '408' => [408],
+            '409' => [409],
+            '429' => [429],
+        ];
+    }
+
     public function test_malformed_successful_response_is_rejected(): void
     {
         Http::fake([
