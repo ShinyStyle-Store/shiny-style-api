@@ -19,6 +19,7 @@ final readonly class PaymobTransaction
         public bool $voided,
         public string $sourceType,
         public string $sourceSubtype,
+        public ?string $merchantOrderId,
         public ?string $createdAt,
         public ?string $updatedAt,
     ) {
@@ -43,6 +44,7 @@ final readonly class PaymobTransaction
             self::boolean($object, 'is_voided') || self::optionalBoolean($object, 'is_void'),
             self::nonEmptyString($source, 'type'),
             self::nonEmptyString($source, 'sub_type'),
+            self::optionalString($order, 'merchant_order_id'),
             self::optionalString($object, 'created_at'),
             self::optionalString($object, 'updated_at'),
         );

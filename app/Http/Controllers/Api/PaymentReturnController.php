@@ -30,8 +30,8 @@ class PaymentReturnController extends Controller
         if ($attempt === null
             || $order === null
             || $order->public_id !== $grant['order_public_id']
-            || $order->payment_method !== PaymentMethod::Card
-            || $attempt->method !== PaymentMethod::Card) {
+            || ! $order->payment_method->isOnline()
+            || $attempt->method !== $order->payment_method) {
             return response()->json([
                 'code' => 'invalid_payment_return_token',
                 'message' => 'The payment return token is invalid or expired.',
@@ -39,8 +39,13 @@ class PaymentReturnController extends Controller
         }
 
         $order->load('items');
+        $latestAttempt = $order->paymentAttempts()->latest('id')->first() ?? $attempt;
 
-        return (new PaymentReturnResource(['order' => $order, 'attempt' => $attempt]))
+        return (new PaymentReturnResource([
+            'order' => $order,
+            'attempt' => $latestAttempt,
+            'return_token_is_for_latest_attempt' => $latestAttempt->is($attempt),
+        ]))
             ->response()
             ->header('Cache-Control', 'no-store, private')
             ->header('Referrer-Policy', 'no-referrer');

@@ -23,6 +23,16 @@ class PaymentAttemptTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config([
+            'services.paymob.card_integration_id' => '12345',
+            'services.paymob.wallet_integration_id' => '67890',
+            'services.paymob.is_live' => false,
+        ]);
+    }
+
     public function test_payment_attempt_relationships_and_casts_work(): void
     {
         $order = Order::factory()->create();
@@ -138,17 +148,24 @@ class PaymentAttemptTest extends TestCase
 
         $card = $service->create($order, PaymentMethod::Card, (string) Str::uuid());
         $this->assertSame('paymob', $card->provider->value);
+        $this->assertSame(12345, $card->integration_id);
         $this->assertSame(45050, $card->amount_minor);
         $this->assertSame('EGP', $card->currency);
         $this->assertSame('2026-09-26 12:30:00', $card->expires_at->toDateTimeString());
 
-        $card->update(['status' => PaymentAttemptStatus::Failed]);
-        $wallet = $service->create($order->fresh(), PaymentMethod::Wallet, (string) Str::uuid());
+        $walletOrder = Order::factory()->create([
+            'total' => '450.50',
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Pending,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        $wallet = $service->create($walletOrder, PaymentMethod::Wallet, (string) Str::uuid());
         $this->assertSame(PaymentMethod::Wallet, $wallet->method);
+        $this->assertSame(67890, $wallet->integration_id);
         $this->assertSame($card->expires_at->toDateTimeString(), $wallet->expires_at->toDateTimeString());
-        $this->assertSame('2026-09-26 12:30:00', $order->fresh()->payment_expires_at->toDateTimeString());
-        $this->assertSame(OrderStatus::PendingConfirmation, $order->fresh()->status);
-        $this->assertSame(PaymentStatus::Unpaid, $order->fresh()->payment_status);
+        $this->assertSame('2026-09-26 12:30:00', $walletOrder->fresh()->payment_expires_at->toDateTimeString());
+        $this->assertSame(OrderStatus::PendingConfirmation, $walletOrder->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $walletOrder->fresh()->payment_status);
 
         Carbon::setTestNow();
     }
@@ -170,6 +187,26 @@ class PaymentAttemptTest extends TestCase
 
         $this->expectException(IdempotencyConflictException::class);
         $service->create($order->fresh(), PaymentMethod::Wallet, $key);
+    }
+
+    public function test_service_rejects_a_second_active_wallet_attempt(): void
+    {
+        $order = Order::factory()->create([
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Pending,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        $service = app(PaymentAttemptService::class);
+        $service->create($order, PaymentMethod::Wallet, (string) Str::uuid());
+
+        try {
+            $service->create($order->fresh(), PaymentMethod::Wallet, (string) Str::uuid());
+            $this->fail('A second active Wallet attempt must not be created.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('active_payment_attempt_exists', $exception->errorCode);
+        }
+
+        $this->assertDatabaseCount('payment_attempts', 1);
     }
 
     public function test_idempotency_fingerprint_includes_order_identity(): void
@@ -332,8 +369,11 @@ class PaymentAttemptTest extends TestCase
 
     public function test_order_deletion_is_restricted_when_payment_history_exists(): void
     {
-        $order = Order::factory()->create();
-        $order->update(['payment_expires_at' => now()->addMinutes(30)]);
+        $order = Order::factory()->create([
+            'payment_method' => PaymentMethod::Card,
+            'payment_status' => PaymentStatus::Pending,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
         app(PaymentAttemptService::class)->create($order, PaymentMethod::Card, (string) Str::uuid());
 
         $this->expectException(QueryException::class);

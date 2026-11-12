@@ -64,7 +64,7 @@ class StoreGuestOrderRequest extends FormRequest
             'items.*' => ['required', 'array'],
             'items.*.sellable_item_id' => ['required', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:2147483647'],
-            'payment_method' => ['required', 'in:cash_on_delivery,card'],
+            'payment_method' => ['required', 'in:cash_on_delivery,card,wallet'],
             'order_note' => ['nullable', 'string', 'max:1000'],
         ];
     }
@@ -94,9 +94,9 @@ class StoreGuestOrderRequest extends FormRequest
                 $validator->errors()->add('idempotency_key', 'The Idempotency-Key header must be a valid UUID.');
             }
 
-            if (($data['payment_method'] ?? null) === 'card'
+            if (in_array($data['payment_method'] ?? null, ['card', 'wallet'], true)
                 && (! is_string($data['customer']['email'] ?? null) || trim($data['customer']['email']) === '')) {
-                $validator->errors()->add('customer.email', 'An email address is required for card payments.');
+                $validator->errors()->add('customer.email', 'An email address is required for online payments.');
             }
         });
     }
@@ -116,32 +116,5 @@ class StoreGuestOrderRequest extends FormRequest
             $path = $prefix === '' ? (string) $key : "{$prefix}.{$key}";
             $validator->errors()->add($path, 'This field is not allowed.');
         }
-    }
-
-    private function normalizePhone(mixed $phone): mixed
-    {
-        if (! is_string($phone)) {
-            return $phone;
-        }
-
-        $phone = strtr($phone, [
-            '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
-            '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
-            '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
-            '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
-        ]);
-        $phone = preg_replace('/[\s\-()]+/', '', trim($phone)) ?? $phone;
-
-        if ($phone === '') {
-            return null;
-        }
-
-        if (str_starts_with($phone, '+20')) {
-            $phone = '0'.substr($phone, 3);
-        } elseif (str_starts_with($phone, '0020')) {
-            $phone = '0'.substr($phone, 4);
-        }
-
-        return $phone;
     }
 }

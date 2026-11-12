@@ -27,6 +27,7 @@ class PublicCardPaymentTest extends TestCase
             'services.paymob.secret_key' => 'test-secret',
             'services.paymob.public_key' => 'test-public',
             'services.paymob.card_integration_id' => '456',
+            'services.paymob.wallet_integration_id' => '789',
             'services.paymob.api_base_url' => 'https://paymob.test',
             'services.paymob.intention_endpoint' => '/v1/intention/',
             'services.paymob.redirect_url' => 'https://shop.test/return',
@@ -59,6 +60,231 @@ class PublicCardPaymentTest extends TestCase
         Http::assertSentCount(1);
         $this->assertStringNotContainsString('test-secret', $first->getContent());
         $this->assertStringContainsString('client-secret', $first->json('data.checkoutUrl'));
+    }
+
+    public function test_signed_wallet_initiation_uses_the_stored_method_and_wallet_integration_on_replay(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int-wallet-1',
+            'client_secret' => 'wallet-client-secret',
+            'intention_order_id' => 987101,
+            'payment_methods' => [['integration_id' => 789]],
+        ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $key = (string) Str::uuid();
+
+        $first = $this->withHeader('Idempotency-Key', $key)->post($url);
+        $first->assertCreated()->assertJsonStructure([
+            'data' => ['paymentAttemptId', 'status', 'checkoutUrl', 'expiresAt'],
+        ]);
+        $second = $this->withHeader('Idempotency-Key', $key)->post($url);
+
+        $second->assertOk()->assertJsonPath('data.status', 'pending');
+        $this->assertSame($first->json('data.checkoutUrl'), $second->json('data.checkoutUrl'));
+        $attempt = PaymentAttempt::query()->firstOrFail();
+        $this->assertSame(PaymentMethod::Wallet, $attempt->method);
+        $this->assertSame(789, $attempt->integration_id);
+        $this->assertSame(PaymentAttemptStatus::Pending, $attempt->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+        Http::assertSentCount(1);
+        Http::assertSent(function ($request): bool {
+            $data = $request->data();
+
+            return $data['payment_methods'] === [789]
+                && $data['billing_data']['phone_number'] === '01110007513'
+                && $data['billing_data']['email'] === 'wallet@example.com'
+                && $data['notification_url'] === 'https://shop.test/api/v1/payments/paymob/webhook'
+                && str_starts_with($data['redirection_url'], 'https://shop.test/return#payment_return=');
+        });
+    }
+
+    public function test_wallet_initiation_does_not_accept_a_client_selected_method_or_integration(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::response()]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson($url, ['payment_method' => 'card', 'integration_id' => 456])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('body');
+
+        $this->assertDatabaseCount('payment_attempts', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_wallet_provider_connection_failure_requires_review_without_a_stuck_submission(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::failedConnection('connection refused')]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $idempotencyKey = (string) Str::uuid();
+
+        $response = $this->withHeader('Idempotency-Key', $idempotencyKey)->post($url);
+
+        $response->assertStatus(503)->assertJsonPath('code', 'payment_outcome_uncertain');
+        $attempt = PaymentAttempt::query()->firstOrFail();
+        $this->assertSame(PaymentMethod::Wallet, $attempt->method);
+        $this->assertSame(789, $attempt->integration_id);
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+
+        $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', false);
+        $this->withHeader('Idempotency-Key', $idempotencyKey)
+            ->post($url)
+            ->assertStatus(503)
+            ->assertJsonPath('code', 'payment_outcome_uncertain');
+        Http::assertSentCount(1);
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->post($url)
+            ->assertConflict()
+            ->assertJsonPath('code', 'payment_attempt_not_retryable');
+        $this->assertDatabaseCount('payment_attempts', 1);
+        Http::assertSentCount(1);
+    }
+
+    public function test_wallet_provider_rejection_can_be_retried_with_a_new_key(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::sequence()
+            ->push(['detail' => 'Invalid wallet intention'], 404)
+            ->push([
+                'id' => 'int-wallet-retry',
+                'client_secret' => 'wallet-retry-secret',
+                'intention_order_id' => 987103,
+                'payment_methods' => [['integration_id' => 789]],
+            ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $firstKey = (string) Str::uuid();
+        $retryKey = (string) Str::uuid();
+
+        $this->withHeader('Idempotency-Key', $firstKey)
+            ->post($url)
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'payment_provider_rejected');
+        $failedAttempt = PaymentAttempt::query()->firstOrFail();
+        $this->assertSame(PaymentAttemptStatus::Failed, $failedAttempt->status);
+        $this->assertSame('provider_client_error', $failedAttempt->failure_code);
+        $this->assertSame(PaymentStatus::Failed, $order->fresh()->payment_status);
+        $this->get($statusUrl)->assertOk()
+            ->assertJsonPath('data.retryable', true)
+            ->assertJsonPath('data.resultCode', 'payment_failed_retryable');
+        $this->withHeader('Idempotency-Key', $firstKey)
+            ->post($url)
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'payment_provider_rejected');
+        Http::assertSentCount(1);
+
+        $this->withHeader('Idempotency-Key', $retryKey)
+            ->post($url)
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'pending');
+
+        $attempts = PaymentAttempt::query()->orderBy('id')->get();
+        $this->assertCount(2, $attempts);
+        $this->assertSame(PaymentAttemptStatus::Pending, $attempts->last()->status);
+        $this->assertSame(789, $attempts->last()->integration_id);
+        $this->assertNotSame($failedAttempt->merchant_reference, $attempts->last()->merchant_reference);
+        $this->assertNotSame($failedAttempt->idempotency_key, $attempts->last()->idempotency_key);
+        $this->assertSame($firstKey, $failedAttempt->idempotency_key);
+        $this->assertSame($retryKey, $attempts->last()->idempotency_key);
+        $this->assertSame(PaymentAttemptStatus::Failed, $failedAttempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+        Http::assertSentCount(2);
+    }
+
+    public function test_active_wallet_attempt_cannot_be_retried(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int-wallet-active',
+            'client_secret' => 'wallet-active-secret',
+            'intention_order_id' => 987104,
+            'payment_methods' => [['integration_id' => 789]],
+        ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $idempotencyKey = (string) Str::uuid();
+
+        $this->withHeader('Idempotency-Key', $idempotencyKey)->post($url)->assertCreated();
+        $this->get($statusUrl)->assertOk()->assertJsonPath('data.retryable', false);
+        $this->withHeader('Idempotency-Key', $idempotencyKey)
+            ->post($url)
+            ->assertOk()
+            ->assertJsonPath('data.status', 'pending');
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->post($url)
+            ->assertConflict()
+            ->assertJsonPath('code', 'active_payment_attempt_exists');
+
+        $this->assertDatabaseCount('payment_attempts', 1);
+        Http::assertSentCount(1);
+    }
+
+    public function test_confirmed_wallet_transaction_failure_can_be_retried(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::sequence()
+            ->push([
+                'id' => 'int-wallet-failed-transaction',
+                'client_secret' => 'wallet-failed-transaction-secret',
+                'intention_order_id' => 987105,
+                'payment_methods' => [['integration_id' => 789]],
+            ], 201)
+            ->push([
+                'id' => 'int-wallet-after-confirmed-failure',
+                'client_secret' => 'wallet-after-confirmed-failure-secret',
+                'intention_order_id' => 987106,
+                'payment_methods' => [['integration_id' => 789]],
+            ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+        $statusUrl = URL::temporarySignedRoute('orders.payments.status', now()->addMinutes(5), ['public_id' => $order->public_id]);
+
+        $initialKey = (string) Str::uuid();
+        $this->withHeader('Idempotency-Key', $initialKey)->post($url)->assertCreated();
+        $attempt = PaymentAttempt::query()->firstOrFail();
+        $attempt->update([
+            'status' => PaymentAttemptStatus::Failed,
+            'failure_code' => 'provider_transaction_failed',
+        ]);
+        $order->update(['payment_status' => PaymentStatus::Failed]);
+
+        $this->get($statusUrl)->assertOk()
+            ->assertJsonPath('data.retryable', true)
+            ->assertJsonPath('data.resultCode', 'payment_failed_retryable');
+        $this->withHeader('Idempotency-Key', $initialKey)
+            ->post($url)
+            ->assertConflict()
+            ->assertJsonPath('code', 'payment_failed_retryable');
+        Http::assertSentCount(1);
+
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->post($url)
+            ->assertCreated();
+
+        $this->assertDatabaseCount('payment_attempts', 2);
+        Http::assertSentCount(2);
+    }
+
+    public function test_malformed_wallet_provider_response_requires_review_without_persisting_an_incomplete_result(): void
+    {
+        $order = $this->walletOrder();
+        Http::fake(['https://paymob.test/*' => Http::response([
+            'id' => 'int-wallet-malformed',
+            'intention_order_id' => 987102,
+        ], 201)]);
+        $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
+
+        $response = $this->withHeader('Idempotency-Key', (string) Str::uuid())->post($url);
+
+        $response->assertStatus(503)->assertJsonPath('code', 'payment_outcome_uncertain');
+        $attempt = PaymentAttempt::query()->firstOrFail();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->status);
+        $this->assertNull($attempt->provider_intention_id);
+        $this->assertNull($attempt->provider_order_id);
     }
 
     public function test_signed_initiation_accepts_an_empty_json_object(): void
@@ -255,6 +481,29 @@ class PublicCardPaymentTest extends TestCase
             'customer_name' => 'Card Customer',
             'customer_email' => 'card@example.com',
             'payment_method' => PaymentMethod::Card,
+            'payment_status' => PaymentStatus::Pending,
+            'subtotal' => '100.00',
+            'shipping_fee' => '70.00',
+            'total' => '170.00',
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        OrderItem::factory()->create([
+            'order_id' => $order->id,
+            'unit_price' => '100.00',
+            'quantity' => 1,
+            'line_total' => '100.00',
+        ]);
+
+        return $order;
+    }
+
+    private function walletOrder(): Order
+    {
+        $order = Order::factory()->create([
+            'customer_name' => 'Wallet Customer',
+            'customer_phone' => '01110007513',
+            'customer_email' => 'wallet@example.com',
+            'payment_method' => PaymentMethod::Wallet,
             'payment_status' => PaymentStatus::Pending,
             'subtotal' => '100.00',
             'shipping_fee' => '70.00',

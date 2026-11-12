@@ -87,6 +87,15 @@ class PaymentExpirationTest extends TestCase
             $this->assertSame(OrderStatus::PendingConfirmation, $order->fresh()->status);
             $this->assertSame(3, $item->fresh()->reserved_quantity);
         }
+
+        [$walletOrder, $walletItem] = $this->orderWithReservation(
+            PaymentAttemptStatus::RequiresReview,
+            method: PaymentMethod::Wallet,
+        );
+
+        $this->assertSame('review-required', app(PaymentExpirationService::class)->expire($walletOrder)->status);
+        $this->assertSame(OrderStatus::PendingConfirmation, $walletOrder->fresh()->status);
+        $this->assertSame(3, $walletItem->fresh()->reserved_quantity);
     }
 
     public function test_corrupt_reservation_rolls_back_order_and_attempt_changes(): void
@@ -120,7 +129,12 @@ class PaymentExpirationTest extends TestCase
         $this->assertSame($beforeItem->stock_quantity, $afterItem->stock_quantity);
     }
 
-    private function orderWithReservation(PaymentAttemptStatus $status, int $reserved = 3, int $quantity = 3): array
+    private function orderWithReservation(
+        PaymentAttemptStatus $status,
+        int $reserved = 3,
+        int $quantity = 3,
+        PaymentMethod $method = PaymentMethod::Card,
+    ): array
     {
         $product = Product::create([
             'slug' => 'expiration-product-'.uniqid(),
@@ -139,7 +153,7 @@ class PaymentExpirationTest extends TestCase
             'is_default' => true,
         ]);
         $order = Order::factory()->create([
-            'payment_method' => PaymentMethod::Card,
+            'payment_method' => $method,
             'payment_status' => PaymentStatus::Unpaid,
             'payment_expires_at' => now()->subMinute(),
             'subtotal' => '300.00',
@@ -157,7 +171,7 @@ class PaymentExpirationTest extends TestCase
         PaymentAttempt::create([
             'order_id' => $order->id,
             'provider' => 'paymob',
-            'method' => 'card',
+            'method' => $method,
             'status' => $status,
             'amount_minor' => 37000,
             'currency' => 'EGP',

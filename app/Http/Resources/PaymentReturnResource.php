@@ -4,6 +4,8 @@ namespace App\Http\Resources;
 
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentStatus;
+use App\Models\Order;
+use App\Models\PaymentAttempt;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -13,13 +15,28 @@ class PaymentReturnResource extends JsonResource
     {
         $order = $this->resource['order'];
         $attempt = $this->resource['attempt'];
+        $retryable = $order->payment_method->isOnline()
+            && $order->payment_status !== PaymentStatus::Paid
+            && $order->status->value === 'pending_confirmation'
+            && $order->payment_expires_at?->isFuture() === true
+            && ($order->payment_method->value !== 'wallet'
+                || $attempt->status !== PaymentAttemptStatus::Failed
+                || $attempt->isDefinitiveFailure())
+            && ! in_array($attempt->status, [
+                PaymentAttemptStatus::Pending,
+                PaymentAttemptStatus::Submitting,
+                PaymentAttemptStatus::Paid,
+                PaymentAttemptStatus::RequiresReview,
+            ], true);
 
         return [
             'payment' => [
                 'status' => $order->payment_status->value,
                 'method' => $order->payment_method->value,
                 'attemptStatus' => $attempt->status?->value,
-                'resultCode' => $this->resultCode($order, $attempt->status),
+                'resultCode' => $this->resultCode($order, $attempt),
+                'retryable' => $retryable,
+                'returnTokenIsForLatestAttempt' => $this->resource['return_token_is_for_latest_attempt'],
                 'paidAt' => $attempt->paid_at?->toISOString(),
                 'expiresAt' => $order->payment_expires_at?->toISOString(),
             ],
@@ -64,7 +81,7 @@ class PaymentReturnResource extends JsonResource
         ];
     }
 
-    private function resultCode($order, ?PaymentAttemptStatus $status): string
+    private function resultCode(Order $order, PaymentAttempt $attempt): string
     {
         if ($order->payment_status === PaymentStatus::Paid) {
             return 'paid';
@@ -76,7 +93,13 @@ class PaymentReturnResource extends JsonResource
             return 'payment_window_expired';
         }
 
-        return match ($status) {
+        if ($order->payment_method->value === 'wallet' && $attempt->status === PaymentAttemptStatus::Failed) {
+            return $attempt->isDefinitiveFailure()
+                ? 'payment_failed_retryable'
+                : 'payment_outcome_uncertain';
+        }
+
+        return match ($attempt->status) {
             PaymentAttemptStatus::RequiresReview, PaymentAttemptStatus::Submitting => 'requires_review',
             PaymentAttemptStatus::Failed => 'payment_failed_retryable',
             PaymentAttemptStatus::Expired => 'payment_window_expired',

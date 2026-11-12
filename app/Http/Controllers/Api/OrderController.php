@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\PaymentMethod;
 use App\Exceptions\IdempotencyConflictException;
 use App\Exceptions\InsufficientStockException;
 use App\Exceptions\PaymobConfigurationException;
@@ -17,9 +18,11 @@ class OrderController extends Controller
 {
     public function store(StoreGuestOrderRequest $request, GuestOrderService $orderService, PaymobCardIntentionService $intentions): JsonResponse
     {
+        $paymentMethod = PaymentMethod::from($request->validated('payment_method'));
+
         try {
-            if ($request->validated('payment_method') === 'card') {
-                $intentions->validateCardCheckoutConfiguration();
+            if ($paymentMethod->isOnline()) {
+                $intentions->validateCheckoutConfiguration($paymentMethod);
             }
             $result = $orderService->create($request->validated(), $request->idempotencyKey());
         } catch (IdempotencyConflictException $exception) {
@@ -37,7 +40,9 @@ class OrderController extends Controller
         } catch (PaymobConfigurationException) {
             return response()->json([
                 'code' => 'payment_configuration_unavailable',
-                'message' => 'Card payment is temporarily unavailable.',
+                'message' => $paymentMethod === PaymentMethod::Wallet
+                    ? 'Wallet payment is temporarily unavailable.'
+                    : 'Card payment is temporarily unavailable.',
             ], 503);
         }
 

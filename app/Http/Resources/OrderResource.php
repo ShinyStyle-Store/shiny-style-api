@@ -57,10 +57,10 @@ class OrderResource extends JsonResource
             'created_at' => $this->created_at?->toISOString(),
         ];
 
-        if ($this->payment_method->value === 'card') {
+        if ($this->payment_method->isOnline()) {
             $data['payment'] = [
                 'required' => true,
-                'method' => 'card',
+                'method' => $this->payment_method->value,
                 'status' => $this->payment_status->value,
                 'expiresAt' => $this->payment_expires_at?->toISOString(),
                 'initiateUrl' => URL::temporarySignedRoute(

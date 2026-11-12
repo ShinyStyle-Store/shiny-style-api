@@ -31,6 +31,7 @@ class AdminPaymobReviewTest extends TestCase
             'services.paymob.api_key' => 'api-key-test-value',
             'services.paymob.is_live' => false,
             'services.paymob.card_integration_id' => 1234,
+            'services.paymob.wallet_integration_id' => 5678,
             'services.paymob.api_base_url' => 'https://accept.paymob.com',
         ]);
     }
@@ -88,6 +89,142 @@ class AdminPaymobReviewTest extends TestCase
 
         $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')->assertNotFound();
         Http::assertSentCount(2);
+    }
+
+    public function test_wallet_attempt_can_be_verified_using_its_saved_method_and_integration(): void
+    {
+        $order = $this->createOrder(['payment_method' => PaymentMethod::Wallet]);
+        $attempt = $this->createAttempt($order, [
+            'method' => PaymentMethod::Wallet,
+            'integration_id' => 5678,
+        ]);
+        $this->authenticateAdmin();
+        $this->fakeInquiry($this->transactionResponse([
+            'integration_id' => 5678,
+            'order' => ['id' => 5000, 'merchant_order_id' => $attempt->merchant_reference],
+        ]));
+
+        $this->getJson('/api/v1/admin/payment-attempts/requires-review')
+            ->assertOk()
+            ->assertJsonFragment(['payment_attempt_id' => $attempt->public_id]);
+        $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')
+            ->assertOk()
+            ->assertJsonPath('data.result', 'verified_success')
+            ->assertJsonPath('data.status', 'paid');
+
+        $this->assertSame(PaymentAttemptStatus::Paid, $attempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Paid, $order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::PendingConfirmation, $order->fresh()->status);
+        Http::assertSent(function (ClientRequest $request) use ($attempt): bool {
+            return parse_url($request->url(), PHP_URL_PATH) === '/api/ecommerce/orders/transaction_inquiry'
+                && $request->data()['merchant_order_id'] === $attempt->merchant_reference
+                && $request->data()['order_id'] === $attempt->provider_order_id;
+        });
+    }
+
+    public function test_wallet_inquiry_with_a_different_integration_stays_under_review(): void
+    {
+        $order = $this->createOrder(['payment_method' => PaymentMethod::Wallet]);
+        $attempt = $this->createAttempt($order, [
+            'method' => PaymentMethod::Wallet,
+            'integration_id' => 5678,
+        ]);
+        $this->authenticateAdmin();
+        $this->fakeInquiry($this->transactionResponse([
+            'integration_id' => 1234,
+            'order' => ['id' => 5000, 'merchant_order_id' => $attempt->merchant_reference],
+        ]));
+
+        $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')
+            ->assertOk()
+            ->assertJsonPath('data.result', 'unverified')
+            ->assertJsonPath('data.status', 'requires_review');
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+    }
+
+    public function test_wallet_inquiry_with_conflicting_outcome_flags_stays_under_review(): void
+    {
+        $order = $this->createOrder(['payment_method' => PaymentMethod::Wallet]);
+        $attempt = $this->createAttempt($order, [
+            'method' => PaymentMethod::Wallet,
+            'integration_id' => 5678,
+        ]);
+        $this->authenticateAdmin();
+        $this->fakeInquiry($this->transactionResponse([
+            'integration_id' => 5678,
+            'pending' => true,
+            'success' => true,
+            'order' => ['id' => 5000, 'merchant_order_id' => $attempt->merchant_reference],
+        ]));
+
+        $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')
+            ->assertOk()
+            ->assertJsonPath('data.result', 'unverified')
+            ->assertJsonPath('data.status', 'requires_review');
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+    }
+
+    public function test_late_wallet_inquiry_success_remains_under_review(): void
+    {
+        $order = $this->createOrder([
+            'payment_method' => PaymentMethod::Wallet,
+            'status' => OrderStatus::Cancelled,
+            'payment_expires_at' => now()->subMinute(),
+        ]);
+        $attempt = $this->createAttempt($order, [
+            'method' => PaymentMethod::Wallet,
+            'integration_id' => 5678,
+        ]);
+        $this->authenticateAdmin();
+        $this->fakeInquiry($this->transactionResponse([
+            'integration_id' => 5678,
+            'order' => ['id' => 5000, 'merchant_order_id' => $attempt->merchant_reference],
+        ]));
+
+        $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')
+            ->assertOk()
+            ->assertJsonPath('data.result', 'late_success_requires_review')
+            ->assertJsonPath('data.status', 'requires_review');
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        $this->assertSame('late_wallet_success', $attempt->fresh()->failure_code);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::Cancelled, $order->fresh()->status);
+    }
+
+    public function test_late_wallet_pending_inquiry_keeps_order_closed_and_attempt_under_review(): void
+    {
+        $order = $this->createOrder([
+            'payment_method' => PaymentMethod::Wallet,
+            'status' => OrderStatus::Cancelled,
+            'payment_expires_at' => now()->subMinute(),
+        ]);
+        $attempt = $this->createAttempt($order, [
+            'method' => PaymentMethod::Wallet,
+            'integration_id' => 5678,
+        ]);
+        $this->authenticateAdmin();
+        $this->fakeInquiry($this->transactionResponse([
+            'integration_id' => 5678,
+            'pending' => true,
+            'success' => false,
+            'error_occured' => false,
+            'order' => ['id' => 5000, 'merchant_order_id' => $attempt->merchant_reference],
+        ]));
+
+        $this->postJson('/api/v1/admin/payment-attempts/'.$attempt->public_id.'/verify')
+            ->assertOk()
+            ->assertJsonPath('data.result', 'pending_requires_review')
+            ->assertJsonPath('data.status', 'requires_review');
+
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->fresh()->status);
+        $this->assertSame('wallet_pending_requires_review', $attempt->fresh()->failure_code);
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+        $this->assertSame(OrderStatus::Cancelled, $order->fresh()->status);
     }
 
     public function test_confirmed_failure_marks_attempt_and_only_latest_attempt_changes_order_payment(): void

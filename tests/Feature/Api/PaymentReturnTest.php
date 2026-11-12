@@ -19,6 +19,15 @@ class PaymentReturnTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config([
+            'services.paymob.card_integration_id' => '12345',
+            'services.paymob.wallet_integration_id' => '67890',
+        ]);
+    }
+
     public function test_a_return_token_is_required_and_public_id_alone_is_not_authorization(): void
     {
         [$order] = $this->cardOrder();
@@ -78,6 +87,89 @@ class PaymentReturnTest extends TestCase
         } catch (PaymentAttemptException $exception) {
             $this->assertSame('payment_return_token_binding_failed', $exception->errorCode);
         }
+    }
+
+    public function test_wallet_return_shows_current_pending_state_without_marking_payment_paid(): void
+    {
+        $order = Order::factory()->guest()->create([
+            'customer_name' => 'Wallet Customer',
+            'customer_phone' => '01000000000',
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Pending,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        OrderItem::factory()->create(['order_id' => $order->id]);
+        $attempt = app(PaymentAttemptService::class)->create($order, PaymentMethod::Wallet, (string) Str::uuid());
+        $token = app(PaymentReturnTokenService::class)->issue($order, $attempt);
+
+        $this->withToken($token)->getJson('/api/v1/payments/return')
+            ->assertOk()
+            ->assertJsonPath('data.payment.method', 'wallet')
+            ->assertJsonPath('data.payment.status', 'pending')
+            ->assertJsonPath('data.payment.resultCode', 'payment_pending');
+
+        $this->assertSame(PaymentStatus::Pending, $order->fresh()->payment_status);
+        $this->assertSame(PaymentAttemptStatus::Created, $attempt->fresh()->status);
+    }
+
+    public function test_wallet_return_result_code_distinguishes_retryable_rejection_from_uncertain_failure(): void
+    {
+        $order = Order::factory()->guest()->create([
+            'customer_name' => 'Wallet Customer',
+            'customer_phone' => '01000000000',
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Failed,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        OrderItem::factory()->create(['order_id' => $order->id]);
+        $attempt = app(PaymentAttemptService::class)->create($order, PaymentMethod::Wallet, (string) Str::uuid());
+        $token = app(PaymentReturnTokenService::class)->issue($order, $attempt);
+
+        $attempt->update([
+            'status' => PaymentAttemptStatus::Failed,
+            'failure_code' => 'provider_outcome_uncertain',
+        ]);
+        $this->withToken($token)->getJson('/api/v1/payments/return')
+            ->assertOk()
+            ->assertJsonPath('data.payment.resultCode', 'payment_outcome_uncertain')
+            ->assertJsonPath('data.payment.retryable', false);
+
+        $attempt->update(['failure_code' => 'provider_client_error']);
+        $this->withToken($token)->getJson('/api/v1/payments/return')
+            ->assertOk()
+            ->assertJsonPath('data.payment.resultCode', 'payment_failed_retryable');
+
+        $attempt->update(['failure_code' => 'provider_transaction_failed']);
+        $this->withToken($token)->getJson('/api/v1/payments/return')
+            ->assertOk()
+            ->assertJsonPath('data.payment.resultCode', 'payment_failed_retryable')
+            ->assertJsonPath('data.payment.retryable', true);
+    }
+
+    public function test_old_wallet_return_token_displays_latest_active_attempt_without_retryability(): void
+    {
+        $order = Order::factory()->guest()->create([
+            'payment_method' => PaymentMethod::Wallet,
+            'payment_status' => PaymentStatus::Failed,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        OrderItem::factory()->create(['order_id' => $order->id]);
+        $oldAttempt = app(PaymentAttemptService::class)->create($order, PaymentMethod::Wallet, (string) Str::uuid());
+        $token = app(PaymentReturnTokenService::class)->issue($order, $oldAttempt);
+        $oldAttempt->update([
+            'status' => PaymentAttemptStatus::Failed,
+            'failure_code' => 'provider_client_error',
+        ]);
+
+        $latestAttempt = app(PaymentAttemptService::class)->create($order->fresh(), PaymentMethod::Wallet, (string) Str::uuid());
+        $latestAttempt->update(['status' => PaymentAttemptStatus::Pending]);
+        $order->update(['payment_status' => PaymentStatus::Pending]);
+
+        $this->withToken($token)->getJson('/api/v1/payments/return')
+            ->assertOk()
+            ->assertJsonPath('data.payment.attemptStatus', 'pending')
+            ->assertJsonPath('data.payment.retryable', false)
+            ->assertJsonPath('data.payment.returnTokenIsForLatestAttempt', false);
     }
 
     public function test_tampered_and_expired_tokens_are_rejected(): void

@@ -12,6 +12,7 @@ use App\Exceptions\PaymobRequestException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\InitiateCardPaymentRequest;
 use App\Models\Order;
+use App\Models\PaymentAttempt;
 use App\Services\PaymobCardIntentionService;
 use App\Services\PaymentAttemptService;
 use Illuminate\Http\JsonResponse;
@@ -31,12 +32,21 @@ class PaymentController extends Controller
         if ($order === null) {
             return $this->error('order_not_found', 'Order not found.', 404);
         }
-        if ($order->payment_method !== PaymentMethod::Card) {
+        if (! $order->payment_method->isOnline()) {
             return $this->error('unsupported_payment_method', 'Card payment is not available for this order.', 422);
         }
 
         try {
-            $attempt = $attempts->create($order, PaymentMethod::Card, $request->idempotencyKey());
+            $intentions->validateCheckoutConfiguration($order->payment_method);
+            $attempt = $attempts->create($order, $order->payment_method, $request->idempotencyKey());
+
+            if ($order->payment_method === PaymentMethod::Wallet && ! $attempt->wasRecentlyCreated) {
+                $replayedError = $this->walletIdempotentReplayError($attempt);
+                if ($replayedError !== null) {
+                    return $replayedError;
+                }
+            }
+
             $result = $intentions->initiate($attempt);
         } catch (IdempotencyConflictException) {
             return $this->error('idempotency_conflict', 'The idempotency key conflicts with another payment request.', 409);
@@ -76,10 +86,14 @@ class PaymentController extends Controller
 
         $attempt = $order->paymentAttempts()->latest('id')->first();
         $attemptStatus = $attempt?->status;
-        $retryable = $order->payment_method === PaymentMethod::Card
+        $walletFailureRetryable = $order->payment_method !== PaymentMethod::Wallet
+            || $attemptStatus !== PaymentAttemptStatus::Failed
+            || $attempt?->isDefinitiveFailure() === true;
+        $retryable = $order->payment_method->isOnline()
             && $order->payment_status !== PaymentStatus::Paid
             && $order->status->value === 'pending_confirmation'
             && $order->payment_expires_at?->isFuture() === true
+            && $walletFailureRetryable
             && ! in_array($attemptStatus, [PaymentAttemptStatus::Pending, PaymentAttemptStatus::Submitting, PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true);
 
         return response()->json([
@@ -92,7 +106,7 @@ class PaymentController extends Controller
                 'paidAt' => $attempt?->paid_at?->toISOString(),
                 'paymentExpiresAt' => $order->payment_expires_at?->toISOString(),
                 'retryable' => $retryable,
-                'resultCode' => $this->resultCode($order, $attemptStatus),
+                'resultCode' => $this->resultCode($order, $attempt),
             ],
         ]);
     }
@@ -113,7 +127,7 @@ class PaymentController extends Controller
         return $this->error($code, 'The payment request could not be completed.', $status);
     }
 
-    private function resultCode(Order $order, ?PaymentAttemptStatus $status): string
+    private function resultCode(Order $order, ?PaymentAttempt $attempt): string
     {
         if ($order->payment_status === PaymentStatus::Paid) {
             return 'paid';
@@ -124,13 +138,37 @@ class PaymentController extends Controller
         if ($order->payment_expires_at === null || $order->payment_expires_at->isPast()) {
             return 'payment_window_expired';
         }
-        return match ($status) {
+        if ($order->payment_method === PaymentMethod::Wallet
+            && $attempt?->status === PaymentAttemptStatus::Failed) {
+            return $attempt->isDefinitiveFailure()
+                ? 'payment_failed_retryable'
+                : 'payment_outcome_uncertain';
+        }
+
+        return match ($attempt?->status) {
             PaymentAttemptStatus::RequiresReview, PaymentAttemptStatus::Submitting => 'requires_review',
             PaymentAttemptStatus::Failed => 'payment_failed_retryable',
             PaymentAttemptStatus::Expired => 'payment_window_expired',
             PaymentAttemptStatus::Pending, PaymentAttemptStatus::Created => 'payment_pending',
             default => 'payment_not_started',
         };
+    }
+
+    private function walletIdempotentReplayError(PaymentAttempt $attempt): ?JsonResponse
+    {
+        if ($attempt->isDefinitiveFailure()) {
+            if ($attempt->failure_code === 'provider_transaction_failed') {
+                return $this->error('payment_failed_retryable', 'The previous Wallet payment failed. Retry with a new Idempotency-Key.', 409);
+            }
+
+            return $this->error('payment_provider_rejected', 'The payment provider rejected the payment request.', 422);
+        }
+
+        if ($attempt->status !== PaymentAttemptStatus::RequiresReview) {
+            return null;
+        }
+
+        return $this->error('payment_outcome_uncertain', 'The payment provider is temporarily unavailable.', 503);
     }
 
     private function error(string $code, string $message, int $status): JsonResponse

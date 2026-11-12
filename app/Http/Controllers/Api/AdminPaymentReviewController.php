@@ -27,7 +27,7 @@ final class AdminPaymentReviewController extends Controller
         $attempts = PaymentAttempt::query()
             ->with(['order:id,order_number'])
             ->where('provider', PaymentProvider::Paymob->value)
-            ->where('method', PaymentMethod::Card->value)
+            ->whereIn('method', [PaymentMethod::Card->value, PaymentMethod::Wallet->value])
             ->where('status', PaymentAttemptStatus::RequiresReview->value)
             ->orderByDesc('updated_at')
             ->orderByDesc('id')
@@ -42,7 +42,7 @@ final class AdminPaymentReviewController extends Controller
         $attempt = PaymentAttempt::query()
             ->where('public_id', $public_id)
             ->where('provider', PaymentProvider::Paymob->value)
-            ->where('method', PaymentMethod::Card->value)
+            ->whereIn('method', [PaymentMethod::Card->value, PaymentMethod::Wallet->value])
             ->where('status', PaymentAttemptStatus::RequiresReview->value)
             ->firstOrFail();
 

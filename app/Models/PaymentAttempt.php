@@ -74,4 +74,10 @@ class PaymentAttempt extends Model
     {
         return $this->belongsTo(Order::class);
     }
+
+    public function isDefinitiveFailure(): bool
+    {
+        return $this->status === PaymentAttemptStatus::Failed
+            && in_array($this->failure_code, ['provider_client_error', 'provider_transaction_failed'], true);
+    }
 }
