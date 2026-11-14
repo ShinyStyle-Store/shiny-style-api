@@ -30,6 +30,7 @@ class AdminOwnerTest extends TestCase
         $this->assertNotNull($user->email_verified_at);
         $this->assertTrue($user->is_active);
         $this->assertSame(AdminMembershipStatus::Active, $membership->status);
+        $this->assertSame('owner', $membership->role);
         $this->assertNotNull($membership->activated_at);
         $this->assertNull($membership->created_by);
     }

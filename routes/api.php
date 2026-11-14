@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AdminCategoryController;
 use App\Http\Controllers\Api\AdminDefaultOgImageController;
 use App\Http\Controllers\Api\AdminDashboardController;
 use App\Http\Controllers\Api\AdminMediaController;
+use App\Http\Controllers\Api\AdminMaintenancePreviewController;
 use App\Http\Controllers\Api\AdminOfferController;
 use App\Http\Controllers\Api\AdminOrderController;
 use App\Http\Controllers\Api\AdminPaymentReviewController;
@@ -86,6 +87,7 @@ Route::prefix('v1')->middleware(SetApiLocale::class)->group(function (): void {
     });
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'admin.access'])->group(function (): void {
+        Route::post('maintenance/cleanup', AdminMaintenancePreviewController::class);
         Route::get('payment-attempts/requires-review', [AdminPaymentReviewController::class, 'index']);
         Route::post('payment-attempts/{public_id}/verify', [AdminPaymentReviewController::class, 'verify'])
             ->where('public_id', '[0-9A-HJKMNP-TV-Z]{26}')

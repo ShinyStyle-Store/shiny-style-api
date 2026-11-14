@@ -41,6 +41,8 @@ return [
 
     'debug' => (bool) env('APP_DEBUG', false),
 
+    'allow_data_cleanup' => (bool) env('ALLOW_DATA_CLEANUP', false),
+
     /*
     |--------------------------------------------------------------------------
     | Application URL

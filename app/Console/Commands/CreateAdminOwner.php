@@ -83,6 +83,7 @@ class CreateAdminOwner extends Command
                     AdminMembership::create([
                         'user_id' => $user->getKey(),
                         'status' => AdminMembershipStatus::Active,
+                        'role' => 'owner',
                         'created_by' => null,
                         'activated_at' => now(),
                     ]);
