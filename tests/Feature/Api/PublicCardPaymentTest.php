@@ -224,20 +224,13 @@ class PublicCardPaymentTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_confirmed_wallet_transaction_failure_can_be_retried(): void
+    public function test_confirmed_wallet_transaction_failure_blocks_retry(): void
     {
         $order = $this->walletOrder();
-        Http::fake(['https://paymob.test/*' => Http::sequence()
-            ->push([
+        Http::fake(['https://paymob.test/*' => Http::response([
                 'id' => 'int-wallet-failed-transaction',
                 'client_secret' => 'wallet-failed-transaction-secret',
                 'intention_order_id' => 987105,
-                'payment_methods' => [['integration_id' => 789]],
-            ], 201)
-            ->push([
-                'id' => 'int-wallet-after-confirmed-failure',
-                'client_secret' => 'wallet-after-confirmed-failure-secret',
-                'intention_order_id' => 987106,
                 'payment_methods' => [['integration_id' => 789]],
             ], 201)]);
         $url = URL::temporarySignedRoute('orders.payments.initiate', now()->addMinutes(5), ['public_id' => $order->public_id]);
@@ -253,20 +246,21 @@ class PublicCardPaymentTest extends TestCase
         $order->update(['payment_status' => PaymentStatus::Failed]);
 
         $this->get($statusUrl)->assertOk()
-            ->assertJsonPath('data.retryable', true)
-            ->assertJsonPath('data.resultCode', 'payment_failed_retryable');
+            ->assertJsonPath('data.retryable', false)
+            ->assertJsonPath('data.resultCode', 'payment_outcome_uncertain');
         $this->withHeader('Idempotency-Key', $initialKey)
             ->post($url)
             ->assertConflict()
-            ->assertJsonPath('code', 'payment_failed_retryable');
+            ->assertJsonPath('code', 'payment_attempt_not_retryable');
         Http::assertSentCount(1);
 
         $this->withHeader('Idempotency-Key', (string) Str::uuid())
             ->post($url)
-            ->assertCreated();
+            ->assertConflict()
+            ->assertJsonPath('code', 'payment_attempt_not_retryable');
 
-        $this->assertDatabaseCount('payment_attempts', 2);
-        Http::assertSentCount(2);
+        $this->assertDatabaseCount('payment_attempts', 1);
+        Http::assertSentCount(1);
     }
 
     public function test_malformed_wallet_provider_response_requires_review_without_persisting_an_incomplete_result(): void

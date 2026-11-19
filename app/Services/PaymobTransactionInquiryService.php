@@ -18,6 +18,7 @@ final class PaymobTransactionInquiryService
     public function __construct(
         private readonly PaymobClient $client,
         private readonly PaymobIntegrationResolver $integrations,
+        private readonly PaymobPaymentTransactionLedger $ledger,
     ) {}
 
     /** @return array{result:string,status:string} */
@@ -57,47 +58,84 @@ final class PaymobTransactionInquiryService
             }
 
             $transactionId = (string) $response['id'];
-            $owner = PaymentAttempt::query()->where('provider_transaction_id', $transactionId)->first();
-            if ($owner !== null && $owner->getKey() !== $lockedAttempt->getKey()) {
+            $transaction = $this->transactionFromInquiry($lockedAttempt, $response);
+            $owner = $this->ledger->find($transactionId);
+            if ($owner !== null && ($owner->payment_attempt_id !== $lockedAttempt->getKey()
+                || $owner->order_id !== $order->getKey())) {
                 return ['result' => 'unverified', 'status' => PaymentAttemptStatus::RequiresReview->value];
             }
 
             if ($outcome === 'pending') {
+                $this->ledger->record(
+                    $lockedAttempt,
+                    $order,
+                    $transaction,
+                    PaymentAttemptStatus::RequiresReview,
+                    'inquiry_pending',
+                );
                 $latestAttemptId = PaymentAttempt::query()
                     ->where('order_id', $order->getKey())
                     ->max('id');
-                $lateWalletAttempt = $lockedAttempt->method === PaymentMethod::Wallet
-                    && ($this->orderIsLateOrClosed($order) || (int) $latestAttemptId !== $lockedAttempt->getKey());
+                $staleAttempt = $order->payment_status === PaymentStatus::Paid
+                    || $this->orderIsLateOrClosed($order)
+                    || (int) $latestAttemptId !== $lockedAttempt->getKey();
                 $lockedAttempt->forceFill([
                     'provider_transaction_id' => $lockedAttempt->provider_transaction_id ?? $transactionId,
-                    'failure_code' => $lateWalletAttempt ? 'wallet_pending_requires_review' : $lockedAttempt->failure_code,
+                    'failure_code' => $staleAttempt
+                        ? ($lockedAttempt->method === PaymentMethod::Wallet
+                            ? 'wallet_pending_requires_review'
+                            : 'pending_attempt_requires_review')
+                        : $lockedAttempt->failure_code,
                 ])->save();
-                if (! $lateWalletAttempt
+                if (! $staleAttempt
                     && (int) $latestAttemptId === $lockedAttempt->getKey()
                     && $order->payment_status !== PaymentStatus::Paid) {
                     $order->forceFill(['payment_status' => PaymentStatus::Pending])->save();
                 }
 
                 return [
-                    'result' => $lateWalletAttempt ? 'pending_requires_review' : 'pending',
+                    'result' => $staleAttempt ? 'pending_requires_review' : 'pending',
                     'status' => PaymentAttemptStatus::RequiresReview->value,
                 ];
             }
 
             if ($outcome === 'success') {
-                $latestAttemptId = PaymentAttempt::query()
-                    ->where('order_id', $order->getKey())
-                    ->max('id');
-                if ($lockedAttempt->method === PaymentMethod::Wallet
-                    && ($this->orderIsLateOrClosed($order) || (int) $latestAttemptId !== $lockedAttempt->getKey())) {
+                $alreadyPaid = $order->payment_status === PaymentStatus::Paid
+                    || $this->ledger->orderHasSuccessfulTransaction($order);
+                $lateOrClosed = $this->orderIsLateOrClosed($order);
+                $differentTransaction = $lockedAttempt->provider_transaction_id !== null
+                    && $lockedAttempt->provider_transaction_id !== $transactionId;
+
+                if ($alreadyPaid || $lateOrClosed || $differentTransaction) {
+                    $reviewCode = $alreadyPaid
+                        ? 'additional_success_after_paid'
+                        : ($lateOrClosed
+                            ? ($lockedAttempt->method === PaymentMethod::Wallet
+                                ? 'late_wallet_success'
+                                : 'late_payment_callback')
+                            : 'additional_transaction_requires_review');
+                    $this->ledger->record(
+                        $lockedAttempt,
+                        $order,
+                        $transaction,
+                        PaymentAttemptStatus::RequiresReview,
+                        $reviewCode,
+                    );
                     $lockedAttempt->forceFill([
-                        'provider_transaction_id' => $transactionId,
-                        'failure_code' => 'late_wallet_success',
+                        'provider_transaction_id' => $lockedAttempt->provider_transaction_id ?? $transactionId,
+                        'failure_code' => $reviewCode,
                         'failure_message' => null,
                     ])->save();
 
-                    return ['result' => 'late_success_requires_review', 'status' => PaymentAttemptStatus::RequiresReview->value];
+                    return [
+                        'result' => $alreadyPaid
+                            ? 'additional_success_requires_review'
+                            : ($lateOrClosed ? 'late_success_requires_review' : 'additional_success_requires_review'),
+                        'status' => PaymentAttemptStatus::RequiresReview->value,
+                    ];
                 }
+
+                $this->ledger->record($lockedAttempt, $order, $transaction, PaymentAttemptStatus::Paid);
 
                 $lockedAttempt->forceFill([
                     'status' => PaymentAttemptStatus::Paid,
@@ -111,9 +149,16 @@ final class PaymobTransactionInquiryService
                 return ['result' => 'verified_success', 'status' => PaymentAttemptStatus::Paid->value];
             }
 
+            $this->ledger->record(
+                $lockedAttempt,
+                $order,
+                $transaction,
+                PaymentAttemptStatus::RequiresReview,
+                'provider_transaction_failed',
+            );
             $lockedAttempt->forceFill([
-                'status' => PaymentAttemptStatus::Failed,
-                'provider_transaction_id' => $transactionId,
+                'status' => PaymentAttemptStatus::RequiresReview,
+                'provider_transaction_id' => $lockedAttempt->provider_transaction_id ?? $transactionId,
                 'failure_code' => 'provider_transaction_failed',
                 'failure_message' => null,
             ])->save();
@@ -124,7 +169,10 @@ final class PaymobTransactionInquiryService
                 $order->forceFill(['payment_status' => PaymentStatus::Failed])->save();
             }
 
-            return ['result' => 'verified_failure', 'status' => PaymentAttemptStatus::Failed->value];
+            return [
+                'result' => 'verified_failure_requires_review',
+                'status' => PaymentAttemptStatus::RequiresReview->value,
+            ];
         });
     }
 
@@ -166,15 +214,12 @@ final class PaymobTransactionInquiryService
             return null;
         }
 
-        $transactionId = (string) $response['id'];
         $currency = strtoupper(trim($response['currency']));
-        if (($attempt->provider_order_id !== null
-                && (string) $orderData['id'] !== $attempt->provider_order_id)
+        if (($attempt->provider_order_id !== null && (string) $orderData['id'] !== $attempt->provider_order_id)
             || (int) $response['integration_id'] !== $attempt->integration_id
             || (int) $response['amount_cents'] !== $attempt->amount_minor
             || $currency !== strtoupper($attempt->currency)
-            || (bool) $response['is_live'] !== $attempt->provider_is_live
-            || ($attempt->provider_transaction_id !== null && $attempt->provider_transaction_id !== $transactionId)) {
+            || (bool) $response['is_live'] !== $attempt->provider_is_live) {
             return null;
         }
 
@@ -202,7 +247,11 @@ final class PaymobTransactionInquiryService
         }
 
         if ($attempt->method === PaymentMethod::Wallet
-            && ! $this->walletOutcomeIsConsistent($response['success'], $response['pending'], $response['error_occured'])) {
+            && ! $this->walletOutcomeIsConsistent(
+                $response['success'],
+                $response['pending'],
+                $response['error_occured'],
+            )) {
             return null;
         }
 
@@ -270,5 +319,32 @@ final class PaymobTransactionInquiryService
     {
         return (is_int($value) && $value > 0)
             || (is_string($value) && preg_match('/^[1-9][0-9]*$/', $value) === 1);
+    }
+
+    /** @param array<string, mixed> $response */
+    private function transactionFromInquiry(PaymentAttempt $attempt, array $response): PaymobTransaction
+    {
+        $order = $response['order'];
+        $source = is_array($response['source_data'] ?? null) ? $response['source_data'] : [];
+
+        return new PaymobTransaction(
+            (int) $response['id'],
+            (int) $order['id'],
+            (int) $response['integration_id'],
+            (int) $response['amount_cents'],
+            strtoupper(trim((string) $response['currency'])),
+            (bool) $response['success'],
+            (bool) $response['pending'],
+            (bool) $response['error_occured'],
+            (bool) ($response['is_refunded'] ?? $response['is_refund'] ?? false),
+            (bool) ($response['is_voided'] ?? $response['is_void'] ?? false),
+            is_string($source['type'] ?? null) ? $source['type'] : $attempt->method->value,
+            is_string($source['sub_type'] ?? null) ? $source['sub_type'] : '',
+            is_string($order['merchant_order_id'] ?? null) ? $order['merchant_order_id'] : null,
+            is_string($response['created_at'] ?? null) ? $response['created_at'] : null,
+            is_string($response['updated_at'] ?? null) ? $response['updated_at'] : null,
+            (bool) $response['is_live'],
+            is_int($response['refunded_amount_cents'] ?? null) ? $response['refunded_amount_cents'] : null,
+        );
     }
 }

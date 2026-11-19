@@ -488,7 +488,12 @@ final class PaymobCardIntentionService
             }
             $attempt = PaymentAttempt::query()->whereKey($id)->lockForUpdate()->first();
             if ($attempt?->status === PaymentAttemptStatus::Submitting) {
-                $attempt->forceFill(['status' => PaymentAttemptStatus::Failed, 'failure_code' => $code, 'failure_message' => null])->save();
+                $attempt->forceFill([
+                    'status' => PaymentAttemptStatus::Failed,
+                    'failure_code' => $code,
+                    'failure_message' => null,
+                    'submission_claimed_at' => null,
+                ])->save();
                 $latestAttemptId = PaymentAttempt::query()->where('order_id', $order->getKey())->max('id');
                 if ((int) $latestAttemptId === $attempt->getKey() && $order->payment_status !== PaymentStatus::Paid) {
                     $order->forceFill(['payment_status' => PaymentStatus::Failed])->save();

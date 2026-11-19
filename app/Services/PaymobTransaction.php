@@ -22,6 +22,8 @@ final readonly class PaymobTransaction
         public ?string $merchantOrderId,
         public ?string $createdAt,
         public ?string $updatedAt,
+        public ?bool $isLive = null,
+        public ?int $refundedAmountMinor = null,
     ) {
     }
 
@@ -47,6 +49,8 @@ final readonly class PaymobTransaction
             self::optionalString($order, 'merchant_order_id'),
             self::optionalString($object, 'created_at'),
             self::optionalString($object, 'updated_at'),
+            self::optionalBoolean($object, 'is_live'),
+            self::optionalNonNegativeInteger($object, 'refunded_amount_cents'),
         );
     }
 
@@ -128,5 +132,25 @@ final readonly class PaymobTransaction
             throw new PaymobWebhookException('invalid_callback', 'The payment callback is invalid.');
         }
         return $data[$key];
+    }
+
+    /** @param array<string, mixed> $data */
+    private static function optionalNonNegativeInteger(array $data, string $key): ?int
+    {
+        if (! array_key_exists($key, $data) || $data[$key] === null) {
+            return null;
+        }
+
+        $value = $data[$key];
+        if (is_int($value) && $value >= 0) {
+            return $value;
+        }
+        if (is_string($value) && preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1) {
+            $integer = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+            if ($integer !== false) {
+                return (int) $integer;
+            }
+        }
+        throw new PaymobWebhookException('invalid_callback', 'The payment callback is invalid.');
     }
 }

@@ -14,7 +14,7 @@ class AdminMembership extends Model
     use HasFactory;
 
     protected $fillable = [
-        'user_id', 'status', 'created_by', 'activated_at', 'suspended_at',
+        'user_id', 'status', 'role', 'created_by', 'activated_at', 'suspended_at',
         'revoked_at', 'last_login_at',
     ];
 

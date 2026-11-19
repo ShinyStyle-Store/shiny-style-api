@@ -35,8 +35,28 @@ final class PaymentExpirationService
                 ->lockForUpdate()
                 ->get();
 
-            if ($attempts->contains(fn (PaymentAttempt $attempt): bool => $attempt->status === PaymentAttemptStatus::RequiresReview
-                || $attempt->status === PaymentAttemptStatus::Submitting)) {
+            $unresolvedAttempts = $attempts->filter(fn (PaymentAttempt $attempt): bool => $attempt->status !== PaymentAttemptStatus::Paid
+                && (in_array($attempt->status, [
+                    PaymentAttemptStatus::Pending,
+                    PaymentAttemptStatus::Submitting,
+                    PaymentAttemptStatus::RequiresReview,
+                ], true)
+                    || $attempt->provider_order_id !== null
+                    || $attempt->provider_intention_id !== null
+                    || $attempt->submission_claimed_at !== null
+                    || ($attempt->status === PaymentAttemptStatus::Failed && ! $attempt->isDefinitiveFailure())));
+
+            if ($unresolvedAttempts->isNotEmpty()) {
+                foreach ($unresolvedAttempts as $attempt) {
+                    if ($attempt->status !== PaymentAttemptStatus::Paid
+                        && $attempt->status !== PaymentAttemptStatus::RequiresReview) {
+                        $attempt->forceFill([
+                            'status' => PaymentAttemptStatus::RequiresReview,
+                            'failure_code' => 'payment_expiration_requires_review',
+                            'failure_message' => null,
+                        ])->save();
+                    }
+                }
                 return new PaymentExpirationResult('review-required');
             }
 
@@ -53,7 +73,8 @@ final class PaymentExpirationService
             );
 
             foreach ($attempts as $attempt) {
-                if (in_array($attempt->status, [PaymentAttemptStatus::Created, PaymentAttemptStatus::Pending], true)) {
+                if ($attempt->status === PaymentAttemptStatus::Created
+                    || ($attempt->status === PaymentAttemptStatus::Failed && $attempt->isDefinitiveFailure())) {
                     $attempt->forceFill(['status' => PaymentAttemptStatus::Expired])->save();
                 }
             }

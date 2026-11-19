@@ -300,35 +300,50 @@ class PaymentAttemptTest extends TestCase
         $this->assertDatabaseCount('payment_attempts', 0);
     }
 
-    public function test_failed_and_expired_attempts_can_retry_but_paid_and_review_attempts_cannot(): void
+    public function test_only_explicit_pre_intention_rejection_can_retry(): void
     {
         $service = app(PaymentAttemptService::class);
 
-        foreach ([PaymentAttemptStatus::Failed, PaymentAttemptStatus::Expired] as $terminalStatus) {
-            $order = Order::factory()->create([
-                'payment_method' => PaymentMethod::Card,
-                'payment_expires_at' => now()->addMinutes(30),
-            ]);
-            $first = $service->create($order, PaymentMethod::Card, (string) Str::uuid());
-            $first->update(['status' => $terminalStatus]);
+        $rejectedOrder = Order::factory()->create([
+            'payment_method' => PaymentMethod::Card,
+            'payment_expires_at' => now()->addMinutes(30),
+        ]);
+        $rejectedAttempt = $service->create($rejectedOrder, PaymentMethod::Card, (string) Str::uuid());
+        $rejectedAttempt->update([
+            'status' => PaymentAttemptStatus::Failed,
+            'failure_code' => 'provider_client_error',
+        ]);
+        $retry = $service->create($rejectedOrder->fresh(), PaymentMethod::Card, (string) Str::uuid());
+        $this->assertNotSame($rejectedAttempt->getKey(), $retry->getKey());
 
-            $retry = $service->create($order->fresh(), PaymentMethod::Card, (string) Str::uuid());
-            $this->assertNotSame($first->getKey(), $retry->getKey());
-        }
-
-        foreach ([PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview] as $blockingStatus) {
+        foreach ([
+            PaymentAttemptStatus::Paid,
+            PaymentAttemptStatus::RequiresReview,
+            PaymentAttemptStatus::Expired,
+            PaymentAttemptStatus::Pending,
+            PaymentAttemptStatus::Submitting,
+            PaymentAttemptStatus::Failed,
+        ] as $blockingStatus) {
             $order = Order::factory()->create([
                 'payment_method' => PaymentMethod::Card,
                 'payment_expires_at' => now()->addMinutes(30),
             ]);
             $attempt = $service->create($order, PaymentMethod::Card, (string) Str::uuid());
-            $attempt->update(['status' => $blockingStatus]);
+            $attempt->update([
+                'status' => $blockingStatus,
+                'failure_code' => $blockingStatus === PaymentAttemptStatus::Failed ? 'provider_transaction_failed' : null,
+            ]);
 
             try {
                 $service->create($order->fresh(), PaymentMethod::Card, (string) Str::uuid());
-                $this->fail('A paid or review attempt should block automatic retry.');
+                $this->fail('An unresolved or non-retryable payment attempt should block automatic retry.');
             } catch (PaymentAttemptException $exception) {
-                $this->assertSame('payment_attempt_not_retryable', $exception->errorCode);
+                $expectedCode = match ($blockingStatus) {
+                    PaymentAttemptStatus::Pending => 'active_payment_attempt_exists',
+                    PaymentAttemptStatus::Submitting => 'payment_attempt_submission_ambiguous',
+                    default => 'payment_attempt_not_retryable',
+                };
+                $this->assertSame($expectedCode, $exception->errorCode);
             }
         }
     }

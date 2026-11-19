@@ -49,7 +49,11 @@ class AdminAuthController extends Controller
             }
 
             $expiresAt = now()->addMinutes((int) config('admin.token_expiration_minutes', 720));
-            $token = $lockedUser->createToken($deviceName, ['admin-access'], $expiresAt);
+            $abilities = ['admin-access'];
+            if ($membership->role === 'owner') {
+                $abilities[] = 'maintenance.cleanup';
+            }
+            $token = $lockedUser->createToken($deviceName, $abilities, $expiresAt);
             $membership->forceFill(['last_login_at' => now()])->save();
 
             return [

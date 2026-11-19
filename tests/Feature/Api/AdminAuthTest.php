@@ -40,6 +40,27 @@ class AdminAuthTest extends TestCase
         $this->assertSame($token->expires_at->toISOString(), $response->json('data.expires_at'));
     }
 
+    public function test_only_owner_membership_receives_cleanup_ability(): void
+    {
+        $owner = User::factory()->create(['password' => Hash::make('StrongPassword1!')]);
+        AdminMembership::factory()->create(['user_id' => $owner->id, 'role' => 'owner']);
+        $admin = User::factory()->create(['password' => Hash::make('StrongPassword1!')]);
+        AdminMembership::factory()->create(['user_id' => $admin->id, 'role' => 'admin']);
+
+        $ownerToken = $this->postJson('/api/v1/admin/auth/login', [
+            'email' => $owner->email,
+            'password' => 'StrongPassword1!',
+        ])->assertOk()->json('data.access_token');
+        $this->forgetAuthGuards();
+        $adminToken = $this->postJson('/api/v1/admin/auth/login', [
+            'email' => $admin->email,
+            'password' => 'StrongPassword1!',
+        ])->assertOk()->json('data.access_token');
+
+        $this->assertSame(['admin-access', 'maintenance.cleanup'], PersonalAccessToken::findToken($ownerToken)->abilities);
+        $this->assertSame(['admin-access'], PersonalAccessToken::findToken($adminToken)->abilities);
+    }
+
     public function test_each_login_creates_a_distinct_persisted_token_and_each_bearer_resolves_independently(): void
     {
         $user = User::factory()->create([

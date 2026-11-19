@@ -248,7 +248,10 @@ class PaymobCardIntentionTest extends TestCase
         $previous = $this->makeAttempt();
         $order = $previous->order;
         $order->update(['payment_status' => PaymentStatus::Failed]);
-        $previous->update(['status' => PaymentAttemptStatus::Failed]);
+        $previous->update([
+            'status' => PaymentAttemptStatus::Failed,
+            'failure_code' => 'provider_client_error',
+        ]);
         $retry = app(PaymentAttemptService::class)->create($order->fresh(), PaymentMethod::Card, (string) Str::uuid());
         Http::fake(['https://paymob.test/*' => Http::response([
             'id' => 'int_retry_pending',

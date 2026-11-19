@@ -19,14 +19,13 @@ class PaymentReturnResource extends JsonResource
             && $order->payment_status !== PaymentStatus::Paid
             && $order->status->value === 'pending_confirmation'
             && $order->payment_expires_at?->isFuture() === true
-            && ($order->payment_method->value !== 'wallet'
-                || $attempt->status !== PaymentAttemptStatus::Failed
-                || $attempt->isDefinitiveFailure())
+            && ($attempt->status !== PaymentAttemptStatus::Failed || $attempt->isDefinitiveFailure())
             && ! in_array($attempt->status, [
                 PaymentAttemptStatus::Pending,
                 PaymentAttemptStatus::Submitting,
                 PaymentAttemptStatus::Paid,
                 PaymentAttemptStatus::RequiresReview,
+                PaymentAttemptStatus::Expired,
             ], true);
 
         return [
@@ -93,7 +92,7 @@ class PaymentReturnResource extends JsonResource
             return 'payment_window_expired';
         }
 
-        if ($order->payment_method->value === 'wallet' && $attempt->status === PaymentAttemptStatus::Failed) {
+        if ($attempt->status === PaymentAttemptStatus::Failed) {
             return $attempt->isDefinitiveFailure()
                 ? 'payment_failed_retryable'
                 : 'payment_outcome_uncertain';
@@ -101,7 +100,9 @@ class PaymentReturnResource extends JsonResource
 
         return match ($attempt->status) {
             PaymentAttemptStatus::RequiresReview, PaymentAttemptStatus::Submitting => 'requires_review',
-            PaymentAttemptStatus::Failed => 'payment_failed_retryable',
+            PaymentAttemptStatus::Failed => $attempt->isDefinitiveFailure()
+                ? 'payment_failed_retryable'
+                : 'payment_outcome_uncertain',
             PaymentAttemptStatus::Expired => 'payment_window_expired',
             PaymentAttemptStatus::Pending, PaymentAttemptStatus::Created => 'payment_pending',
             default => 'payment_not_started',
