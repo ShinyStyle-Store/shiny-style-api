@@ -25,10 +25,23 @@ final class AdminPaymentReviewController extends Controller
         ]);
 
         $attempts = PaymentAttempt::query()
-            ->with(['order:id,order_number'])
+            ->with(['order:id,order_number', 'paymobTransactions' => fn ($query) => $query
+                ->where(fn ($transactions) => $transactions
+                    ->where('status', PaymentAttemptStatus::RequiresReview->value)
+                    ->orWhereNotNull('review_code')
+                    ->orWhere('is_refunded', true)
+                    ->orWhere('is_voided', true))
+                ->orderBy('id')])
             ->where('provider', PaymentProvider::Paymob->value)
             ->whereIn('method', [PaymentMethod::Card->value, PaymentMethod::Wallet->value])
-            ->where('status', PaymentAttemptStatus::RequiresReview->value)
+            ->where(fn ($query) => $query
+                ->where('status', PaymentAttemptStatus::RequiresReview->value)
+                ->orWhereHas('paymobTransactions', fn ($transactions) => $transactions
+                    ->where(fn ($transactions) => $transactions
+                        ->where('status', PaymentAttemptStatus::RequiresReview->value)
+                        ->orWhereNotNull('review_code')
+                        ->orWhere('is_refunded', true)
+                        ->orWhere('is_voided', true))))
             ->orderByDesc('updated_at')
             ->orderByDesc('id')
             ->paginate($filters['per_page'] ?? 20)

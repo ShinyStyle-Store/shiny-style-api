@@ -142,6 +142,23 @@ class PaymobClientTest extends TestCase
         }
     }
 
+    public function test_ambiguous_card_http_errors_are_not_classified_as_final_rejections(): void
+    {
+        Http::fake([
+            'https://paymob.test/*' => Http::response(['detail' => 'Provider response'], 429),
+        ]);
+
+        try {
+            app(PaymobClient::class)->postJson('create_intention', '/v1/intention/', [], [
+                'payment_method' => 'card',
+            ]);
+            $this->fail('An ambiguous Card response should not be treated as a final rejection.');
+        } catch (PaymobRequestException $exception) {
+            $this->assertSame('provider_outcome_uncertain', $exception->errorCode);
+            $this->assertSame(429, $exception->statusCode);
+        }
+    }
+
     public static function ambiguousWalletErrorResponses(): array
     {
         return [

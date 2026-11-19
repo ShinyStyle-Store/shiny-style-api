@@ -210,7 +210,8 @@ final class PaymobClient
         if ($response->clientError()) {
             $this->logClientError($response, $operation, $diagnosticContext);
 
-            $definitiveRejection = ($diagnosticContext['payment_method'] ?? null) !== 'wallet'
+            $paymentMethod = $diagnosticContext['payment_method'] ?? null;
+            $definitiveRejection = $paymentMethod === null
                 || in_array($status, [400, 401, 403, 404, 422], true);
 
             throw new PaymobRequestException(

@@ -142,8 +142,8 @@ class PaymentReturnTest extends TestCase
         $attempt->update(['failure_code' => 'provider_transaction_failed']);
         $this->withToken($token)->getJson('/api/v1/payments/return')
             ->assertOk()
-            ->assertJsonPath('data.payment.resultCode', 'payment_failed_retryable')
-            ->assertJsonPath('data.payment.retryable', true);
+            ->assertJsonPath('data.payment.resultCode', 'payment_outcome_uncertain')
+            ->assertJsonPath('data.payment.retryable', false);
     }
 
     public function test_old_wallet_return_token_displays_latest_active_attempt_without_retryability(): void

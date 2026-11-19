@@ -39,7 +39,7 @@ class PaymentExpirationTest extends TestCase
 
     public function test_expiration_is_idempotent_and_does_not_rewrite_cancelled_at(): void
     {
-        [$order, $item] = $this->orderWithReservation(PaymentAttemptStatus::Pending);
+        [$order, $item] = $this->orderWithReservation(PaymentAttemptStatus::Created);
         $service = app(PaymentExpirationService::class);
         $service->expire($order);
         $cancelledAt = $order->fresh()->cancelled_at->toISOString();
@@ -49,6 +49,21 @@ class PaymentExpirationTest extends TestCase
         $this->assertSame('skipped', $result->status);
         $this->assertSame($cancelledAt, $order->fresh()->cancelled_at->toISOString());
         $this->assertSame(0, $item->fresh()->reserved_quantity);
+    }
+
+    public function test_expired_pending_attempt_requires_review_and_keeps_reservation(): void
+    {
+        [$order, $item] = $this->orderWithReservation(PaymentAttemptStatus::Pending);
+
+        $result = app(PaymentExpirationService::class)->expire($order);
+
+        $attempt = $order->paymentAttempts()->firstOrFail()->fresh();
+        $this->assertSame('review-required', $result->status);
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $attempt->status);
+        $this->assertSame('payment_expiration_requires_review', $attempt->failure_code);
+        $this->assertSame(OrderStatus::PendingConfirmation, $order->fresh()->status);
+        $this->assertSame(PaymentStatus::Unpaid, $order->fresh()->payment_status);
+        $this->assertSame(3, $item->fresh()->reserved_quantity);
     }
 
     public function test_cod_paid_and_future_orders_are_skipped(): void

@@ -86,6 +86,7 @@ class PaymentAttemptService
                     ->whereIn('status', [
                         PaymentAttemptStatus::Paid->value,
                         PaymentAttemptStatus::RequiresReview->value,
+                        PaymentAttemptStatus::Expired->value,
                     ])
                     ->lockForUpdate()
                     ->first();
@@ -97,20 +98,18 @@ class PaymentAttemptService
                     );
                 }
 
-                if ($method === PaymentMethod::Wallet) {
-                    $latestAttempt = PaymentAttempt::query()
-                        ->where('order_id', $lockedOrder->getKey())
-                        ->latest('id')
-                        ->lockForUpdate()
-                        ->first();
+                $failedAttempts = PaymentAttempt::query()
+                    ->where('order_id', $lockedOrder->getKey())
+                    ->where('status', PaymentAttemptStatus::Failed->value)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
 
-                    if ($latestAttempt?->status === PaymentAttemptStatus::Failed
-                        && ! $latestAttempt->isDefinitiveFailure()) {
-                        throw new PaymentAttemptException(
-                            'payment_attempt_not_retryable',
-                            'The failed Wallet attempt does not have a definitive provider rejection.',
-                        );
-                    }
+                if ($failedAttempts->contains(fn (PaymentAttempt $attempt): bool => ! $attempt->isDefinitiveFailure())) {
+                    throw new PaymentAttemptException(
+                        'payment_attempt_not_retryable',
+                        'A previous payment attempt may still be payable and requires review.',
+                    );
                 }
 
                 $submittingAttempt = PaymentAttempt::query()

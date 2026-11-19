@@ -16,7 +16,10 @@ use Illuminate\Support\Facades\DB;
 
 final class PaymobTransactionWebhookService
 {
-    public function __construct(private readonly PaymobIntegrationResolver $integrations) {}
+    public function __construct(
+        private readonly PaymobIntegrationResolver $integrations,
+        private readonly PaymobPaymentTransactionLedger $ledger,
+    ) {}
 
     public function process(PaymobTransaction $transaction): PaymobWebhookResult
     {
@@ -74,24 +77,65 @@ final class PaymobTransactionWebhookService
             }
 
             if (! $this->identityMatches($attempt, $order, $transaction)) {
+                $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'callback_identity_mismatch');
                 $this->review($attempt, 'callback_identity_mismatch', $transaction->transactionId);
 
                 return new PaymobWebhookResult;
             }
 
+            $priorTransaction = $this->ledger->find((string) $transaction->transactionId);
+            if ($priorTransaction !== null
+                && $priorTransaction->payment_attempt_id === $attempt->getKey()
+                && $priorTransaction->order_id === $order->getKey()
+                && ! $transaction->refunded
+                && ! $transaction->voided
+                && ($priorTransaction->status === PaymentAttemptStatus::Paid
+                    || ($priorTransaction->status === PaymentAttemptStatus::RequiresReview
+                        && $priorTransaction->success === true
+                        && $priorTransaction->pending === false
+                        && $priorTransaction->error_occurred === false
+                        && $transaction->success
+                        && ! $transaction->pending
+                        && ! $transaction->errorOccurred)
+                    || ($priorTransaction->status === PaymentAttemptStatus::RequiresReview
+                        && $priorTransaction->pending === true
+                        && $priorTransaction->success === false
+                        && $priorTransaction->error_occurred === false
+                        && $transaction->pending
+                        && ! $transaction->success
+                        && ! $transaction->errorOccurred))) {
+                return new PaymobWebhookResult;
+            }
+
             if ($transaction->refunded || $transaction->voided) {
+                $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'provider_refund_or_void');
                 $this->review($attempt, 'provider_refund_or_void', $transaction->transactionId);
 
                 return new PaymobWebhookResult;
             }
 
             if ($attempt->method === PaymentMethod::Wallet && ! $this->walletOutcomeIsConsistent($transaction)) {
+                $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'callback_status_flags_inconsistent');
                 $this->review($attempt, 'callback_status_flags_inconsistent', $transaction->transactionId);
 
                 return new PaymobWebhookResult;
             }
 
             if ($transaction->pending) {
+                if ($order->payment_status === PaymentStatus::Paid
+                    || $this->orderIsLateOrClosed($order)
+                    || $attempt->status === PaymentAttemptStatus::Expired
+                    || $attempt->status === PaymentAttemptStatus::RequiresReview) {
+                    $reviewCode = $order->payment_status === PaymentStatus::Paid
+                        ? 'additional_transaction_pending'
+                        : ($this->orderIsLateOrClosed($order) || $attempt->status === PaymentAttemptStatus::Expired
+                            ? 'late_pending_callback'
+                            : 'pending_attempt_requires_review');
+                    $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, $reviewCode);
+                    $this->review($attempt, $reviewCode, $transaction->transactionId);
+                    return new PaymobWebhookResult;
+                }
+                $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::Pending);
                 if (in_array($attempt->status, [
                     PaymentAttemptStatus::Created,
                     PaymentAttemptStatus::Pending,
@@ -113,30 +157,28 @@ final class PaymobTransactionWebhookService
             }
 
             if ($transaction->success && ! $transaction->errorOccurred) {
-                if ($order->payment_status === PaymentStatus::Paid || $attempt->status === PaymentAttemptStatus::Paid) {
-                    if ($attempt->status !== PaymentAttemptStatus::Paid) {
-                        $this->review($attempt, 'already_paid_order_conflict', $transaction->transactionId);
-                    }
-
-                    return new PaymobWebhookResult;
-                }
-
                 if ($this->orderIsLateOrClosed($order)
                     || $attempt->status === PaymentAttemptStatus::Expired) {
+                    $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'late_payment_callback');
                     $this->review($attempt, 'late_payment_callback', $transaction->transactionId);
 
                     return new PaymobWebhookResult;
                 }
 
-                if ($attempt->method === PaymentMethod::Wallet && $this->hasNewerAttempt($attempt)) {
-                    $this->review($attempt, 'late_wallet_success_with_newer_attempt', $transaction->transactionId);
+                if ($order->payment_status === PaymentStatus::Paid
+                    || $attempt->status === PaymentAttemptStatus::Paid
+                    || $this->ledger->orderHasSuccessfulTransaction($order)) {
+                    $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'additional_success_after_paid');
+                    $this->review($attempt, 'additional_success_after_paid', $transaction->transactionId);
 
                     return new PaymobWebhookResult;
                 }
 
+                $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::Paid);
+
                 $attempt->forceFill([
                     'status' => PaymentAttemptStatus::Paid,
-                    'provider_transaction_id' => (string) $transaction->transactionId,
+                    'provider_transaction_id' => $attempt->provider_transaction_id ?? (string) $transaction->transactionId,
                     'paid_at' => $attempt->paid_at ?? now(),
                     'failure_code' => null,
                     'failure_message' => null,
@@ -146,19 +188,13 @@ final class PaymobTransactionWebhookService
                 return new PaymobWebhookResult;
             }
 
-            if ($attempt->status === PaymentAttemptStatus::Paid
-                || ($attempt->status === PaymentAttemptStatus::RequiresReview
-                    && $attempt->method !== PaymentMethod::Wallet)) {
+            if ($attempt->status === PaymentAttemptStatus::Paid) {
                 return new PaymobWebhookResult;
             }
 
+            $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, 'provider_transaction_failed');
             if ($attempt->status !== PaymentAttemptStatus::Expired) {
-                $attempt->forceFill([
-                    'status' => PaymentAttemptStatus::Failed,
-                    'provider_transaction_id' => (string) $transaction->transactionId,
-                    'failure_code' => 'provider_transaction_failed',
-                    'failure_message' => null,
-                ])->save();
+                $this->review($attempt, 'provider_transaction_failed', $transaction->transactionId);
                 $latestAttemptId = PaymentAttempt::query()
                     ->where('order_id', $order->getKey())
                     ->max('id');
@@ -187,23 +223,15 @@ final class PaymobTransactionWebhookService
             return false;
         }
 
-        if ($attempt->method === PaymentMethod::Card) {
-            try {
-                if ($attempt->integration_id !== $this->integrations->resolve(PaymentMethod::Card)) {
-                    return false;
-                }
-            } catch (\App\Exceptions\PaymobConfigurationException) {
+        try {
+            if ($attempt->integration_id !== $this->integrations->resolve($attempt->method)) {
                 return false;
             }
-        }
-
-        if ($attempt->method === PaymentMethod::Wallet
-            && $transaction->merchantOrderId !== $attempt->merchant_reference) {
+        } catch (\App\Exceptions\PaymobConfigurationException) {
             return false;
         }
 
-        if ($transaction->merchantOrderId !== null
-            && $transaction->merchantOrderId !== $attempt->merchant_reference) {
+        if ($transaction->merchantOrderId !== $attempt->merchant_reference) {
             return false;
         }
 
@@ -220,14 +248,6 @@ final class PaymobTransactionWebhookService
         return ($transaction->success && ! $transaction->pending && ! $transaction->errorOccurred)
             || (! $transaction->success && $transaction->pending && ! $transaction->errorOccurred)
             || (! $transaction->success && ! $transaction->pending && $transaction->errorOccurred);
-    }
-
-    private function hasNewerAttempt(PaymentAttempt $attempt): bool
-    {
-        return PaymentAttempt::query()
-            ->where('order_id', $attempt->order_id)
-            ->where('id', '>', $attempt->getKey())
-            ->exists();
     }
 
     private function orderIsLateOrClosed(Order $order): bool

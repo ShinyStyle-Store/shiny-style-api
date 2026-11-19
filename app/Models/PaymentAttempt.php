@@ -8,6 +8,7 @@ use App\Enums\PaymentProvider;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
 class PaymentAttempt extends Model
@@ -75,9 +76,17 @@ class PaymentAttempt extends Model
         return $this->belongsTo(Order::class);
     }
 
+    public function paymobTransactions(): HasMany
+    {
+        return $this->hasMany(PaymobPaymentTransaction::class);
+    }
+
     public function isDefinitiveFailure(): bool
     {
         return $this->status === PaymentAttemptStatus::Failed
-            && in_array($this->failure_code, ['provider_client_error', 'provider_transaction_failed'], true);
+            && $this->failure_code === 'provider_client_error'
+            && $this->provider_order_id === null
+            && $this->provider_intention_id === null
+            && $this->submission_claimed_at === null;
     }
 }

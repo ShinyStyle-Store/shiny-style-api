@@ -21,6 +21,18 @@ class AdminPaymentReviewResource extends JsonResource
             'paymob_reference' => $this->provider_transaction_id
                 ?? $this->provider_order_id
                 ?? $this->merchant_reference,
+            'additional_transactions' => $this->whenLoaded('paymobTransactions', fn () => $this->paymobTransactions
+                ->map(fn ($transaction): array => [
+                    'transaction_id' => $transaction->provider_transaction_id,
+                    'provider_order_id' => $transaction->provider_order_id,
+                    'merchant_reference' => $transaction->merchant_reference,
+                    'amount' => ExactMoney::formatMinorUnits((string) $transaction->amount_minor),
+                    'currency' => $transaction->currency,
+                    'integration_id' => $transaction->integration_id,
+                    'status' => $transaction->status->value,
+                    'reason' => $transaction->review_code,
+                    'received_at' => $transaction->received_at?->toISOString(),
+                ])->values()),
         ];
     }
 }

@@ -86,15 +86,14 @@ class PaymentController extends Controller
 
         $attempt = $order->paymentAttempts()->latest('id')->first();
         $attemptStatus = $attempt?->status;
-        $walletFailureRetryable = $order->payment_method !== PaymentMethod::Wallet
-            || $attemptStatus !== PaymentAttemptStatus::Failed
+        $failedAttemptRetryable = $attemptStatus !== PaymentAttemptStatus::Failed
             || $attempt?->isDefinitiveFailure() === true;
         $retryable = $order->payment_method->isOnline()
             && $order->payment_status !== PaymentStatus::Paid
             && $order->status->value === 'pending_confirmation'
             && $order->payment_expires_at?->isFuture() === true
-            && $walletFailureRetryable
-            && ! in_array($attemptStatus, [PaymentAttemptStatus::Pending, PaymentAttemptStatus::Submitting, PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview], true);
+            && $failedAttemptRetryable
+            && ! in_array($attemptStatus, [PaymentAttemptStatus::Pending, PaymentAttemptStatus::Submitting, PaymentAttemptStatus::Paid, PaymentAttemptStatus::RequiresReview, PaymentAttemptStatus::Expired], true);
 
         return response()->json([
             'data' => [
@@ -138,8 +137,7 @@ class PaymentController extends Controller
         if ($order->payment_expires_at === null || $order->payment_expires_at->isPast()) {
             return 'payment_window_expired';
         }
-        if ($order->payment_method === PaymentMethod::Wallet
-            && $attempt?->status === PaymentAttemptStatus::Failed) {
+        if ($attempt?->status === PaymentAttemptStatus::Failed) {
             return $attempt->isDefinitiveFailure()
                 ? 'payment_failed_retryable'
                 : 'payment_outcome_uncertain';
@@ -147,7 +145,9 @@ class PaymentController extends Controller
 
         return match ($attempt?->status) {
             PaymentAttemptStatus::RequiresReview, PaymentAttemptStatus::Submitting => 'requires_review',
-            PaymentAttemptStatus::Failed => 'payment_failed_retryable',
+            PaymentAttemptStatus::Failed => $attempt?->isDefinitiveFailure() === true
+                ? 'payment_failed_retryable'
+                : 'payment_outcome_uncertain',
             PaymentAttemptStatus::Expired => 'payment_window_expired',
             PaymentAttemptStatus::Pending, PaymentAttemptStatus::Created => 'payment_pending',
             default => 'payment_not_started',
@@ -157,10 +157,6 @@ class PaymentController extends Controller
     private function walletIdempotentReplayError(PaymentAttempt $attempt): ?JsonResponse
     {
         if ($attempt->isDefinitiveFailure()) {
-            if ($attempt->failure_code === 'provider_transaction_failed') {
-                return $this->error('payment_failed_retryable', 'The previous Wallet payment failed. Retry with a new Idempotency-Key.', 409);
-            }
-
             return $this->error('payment_provider_rejected', 'The payment provider rejected the payment request.', 422);
         }
 
