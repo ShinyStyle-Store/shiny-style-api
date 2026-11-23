@@ -356,6 +356,56 @@ class PaymobWebhookTest extends TestCase
         }
     }
 
+    public function test_wallet_decline_without_error_flag_marks_order_failed_and_requires_review(): void
+    {
+        $attempt = $this->walletAttempt();
+
+        app(PaymobTransactionWebhookService::class)->process(
+            $this->walletTransaction($attempt, success: false, pending: false, errorOccurred: false),
+        );
+
+        $stored = $attempt->fresh();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $stored->status);
+        $this->assertSame('provider_transaction_failed', $stored->failure_code);
+        $this->assertSame(PaymentStatus::Failed, $stored->order->fresh()->payment_status);
+    }
+
+    public function test_success_after_failed_transaction_on_same_attempt_updates_provider_transaction_id(): void
+    {
+        $attempt = $this->attempt();
+        $failedPayload = $this->transactionCallbackPayload($attempt, false, 123456801);
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($failedPayload['obj']), $failedPayload)
+            ->assertOk();
+
+        $this->assertSame('123456801', $attempt->fresh()->provider_transaction_id);
+
+        $successPayload = $this->transactionCallbackPayload($attempt, true, 123456802);
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($successPayload['obj']), $successPayload)
+            ->assertOk();
+
+        $stored = $attempt->fresh();
+        $this->assertSame(PaymentAttemptStatus::Paid, $stored->status);
+        $this->assertSame('123456802', $stored->provider_transaction_id);
+        $this->assertSame(PaymentStatus::Paid, $stored->order->fresh()->payment_status);
+    }
+
+    public function test_webhook_with_mismatched_is_live_environment_requires_review(): void
+    {
+        $attempt = $this->attempt();
+        $attempt->update(['provider_is_live' => true]);
+
+        $payload = $this->transactionCallbackPayload($attempt, true, 123456803);
+        $payload['obj']['is_live'] = false;
+
+        $this->postJson('/api/v1/payments/paymob/webhook?hmac='.$this->hmac($payload['obj']), $payload)
+            ->assertOk();
+
+        $stored = $attempt->fresh();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $stored->status);
+        $this->assertSame('callback_identity_mismatch', $stored->failure_code);
+        $this->assertSame(PaymentStatus::Unpaid, $stored->order->fresh()->payment_status);
+    }
+
     private function attempt(): PaymentAttempt
     {
         $order = Order::factory()->create([
@@ -514,6 +564,7 @@ class PaymobWebhookTest extends TestCase
             $source['sub_type'], $source['type'], $object['success'],
         ];
         $string = implode('', array_map(static fn (mixed $value): string => is_bool($value) ? ($value ? 'true' : 'false') : (string) $value, $values));
+
         return hash_hmac('sha512', $string, 'test-hmac-secret');
     }
 }

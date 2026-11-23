@@ -136,7 +136,7 @@ final class PaymobCardIntentionService
             );
         }
 
-        return DB::transaction(function () use ($preparedAttempt, $validated, $snapshot): PaymobIntentionResult {
+        $result = DB::transaction(function () use ($preparedAttempt, $validated, $snapshot): ?PaymobIntentionResult {
             $orderId = (int) $preparedAttempt->order_id;
             $order = Order::query()->whereKey($orderId)->lockForUpdate()->first();
             if ($order === null) {
@@ -150,7 +150,19 @@ final class PaymobCardIntentionService
             if ($lockedAttempt === null || $lockedAttempt->status !== PaymentAttemptStatus::Submitting) {
                 throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
             }
-            $this->assertStillPersistable($lockedAttempt, $order);
+
+            if (! $this->isStillPersistable($lockedAttempt, $order)) {
+                $lockedAttempt->forceFill([
+                    'status' => PaymentAttemptStatus::RequiresReview,
+                    'provider_intention_id' => $validated['intention_id'],
+                    'provider_order_id' => $validated['order_id'],
+                    'integration_id' => $snapshot->integrationId,
+                    'failure_code' => 'order_state_changed_during_submission',
+                    'failure_message' => null,
+                ])->save();
+
+                return null;
+            }
 
             $lockedAttempt->forceFill([
                 'status' => PaymentAttemptStatus::Pending,
@@ -164,6 +176,12 @@ final class PaymobCardIntentionService
 
             return $this->resultFromStored($lockedAttempt);
         });
+
+        if ($result === null) {
+            throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
+        }
+
+        return $result;
     }
 
     /** @return array{endpoint:string,integration_id:int} */
@@ -248,7 +266,7 @@ final class PaymobCardIntentionService
         }
     }
 
-    private function assertStillPersistable(PaymentAttempt $attempt, Order $order): void
+    private function isStillPersistable(PaymentAttempt $attempt, Order $order): bool
     {
         if (in_array($order->status, [OrderStatus::Cancelled, OrderStatus::Delivered, OrderStatus::DeliveryRefused], true)
             || $order->payment_method !== $attempt->method
@@ -257,17 +275,17 @@ final class PaymobCardIntentionService
             || $order->payment_expires_at->isPast()
             || $attempt->expires_at === null
             || $attempt->expires_at->gt($order->payment_expires_at)) {
-            throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
+            return false;
         }
 
         try {
             $amount = ExactMoney::toMinorUnitInteger((string) $order->total);
         } catch (InvalidArgumentException|OverflowException) {
-            throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
+            return false;
         }
-        if ($amount !== $attempt->amount_minor || strtoupper(trim((string) $order->currency)) !== $attempt->currency) {
-            throw new PaymentAttemptException('payment_outcome_uncertain', 'The payment provider outcome is uncertain; manual review is required.');
-        }
+
+        return $amount === $attempt->amount_minor
+            && strtoupper(trim((string) $order->currency)) === $attempt->currency;
     }
 
     private function snapshot(PaymentAttempt $attempt, Order $order, int $integrationId): PaymobIntentionSnapshot

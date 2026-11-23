@@ -2,15 +2,17 @@
 
 namespace Tests\Feature\Database;
 
+use App\Enums\OrderStatus;
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentStatus;
-use App\Exceptions\PaymobConfigurationException;
 use App\Exceptions\PaymentAttemptException;
+use App\Exceptions\PaymobConfigurationException;
+use App\Exceptions\PaymobRequestException;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
-use App\Services\PaymobCardIntentionService;
 use App\Services\PaymentAttemptService;
+use App\Services\PaymobCardIntentionService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -300,7 +302,7 @@ class PaymobCardIntentionTest extends TestCase
         try {
             app(PaymobCardIntentionService::class)->initiate($attempt);
             $this->fail('A provider rejection should be raised.');
-        } catch (\App\Exceptions\PaymobRequestException $exception) {
+        } catch (PaymobRequestException $exception) {
             $this->assertSame('provider_client_error', $exception->errorCode);
             $this->assertStringNotContainsString('customer@example.com', $exception->getMessage());
             $this->assertStringNotContainsString('client-secret-value', $exception->getMessage());
@@ -330,6 +332,40 @@ class PaymobCardIntentionTest extends TestCase
 
         $this->assertSame(PaymentAttemptStatus::Created, $attempt->fresh()->status);
         Http::assertNothingSent();
+    }
+
+    public function test_order_cancelled_during_provider_call_marks_attempt_requires_review_and_preserves_provider_ids(): void
+    {
+        $attempt = $this->makeAttempt();
+        Http::fake([
+            'https://paymob.test/*' => function () use ($attempt) {
+                $attempt->order->update(['status' => OrderStatus::Cancelled]);
+
+                return Http::response([
+                    'id' => 'int_race',
+                    'client_secret' => 'race-secret',
+                    'intention_order_id' => 458,
+                    'amount' => 17000,
+                    'currency' => 'EGP',
+                    'special_reference' => $attempt->merchant_reference,
+                    'payment_methods' => [['integration_id' => 123]],
+                ], 201);
+            },
+        ]);
+
+        try {
+            app(PaymobCardIntentionService::class)->initiate($attempt);
+            $this->fail('An order cancelled during intention submission must not return a checkout URL.');
+        } catch (PaymentAttemptException $exception) {
+            $this->assertSame('payment_outcome_uncertain', $exception->errorCode);
+        }
+
+        $stored = $attempt->fresh();
+        $this->assertSame(PaymentAttemptStatus::RequiresReview, $stored->status);
+        $this->assertSame('order_state_changed_during_submission', $stored->failure_code);
+        $this->assertSame('int_race', $stored->provider_intention_id);
+        $this->assertSame('458', $stored->provider_order_id);
+        $this->assertNull($stored->provider_client_secret);
     }
 
     private function makeAttempt(array $orderOverrides = [], PaymentMethod $method = PaymentMethod::Card): PaymentAttempt

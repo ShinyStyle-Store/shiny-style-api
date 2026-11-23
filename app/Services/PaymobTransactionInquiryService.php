@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Enums\OrderStatus;
 use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentStatus;
+use App\Exceptions\PaymobConfigurationException;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
 use App\Support\ExactMoney;
@@ -190,7 +192,7 @@ final class PaymobTransactionInquiryService
 
         try {
             $configuredIntegrationId = $this->integrations->resolve($attempt->method);
-        } catch (\App\Exceptions\PaymobConfigurationException) {
+        } catch (PaymobConfigurationException) {
             return null;
         }
         $configuredEnvironment = $this->configuredEnvironment();
@@ -279,7 +281,7 @@ final class PaymobTransactionInquiryService
     {
         return ($success && ! $pending && ! $errorOccurred)
             || (! $success && $pending && ! $errorOccurred)
-            || (! $success && ! $pending && $errorOccurred);
+            || (! $success && ! $pending);
     }
 
     private function configuredEnvironment(): ?bool
@@ -307,9 +309,9 @@ final class PaymobTransactionInquiryService
     private function orderIsLateOrClosed(Order $order): bool
     {
         return in_array($order->status, [
-            \App\Enums\OrderStatus::Cancelled,
-            \App\Enums\OrderStatus::Delivered,
-            \App\Enums\OrderStatus::DeliveryRefused,
+            OrderStatus::Cancelled,
+            OrderStatus::Delivered,
+            OrderStatus::DeliveryRefused,
         ], true)
             || $order->payment_expires_at === null
             || $order->payment_expires_at->isPast();
