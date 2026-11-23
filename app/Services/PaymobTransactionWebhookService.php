@@ -7,12 +7,13 @@ use App\Enums\PaymentAttemptStatus;
 use App\Enums\PaymentMethod;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentStatus;
+use App\Exceptions\PaymobConfigurationException;
 use App\Models\Order;
 use App\Models\PaymentAttempt;
 use App\Support\ExactMoney;
+use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use OverflowException;
-use Illuminate\Support\Facades\DB;
 
 final class PaymobTransactionWebhookService
 {
@@ -133,6 +134,7 @@ final class PaymobTransactionWebhookService
                             : 'pending_attempt_requires_review');
                     $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::RequiresReview, $reviewCode);
                     $this->review($attempt, $reviewCode, $transaction->transactionId);
+
                     return new PaymobWebhookResult;
                 }
                 $this->ledger->record($attempt, $order, $transaction, PaymentAttemptStatus::Pending);
@@ -178,7 +180,7 @@ final class PaymobTransactionWebhookService
 
                 $attempt->forceFill([
                     'status' => PaymentAttemptStatus::Paid,
-                    'provider_transaction_id' => $attempt->provider_transaction_id ?? (string) $transaction->transactionId,
+                    'provider_transaction_id' => (string) $transaction->transactionId,
                     'paid_at' => $attempt->paid_at ?? now(),
                     'failure_code' => null,
                     'failure_message' => null,
@@ -227,11 +229,17 @@ final class PaymobTransactionWebhookService
             if ($attempt->integration_id !== $this->integrations->resolve($attempt->method)) {
                 return false;
             }
-        } catch (\App\Exceptions\PaymobConfigurationException) {
+        } catch (PaymobConfigurationException) {
             return false;
         }
 
         if ($transaction->merchantOrderId !== $attempt->merchant_reference) {
+            return false;
+        }
+
+        if ($attempt->provider_is_live !== null
+            && $transaction->isLive !== null
+            && $transaction->isLive !== $attempt->provider_is_live) {
             return false;
         }
 
@@ -247,7 +255,7 @@ final class PaymobTransactionWebhookService
     {
         return ($transaction->success && ! $transaction->pending && ! $transaction->errorOccurred)
             || (! $transaction->success && $transaction->pending && ! $transaction->errorOccurred)
-            || (! $transaction->success && ! $transaction->pending && $transaction->errorOccurred);
+            || (! $transaction->success && ! $transaction->pending);
     }
 
     private function orderIsLateOrClosed(Order $order): bool
